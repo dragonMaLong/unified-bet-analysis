@@ -11,6 +11,7 @@ from tristar_bet.analysis import (
     FitResult,
     adsorption_points,
     bet_analysis,
+    bjh_pore_distribution,
     desorption_points,
     langmuir_analysis,
     t_plot_analysis,
@@ -638,13 +639,92 @@ def plot_t_plot(plot: pg.PlotWidget, result, p_min: float | None = None, p_max: 
     _fit_range(plot, x, y)
 
 
-def plot_pore_distribution_placeholder(plot: pg.PlotWidget) -> None:
+def plot_bjh_distribution_multi(
+    plot: pg.PlotWidget,
+    results,
+    visible: list[bool],
+    colors: list[str],
+    active_index: int = -1,
+    thickness_method: str = "harkins_jura",
+    thickness_params: dict[str, float] | None = None,
+    correction: str = "standard",
+    open_pore_fraction: float = 0.0,
+    show_adsorption: bool = True,
+    show_desorption: bool = True,
+    smooth: bool = True,
+) -> None:
     plot.clear()
-    plot.setTitle("孔径分布 / BJH")
-    plot.setLabel("left", "dV/dlogD")
+    plot.setTitle("BJH 孔径分布")
+    plot.setLabel("left", "dV/dlogD (cm3/g)")
     plot.setLabel("bottom", "孔径 (nm)")
     plot.setLogMode(x=False, y=False)
-    _plot_message(plot, "BJH / DH 孔径分布算法尚未接入，当前先保留为空")
+    all_x = []
+    all_y = []
+    phases: list[tuple[str, bool, QtCore.Qt.PenStyle]] = [
+        ("adsorption", show_adsorption, QtCore.Qt.SolidLine),
+        ("desorption", show_desorption, QtCore.Qt.DashLine),
+    ]
+    if not show_adsorption and not show_desorption:
+        _plot_message(plot, "请选择 BJH 吸附或 BJH 脱附")
+        return
+
+    for index in _analysis_draw_order(results, visible, active_index):
+        result = results[index]
+        color = _analysis_color(colors, index, active_index)
+        width = 3 if index == active_index else 2
+        for phase, enabled, line_style in phases:
+            if not enabled:
+                continue
+            distribution = bjh_pore_distribution(
+                result,
+                phase=phase,
+                thickness_method=thickness_method,
+                thickness_params=thickness_params,
+                correction=correction,
+                open_pore_fraction=open_pore_fraction,
+                smooth=smooth,
+            )
+            if not distribution.rows:
+                continue
+            x = np.asarray([row["pore_diameter_nm"] for row in distribution.rows], dtype=float)
+            y = np.asarray([row["differential_pore_volume_cm3_g"] for row in distribution.rows], dtype=float)
+            mask = np.isfinite(x) & np.isfinite(y) & (x > 0.0) & (y >= 0.0)
+            if not np.any(mask):
+                continue
+            x = x[mask]
+            y = y[mask]
+            order = np.argsort(x)
+            x = x[order]
+            y = y[order]
+            pen = pg.mkPen(color, width=width)
+            pen.setStyle(line_style)
+            phase_label = "吸附" if phase == "adsorption" else "脱附"
+            plot.plot(
+                x,
+                y,
+                pen=pen,
+                symbol="o",
+                symbolSize=6 if index == active_index else 5,
+                symbolPen=pg.mkPen(color, width=1),
+                symbolBrush=pg.mkBrush("#ffffff"),
+                name=f"{_legend_name(result)} BJH{phase_label}",
+            )
+            all_x.extend(x.tolist())
+            all_y.extend(y.tolist())
+
+    if all_x:
+        _fit_range(plot, all_x, all_y)
+    else:
+        _plot_message(plot, "当前样品没有足够的 BJH 孔径分布点")
+
+
+def plot_pore_distribution_placeholder(plot: pg.PlotWidget) -> None:
+    plot.clear()
+    plot.setTitle("BJH 孔径分布")
+    plot.setLabel("left", "dV/dlogD (cm3/g)")
+    plot.setLabel("bottom", "孔径 (nm)")
+    plot.setLogMode(x=False, y=False)
+    _plot_message(plot, "当前没有可显示的 BJH 孔径分布")
 
 
 def _plot_points(plot: pg.PlotWidget, points, color: str, name: str | None, *, solid: bool, width: int = 2) -> None:

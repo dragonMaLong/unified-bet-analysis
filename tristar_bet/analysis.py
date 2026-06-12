@@ -11,6 +11,9 @@ from .models import IsothermPoint, TriStarResult
 
 DEFAULT_N2_CROSS_SECTION_NM2 = 0.162
 DEFAULT_N2_DENSITY_CONVERSION_FACTOR = 0.0015468
+DEFAULT_N2_SURFACE_TENSION_N_M = 8.85e-3
+DEFAULT_N2_LIQUID_MOLAR_VOLUME_M3_MOL = 34.68e-6
+GAS_CONSTANT_J_MOL_K = 8.314462618
 DEFAULT_THICKNESS_METHOD = "harkins_jura"
 THICKNESS_METHOD_DEFAULT_PARAMS: dict[str, dict[str, float]] = {
     "kjs": {
@@ -67,6 +70,19 @@ class FitResult:
     @property
     def ok(self) -> bool:
         return self.status in {"ok", "warning_negative_c"}
+
+
+@dataclass(frozen=True)
+class PoreDistributionResult:
+    name: str
+    phase: str
+    status: str
+    point_count: int = 0
+    rows: list[dict[str, float]] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return self.status == "ok"
 
 
 def adsorption_points(result: TriStarResult) -> list[IsothermPoint]:
@@ -329,6 +345,124 @@ def density_conversion_factor(result: TriStarResult) -> float:
     if result.adsorptive_properties and result.adsorptive_properties.density_conversion_factor:
         return float(result.adsorptive_properties.density_conversion_factor)
     return DEFAULT_N2_DENSITY_CONVERSION_FACTOR
+
+
+def bjh_pore_distribution(
+    result: TriStarResult,
+    phase: str = "desorption",
+    thickness_method: str = DEFAULT_THICKNESS_METHOD,
+    thickness_params: dict[str, float] | None = None,
+    correction: str = "standard",
+    open_pore_fraction: float = 0.0,
+    smooth: bool = True,
+) -> PoreDistributionResult:
+    """Approximate BJH pore-size distribution from one isotherm branch.
+
+    The current implementation uses the Kelvin equation plus the selected
+    adsorbed-film thickness equation. Correction-specific variants and
+    open-pore fraction are reserved inputs until their vendor definitions are
+    decoded.
+    """
+    phase = "adsorption" if phase == "adsorption" else "desorption"
+    points = adsorption_points(result) if phase == "adsorption" else desorption_points(result)
+    points = sorted(points, key=lambda point: float(point.relative_pressure), reverse=True)
+    if len(points) < 3:
+        return PoreDistributionResult("BJH", phase, "not_enough_points", len(points))
+
+    density_factor = density_conversion_factor(result)
+    temperature_k = result.run_conditions.bath_temperature_K or 77.350
+    base_rows: list[dict[str, float]] = []
+    for point in points:
+        pressure = float(point.relative_pressure)
+        quantity = float(point.quantity_adsorbed_cm3_g_stp or 0.0)
+        liquid_volume = quantity * density_factor
+        film_thickness = thickness_nm(pressure, thickness_method, thickness_params)
+        kelvin_radius = kelvin_radius_nm(pressure, temperature_k)
+        if film_thickness is None or kelvin_radius is None or liquid_volume < 0.0:
+            continue
+        pore_radius = kelvin_radius + film_thickness
+        pore_diameter = 2.0 * pore_radius
+        if not _valid_number(pore_diameter) or pore_diameter <= 0.0:
+            continue
+        base_rows.append(
+            {
+                "point_index": float(point.index),
+                "relative_pressure": pressure,
+                "quantity_adsorbed_cm3_g_stp": quantity,
+                "liquid_volume_cm3_g": liquid_volume,
+                "film_thickness_nm": film_thickness,
+                "kelvin_radius_nm": kelvin_radius,
+                "pore_diameter_nm": pore_diameter,
+            }
+        )
+
+    if len(base_rows) < 3:
+        return PoreDistributionResult("BJH", phase, "not_enough_valid_points", len(base_rows), rows=base_rows)
+
+    distribution_rows: list[dict[str, float]] = []
+    cumulative_volume = 0.0
+    for index in range(len(base_rows) - 1):
+        high = base_rows[index]
+        low = base_rows[index + 1]
+        high_diameter = float(high["pore_diameter_nm"])
+        low_diameter = float(low["pore_diameter_nm"])
+        if high_diameter <= 0.0 or low_diameter <= 0.0:
+            continue
+        dlog_diameter = abs(math.log10(high_diameter) - math.log10(low_diameter))
+        if dlog_diameter <= 1e-12:
+            continue
+        incremental_volume = abs(float(high["liquid_volume_cm3_g"]) - float(low["liquid_volume_cm3_g"]))
+        if incremental_volume <= 0.0:
+            continue
+        pore_diameter = math.sqrt(high_diameter * low_diameter)
+        differential = incremental_volume / dlog_diameter
+        cumulative_volume += incremental_volume
+        distribution_rows.append(
+            {
+                "phase": phase,
+                "interval_index": float(index + 1),
+                "relative_pressure_high": float(high["relative_pressure"]),
+                "relative_pressure_low": float(low["relative_pressure"]),
+                "pore_diameter_nm": pore_diameter,
+                "incremental_pore_volume_cm3_g": incremental_volume,
+                "cumulative_pore_volume_cm3_g": cumulative_volume,
+                "dlog_diameter": dlog_diameter,
+                "differential_pore_volume_cm3_g": differential,
+                "raw_differential_pore_volume_cm3_g": differential,
+                "film_thickness_nm": (float(high["film_thickness_nm"]) + float(low["film_thickness_nm"])) / 2.0,
+                "kelvin_radius_nm": (float(high["kelvin_radius_nm"]) + float(low["kelvin_radius_nm"])) / 2.0,
+                "bjh_correction": correction,
+                "open_pore_fraction": float(open_pore_fraction),
+            }
+        )
+
+    if len(distribution_rows) < 2:
+        return PoreDistributionResult("BJH", phase, "not_enough_distribution_points", len(distribution_rows), rows=distribution_rows)
+    if smooth:
+        _smooth_distribution_rows(distribution_rows)
+    return PoreDistributionResult("BJH", phase, "ok", len(distribution_rows), rows=distribution_rows)
+
+
+def kelvin_radius_nm(relative_pressure: float, temperature_k: float = 77.350) -> float | None:
+    if not (0.0 < relative_pressure < 1.0) or temperature_k <= 0.0:
+        return None
+    denominator = GAS_CONSTANT_J_MOL_K * temperature_k * math.log(relative_pressure)
+    if denominator >= 0.0:
+        return None
+    radius_m = -(2.0 * DEFAULT_N2_SURFACE_TENSION_N_M * DEFAULT_N2_LIQUID_MOLAR_VOLUME_M3_MOL) / denominator
+    radius_nm = radius_m * 1e9
+    return radius_nm if _valid_number(radius_nm) and radius_nm > 0.0 else None
+
+
+def _smooth_distribution_rows(rows: list[dict[str, float]]) -> None:
+    values = [float(row["differential_pore_volume_cm3_g"]) for row in rows]
+    if len(values) < 3:
+        return
+    smoothed = values[:]
+    for index in range(1, len(values) - 1):
+        smoothed[index] = (values[index - 1] + 2.0 * values[index] + values[index + 1]) / 4.0
+    for row, value in zip(rows, smoothed):
+        row["differential_pore_volume_cm3_g"] = value
 
 
 def harkins_jura_thickness_nm(

@@ -30,6 +30,7 @@ from tristar_bet.ui.plots import (
     plot_bet_selection,
     plot_isotherm_multi,
     plot_isotherm_selection,
+    plot_bjh_distribution_multi,
     plot_langmuir_points_multi,
     plot_langmuir_selection,
     plot_pore_distribution_placeholder,
@@ -435,6 +436,8 @@ DEFAULT_T_PLOT_SURFACE_AREA_INPUT = 1.0
 DEFAULT_T_PLOT_SURFACE_AREA_CORRECTION = 1.0
 T_PLOT_PANEL_COLLAPSED_WIDTH = 360
 T_PLOT_PANEL_EXPANDED_WIDTH = 660
+BJH_PANEL_COLLAPSED_WIDTH = 380
+BJH_PANEL_EXPANDED_WIDTH = 660
 REGION_LINE_COLOR = "#2563eb"
 REGION_LINE_HOVER_COLOR = "#dc2626"
 REGION_FILL_COLOR = (37, 99, 235, 34)
@@ -507,6 +510,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.t_plot_surface_area_mode = DEFAULT_T_PLOT_SURFACE_AREA_MODE
         self.t_plot_surface_area_input = DEFAULT_T_PLOT_SURFACE_AREA_INPUT
         self.t_plot_surface_area_correction = DEFAULT_T_PLOT_SURFACE_AREA_CORRECTION
+        self._syncing_bjh_controls = False
+        self.bjh_thickness_method = DEFAULT_T_PLOT_THICKNESS_METHOD
+        self.bjh_thickness_params_by_method = _default_t_plot_thickness_params_by_method()
+        self.bjh_thickness_params = dict(DEFAULT_T_PLOT_THICKNESS_PARAMS)
+        self.bjh_correction = "standard"
+        self.bjh_open_pore_fraction = 0.0
+        self.bjh_smooth_derivative = True
+        self.bjh_show_adsorption = True
+        self.bjh_show_desorption = True
         self.region_is_log = False
         self._metrics_pending = False
         self._bet_region_pending = False
@@ -643,7 +655,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.bet_plot = make_plot("BET 拟合", "P/[V(P0-P)]", "相对压力 (P/P0)")
         self.langmuir_plot = make_plot("Langmuir 拟合", "(P/P0) / V", "相对压力 (P/P0)")
         self.t_plot = make_plot("t-Plot", "液体体积 (cm3/g)", "统计膜厚 t (nm)")
-        self.pore_plot = make_plot("孔径分布 / BJH", "dV/dlogD", "孔径 (nm)")
+        self.pore_plot = make_plot("BJH 孔径分布", "dV/dlogD (cm3/g)", "孔径 (nm)")
 
         self.bet_default_button = QtWidgets.QPushButton("默认")
         self.bet_default_button.setToolTip("按默认 BET 区间 0.05-0.30 重新计算")
@@ -688,11 +700,24 @@ class MainWindow(QtWidgets.QMainWindow):
         t_plot_tab_layout.addWidget(self.t_plot_options_panel)
         t_plot_tab_layout.addWidget(t_plot_plot_panel, 1)
 
+        bjh_plot_panel = QtWidgets.QWidget()
+        bjh_plot_layout = QtWidgets.QVBoxLayout(bjh_plot_panel)
+        bjh_plot_layout.setContentsMargins(0, 0, 0, 0)
+        bjh_plot_layout.setSpacing(0)
+        bjh_plot_layout.addWidget(self.pore_plot, 1)
+        self.bjh_options_panel = self._make_bjh_options_panel()
+        self.bjh_tab = QtWidgets.QWidget()
+        bjh_tab_layout = QtWidgets.QHBoxLayout(self.bjh_tab)
+        bjh_tab_layout.setContentsMargins(0, 0, 0, 0)
+        bjh_tab_layout.setSpacing(0)
+        bjh_tab_layout.addWidget(self.bjh_options_panel)
+        bjh_tab_layout.addWidget(bjh_plot_panel, 1)
+
         self.plot_tabs = QtWidgets.QTabWidget()
         self.plot_tabs.addTab(self.bet_tab, "BET")
         self.plot_tabs.addTab(self.langmuir_tab, "Langmuir")
         self.plot_tabs.addTab(self.t_plot_tab, "t-Plot")
-        self.plot_tabs.addTab(self.pore_plot, "孔径分布")
+        self.plot_tabs.addTab(self.bjh_tab, "BJH")
 
         self.isotherm_table = self._make_table(
             [
@@ -812,7 +837,7 @@ class MainWindow(QtWidgets.QMainWindow):
             ("carbon_black_stsa", "碳黑STSA", True),
         ]
         for key, label, enabled in thickness_methods:
-            row = self._make_thickness_method_row(key, label, enabled)
+            row = self._make_thickness_method_row(key, label, enabled, context="t_plot")
             thickness_layout.addWidget(row)
 
         surface_group = QtWidgets.QGroupBox("表面积")
@@ -861,7 +886,78 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_t_plot_options_panel_width(panel)
         return panel
 
-    def _make_thickness_method_row(self, key: str, label: str, enabled: bool) -> QtWidgets.QWidget:
+    def _make_bjh_options_panel(self) -> QtWidgets.QWidget:
+        panel = QtWidgets.QWidget()
+        panel.setFixedWidth(BJH_PANEL_COLLAPSED_WIDTH)
+        panel_layout = QtWidgets.QVBoxLayout(panel)
+        panel_layout.setContentsMargins(6, 6, 6, 6)
+        panel_layout.setSpacing(8)
+
+        thickness_group = QtWidgets.QGroupBox("厚度曲线")
+        thickness_layout = QtWidgets.QVBoxLayout(thickness_group)
+        thickness_layout.setContentsMargins(8, 8, 8, 8)
+        thickness_layout.setSpacing(4)
+        self.bjh_method_radios = {}
+        self.bjh_method_group = QtWidgets.QButtonGroup(panel)
+        self.bjh_method_group.setExclusive(True)
+        self.bjh_param_spins = {}
+        self.bjh_formula_buttons = {}
+        self.bjh_formula_widgets = {}
+        self.bjh_formula_expanded = {}
+        thickness_methods = [
+            ("reference", "参比", False),
+            ("kjs", "Kruk-Jaroniec-Sayari E", True),
+            ("halsey", "Halsey", True),
+            ("harkins_jura", "Harkins and Jura 厚度", True),
+            ("broekhoff_de_boer", "Broekhoff-De Boer 厚度", True),
+            ("carbon_black_stsa", "碳黑STSA", True),
+        ]
+        for key, label, enabled in thickness_methods:
+            thickness_layout.addWidget(self._make_thickness_method_row(key, label, enabled, context="bjh"))
+
+        correction_group = QtWidgets.QGroupBox("BJH 校正")
+        correction_layout = QtWidgets.QVBoxLayout(correction_group)
+        correction_layout.setContentsMargins(8, 8, 8, 8)
+        correction_layout.setSpacing(6)
+        self.bjh_standard_radio = QtWidgets.QRadioButton("标准的")
+        self.bjh_kjs_correction_radio = QtWidgets.QRadioButton("Kruk-Jaroniec-Sayari E")
+        self.bjh_faas_correction_radio = QtWidgets.QRadioButton("Faas 校正")
+        self.bjh_standard_radio.setChecked(True)
+        for radio in (self.bjh_standard_radio, self.bjh_kjs_correction_radio, self.bjh_faas_correction_radio):
+            radio.toggled.connect(self._on_bjh_option_changed)
+            correction_layout.addWidget(radio)
+
+        open_fraction_label = QtWidgets.QLabel("两端开口孔的分数")
+        self.bjh_open_fraction_spin = self._make_param_spin(0.0, 0.0, 1.0, 2, width=112)
+        self.bjh_open_fraction_spin.setToolTip("暂作为 BJH 参数保留；当前标准 BJH 计算中不改变结果")
+        self.bjh_open_fraction_spin.valueChanged.connect(self._on_bjh_option_changed)
+        open_fraction_row = QtWidgets.QHBoxLayout()
+        open_fraction_row.setContentsMargins(0, 0, 0, 0)
+        open_fraction_row.addWidget(self.bjh_open_fraction_spin)
+        open_fraction_row.addStretch(1)
+
+        self.bjh_smooth_checkbox = QtWidgets.QCheckBox("平滑的微分")
+        self.bjh_smooth_checkbox.setChecked(True)
+        self.bjh_smooth_checkbox.stateChanged.connect(self._on_bjh_option_changed)
+        self.bjh_adsorption_checkbox = QtWidgets.QCheckBox("BJH 吸附")
+        self.bjh_desorption_checkbox = QtWidgets.QCheckBox("BJH 脱附")
+        self.bjh_adsorption_checkbox.setChecked(True)
+        self.bjh_desorption_checkbox.setChecked(True)
+        self.bjh_adsorption_checkbox.stateChanged.connect(self._on_bjh_option_changed)
+        self.bjh_desorption_checkbox.stateChanged.connect(self._on_bjh_option_changed)
+
+        panel_layout.addWidget(thickness_group)
+        panel_layout.addWidget(correction_group)
+        panel_layout.addWidget(open_fraction_label)
+        panel_layout.addLayout(open_fraction_row)
+        panel_layout.addWidget(self.bjh_smooth_checkbox)
+        panel_layout.addWidget(self.bjh_adsorption_checkbox)
+        panel_layout.addWidget(self.bjh_desorption_checkbox)
+        panel_layout.addStretch(1)
+        self._update_bjh_options_panel_width(panel)
+        return panel
+
+    def _make_thickness_method_row(self, key: str, label: str, enabled: bool, *, context: str = "t_plot") -> QtWidgets.QWidget:
         container = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -871,10 +967,15 @@ class MainWindow(QtWidgets.QMainWindow):
         row_layout.setContentsMargins(0, 0, 0, 0)
         radio = QtWidgets.QRadioButton(label)
         radio.setEnabled(enabled)
-        radio.setChecked(key == self.t_plot_thickness_method)
-        radio.toggled.connect(lambda checked, method_key=key: self._on_t_plot_thickness_method_changed(method_key, checked))
-        self.t_plot_method_radios[key] = radio
-        self.t_plot_method_group.addButton(radio)
+        radio.setChecked(key == self._thickness_method_for_context(context))
+        if context == "bjh":
+            radio.toggled.connect(lambda checked, method_key=key: self._on_bjh_thickness_method_changed(method_key, checked))
+            self.bjh_method_radios[key] = radio
+            self.bjh_method_group.addButton(radio)
+        else:
+            radio.toggled.connect(lambda checked, method_key=key: self._on_t_plot_thickness_method_changed(method_key, checked))
+            self.t_plot_method_radios[key] = radio
+            self.t_plot_method_group.addButton(radio)
         arrow = QtWidgets.QToolButton()
         arrow.setArrowType(QtCore.Qt.DownArrow)
         arrow.setAutoRaise(True)
@@ -882,26 +983,32 @@ class MainWindow(QtWidgets.QMainWindow):
         row_layout.addWidget(radio, 1)
         row_layout.addWidget(arrow)
 
-        formula = self._make_t_plot_formula_widget(key) if enabled else self._make_pending_formula_widget()
+        formula = self._make_t_plot_formula_widget(key, context=context) if enabled else self._make_pending_formula_widget()
         formula.setVisible(False)
-        arrow.clicked.connect(lambda _checked=False, method_key=key: self._toggle_t_plot_formula(method_key))
-        self.t_plot_formula_buttons[key] = arrow
-        self.t_plot_formula_widgets[key] = formula
-        self.t_plot_formula_expanded[key] = False
+        if context == "bjh":
+            arrow.clicked.connect(lambda _checked=False, method_key=key: self._toggle_bjh_formula(method_key))
+            self.bjh_formula_buttons[key] = arrow
+            self.bjh_formula_widgets[key] = formula
+            self.bjh_formula_expanded[key] = False
+        else:
+            arrow.clicked.connect(lambda _checked=False, method_key=key: self._toggle_t_plot_formula(method_key))
+            self.t_plot_formula_buttons[key] = arrow
+            self.t_plot_formula_widgets[key] = formula
+            self.t_plot_formula_expanded[key] = False
 
         layout.addLayout(row_layout)
         layout.addWidget(formula)
         return container
 
-    def _make_t_plot_formula_widget(self, method_key: str) -> QtWidgets.QWidget:
+    def _make_t_plot_formula_widget(self, method_key: str, *, context: str = "t_plot") -> QtWidgets.QWidget:
         if method_key in {"kjs", "harkins_jura"}:
-            return self._make_power_log_formula_widget(method_key)
+            return self._make_power_log_formula_widget(method_key, context=context)
         if method_key == "halsey":
-            return self._make_halsey_formula_widget()
+            return self._make_halsey_formula_widget(context=context)
         if method_key == "broekhoff_de_boer":
-            return self._make_broekhoff_de_boer_formula_widget()
+            return self._make_broekhoff_de_boer_formula_widget(context=context)
         if method_key == "carbon_black_stsa":
-            return self._make_carbon_black_stsa_formula_widget()
+            return self._make_carbon_black_stsa_formula_widget(context=context)
         return self._make_pending_formula_widget()
 
     def _make_param_spin_for_method(
@@ -913,19 +1020,29 @@ class MainWindow(QtWidgets.QMainWindow):
         decimals: int,
         *,
         width: int | None = None,
+        context: str = "t_plot",
     ) -> QtWidgets.QDoubleSpinBox:
-        params = self.t_plot_thickness_params_by_method.get(
+        params_by_method = (
+            self.bjh_thickness_params_by_method if context == "bjh" else self.t_plot_thickness_params_by_method
+        )
+        params = params_by_method.get(
             method_key,
             T_PLOT_THICKNESS_PARAM_DEFAULTS.get(method_key, DEFAULT_T_PLOT_THICKNESS_PARAMS),
         )
         spin = self._make_param_spin(params[param_key], minimum, maximum, decimals, width=width)
-        spin.valueChanged.connect(
-            lambda _value, changed_method=method_key: self._on_t_plot_thickness_param_changed(changed_method)
-        )
-        self.t_plot_param_spins.setdefault(method_key, {})[param_key] = spin
+        if context == "bjh":
+            spin.valueChanged.connect(
+                lambda _value, changed_method=method_key: self._on_bjh_thickness_param_changed(changed_method)
+            )
+            self.bjh_param_spins.setdefault(method_key, {})[param_key] = spin
+        else:
+            spin.valueChanged.connect(
+                lambda _value, changed_method=method_key: self._on_t_plot_thickness_param_changed(changed_method)
+            )
+            self.t_plot_param_spins.setdefault(method_key, {})[param_key] = spin
         return spin
 
-    def _make_power_log_formula_widget(self, method_key: str) -> QtWidgets.QWidget:
+    def _make_power_log_formula_widget(self, method_key: str, *, context: str = "t_plot") -> QtWidgets.QWidget:
         frame = QtWidgets.QFrame()
         frame.setFrameShape(QtWidgets.QFrame.StyledPanel)
         outer_layout = QtWidgets.QHBoxLayout(frame)
@@ -937,10 +1054,16 @@ class MainWindow(QtWidgets.QMainWindow):
         fraction_layout.setContentsMargins(0, 0, 0, 0)
         fraction_layout.setSpacing(3)
 
-        numerator_spin = self._make_param_spin_for_method(method_key, "numerator", -1000000.0, 1000000.0, 4, width=126)
-        offset_spin = self._make_param_spin_for_method(method_key, "offset", -1000.0, 1000.0, 5, width=126)
-        exponent_spin = self._make_param_spin_for_method(method_key, "exponent", -10.0, 10.0, 4, width=96)
-        if method_key == "harkins_jura":
+        numerator_spin = self._make_param_spin_for_method(
+            method_key, "numerator", -1000000.0, 1000000.0, 4, width=126, context=context
+        )
+        offset_spin = self._make_param_spin_for_method(
+            method_key, "offset", -1000.0, 1000.0, 5, width=126, context=context
+        )
+        exponent_spin = self._make_param_spin_for_method(
+            method_key, "exponent", -10.0, 10.0, 4, width=96, context=context
+        )
+        if method_key == "harkins_jura" and context == "t_plot":
             self.hj_numerator_spin = numerator_spin
             self.hj_offset_spin = offset_spin
             self.hj_exponent_spin = exponent_spin
@@ -973,7 +1096,7 @@ class MainWindow(QtWidgets.QMainWindow):
         outer_layout.addStretch(1)
         return frame
 
-    def _make_halsey_formula_widget(self) -> QtWidgets.QWidget:
+    def _make_halsey_formula_widget(self, *, context: str = "t_plot") -> QtWidgets.QWidget:
         frame = QtWidgets.QFrame()
         frame.setFrameShape(QtWidgets.QFrame.StyledPanel)
         outer_layout = QtWidgets.QHBoxLayout(frame)
@@ -981,9 +1104,15 @@ class MainWindow(QtWidgets.QMainWindow):
         outer_layout.setSpacing(5)
 
         outer_layout.addWidget(QtWidgets.QLabel("t ="))
-        prefactor_spin = self._make_param_spin_for_method("halsey", "prefactor", -1000000.0, 1000000.0, 4, width=112)
-        numerator_spin = self._make_param_spin_for_method("halsey", "numerator", -1000000.0, 1000000.0, 4, width=112)
-        exponent_spin = self._make_param_spin_for_method("halsey", "exponent", -10.0, 10.0, 4, width=96)
+        prefactor_spin = self._make_param_spin_for_method(
+            "halsey", "prefactor", -1000000.0, 1000000.0, 4, width=112, context=context
+        )
+        numerator_spin = self._make_param_spin_for_method(
+            "halsey", "numerator", -1000000.0, 1000000.0, 4, width=112, context=context
+        )
+        exponent_spin = self._make_param_spin_for_method(
+            "halsey", "exponent", -10.0, 10.0, 4, width=96, context=context
+        )
         outer_layout.addWidget(prefactor_spin)
         outer_layout.addWidget(QtWidgets.QLabel("("))
 
@@ -1010,7 +1139,7 @@ class MainWindow(QtWidgets.QMainWindow):
         outer_layout.addStretch(1)
         return frame
 
-    def _make_broekhoff_de_boer_formula_widget(self) -> QtWidgets.QWidget:
+    def _make_broekhoff_de_boer_formula_widget(self, *, context: str = "t_plot") -> QtWidgets.QWidget:
         frame = QtWidgets.QFrame()
         frame.setFrameShape(QtWidgets.QFrame.StyledPanel)
         outer_layout = QtWidgets.QHBoxLayout(frame)
@@ -1019,13 +1148,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
         outer_layout.addWidget(QtWidgets.QLabel("log(p/p°) ="))
         inverse_spin = self._make_param_spin_for_method(
-            "broekhoff_de_boer", "inverse_square", -1000000.0, 1000000.0, 4, width=116
+            "broekhoff_de_boer", "inverse_square", -1000000.0, 1000000.0, 4, width=116, context=context
         )
         factor_spin = self._make_param_spin_for_method(
-            "broekhoff_de_boer", "exponential_factor", -1000000.0, 1000000.0, 4, width=112
+            "broekhoff_de_boer", "exponential_factor", -1000000.0, 1000000.0, 4, width=112, context=context
         )
         rate_spin = self._make_param_spin_for_method(
-            "broekhoff_de_boer", "exponential_rate", -1000000.0, 1000000.0, 4, width=112
+            "broekhoff_de_boer", "exponential_rate", -1000000.0, 1000000.0, 4, width=112, context=context
         )
 
         fraction_layout = QtWidgets.QVBoxLayout()
@@ -1054,16 +1183,22 @@ class MainWindow(QtWidgets.QMainWindow):
         outer_layout.addStretch(1)
         return frame
 
-    def _make_carbon_black_stsa_formula_widget(self) -> QtWidgets.QWidget:
+    def _make_carbon_black_stsa_formula_widget(self, *, context: str = "t_plot") -> QtWidgets.QWidget:
         frame = QtWidgets.QFrame()
         frame.setFrameShape(QtWidgets.QFrame.StyledPanel)
         outer_layout = QtWidgets.QHBoxLayout(frame)
         outer_layout.setContentsMargins(8, 8, 8, 8)
         outer_layout.setSpacing(4)
 
-        constant_spin = self._make_param_spin_for_method("carbon_black_stsa", "constant", -1000000.0, 1000000.0, 4, width=108)
-        linear_spin = self._make_param_spin_for_method("carbon_black_stsa", "linear", -1000000.0, 1000000.0, 4, width=108)
-        quadratic_spin = self._make_param_spin_for_method("carbon_black_stsa", "quadratic", -1000000.0, 1000000.0, 4, width=108)
+        constant_spin = self._make_param_spin_for_method(
+            "carbon_black_stsa", "constant", -1000000.0, 1000000.0, 4, width=108, context=context
+        )
+        linear_spin = self._make_param_spin_for_method(
+            "carbon_black_stsa", "linear", -1000000.0, 1000000.0, 4, width=108, context=context
+        )
+        quadratic_spin = self._make_param_spin_for_method(
+            "carbon_black_stsa", "quadratic", -1000000.0, 1000000.0, 4, width=108, context=context
+        )
         outer_layout.addWidget(QtWidgets.QLabel("t ="))
         outer_layout.addWidget(constant_spin)
         outer_layout.addWidget(QtWidgets.QLabel("+"))
@@ -1123,6 +1258,29 @@ class MainWindow(QtWidgets.QMainWindow):
         expanded = any(self.t_plot_formula_expanded.values())
         panel.setFixedWidth(T_PLOT_PANEL_EXPANDED_WIDTH if expanded else T_PLOT_PANEL_COLLAPSED_WIDTH)
 
+    def _toggle_bjh_formula(self, key: str) -> None:
+        widget = self.bjh_formula_widgets.get(key)
+        button = self.bjh_formula_buttons.get(key)
+        if widget is None or button is None:
+            return
+        is_visible = not self.bjh_formula_expanded.get(key, False)
+        widget.setVisible(is_visible)
+        self.bjh_formula_expanded[key] = is_visible
+        button.setArrowType(QtCore.Qt.UpArrow if is_visible else QtCore.Qt.DownArrow)
+        self._update_bjh_options_panel_width()
+
+    def _update_bjh_options_panel_width(self, panel: QtWidgets.QWidget | None = None) -> None:
+        panel = panel or getattr(self, "bjh_options_panel", None)
+        if panel is None:
+            return
+        expanded = any(self.bjh_formula_expanded.values())
+        panel.setFixedWidth(BJH_PANEL_EXPANDED_WIDTH if expanded else BJH_PANEL_COLLAPSED_WIDTH)
+
+    def _thickness_method_for_context(self, context: str) -> str:
+        if context == "bjh":
+            return self.bjh_thickness_method
+        return self.t_plot_thickness_method
+
     def _on_t_plot_thickness_method_changed(self, method_key: str, checked: bool) -> None:
         if self._syncing_t_plot_controls:
             return
@@ -1171,6 +1329,63 @@ class MainWindow(QtWidgets.QMainWindow):
     def _set_all_t_plot_formula_spins(self) -> None:
         for method_key, params in self.t_plot_thickness_params_by_method.items():
             self._set_t_plot_formula_spins_for_method(method_key, params)
+
+    def _on_bjh_thickness_method_changed(self, method_key: str, checked: bool) -> None:
+        if self._syncing_bjh_controls or not checked:
+            return
+        self.bjh_thickness_method = method_key
+        self.bjh_thickness_params = dict(
+            self.bjh_thickness_params_by_method.get(
+                method_key,
+                T_PLOT_THICKNESS_PARAM_DEFAULTS.get(method_key, DEFAULT_T_PLOT_THICKNESS_PARAMS),
+            )
+        )
+        self._syncing_bjh_controls = True
+        try:
+            self._set_bjh_formula_spins_for_method(method_key, self.bjh_thickness_params)
+        finally:
+            self._syncing_bjh_controls = False
+        self.refresh_bjh_plot()
+
+    def _on_bjh_thickness_param_changed(self, method_key: str | None = None) -> None:
+        if self._syncing_bjh_controls:
+            return
+        method_key = method_key or self.bjh_thickness_method
+        params = self._read_bjh_thickness_params(method_key)
+        self.bjh_thickness_params_by_method[method_key] = dict(params)
+        if method_key == self.bjh_thickness_method:
+            self.bjh_thickness_params = dict(params)
+            self.refresh_bjh_plot()
+
+    def _read_bjh_thickness_params(self, method_key: str) -> dict[str, float]:
+        params = dict(T_PLOT_THICKNESS_PARAM_DEFAULTS.get(method_key, DEFAULT_T_PLOT_THICKNESS_PARAMS))
+        for param_key, spin in self.bjh_param_spins.get(method_key, {}).items():
+            params[param_key] = float(spin.value())
+        return params
+
+    def _set_bjh_formula_spins_for_method(self, method_key: str, params: dict[str, float]) -> None:
+        for param_key, spin in self.bjh_param_spins.get(method_key, {}).items():
+            if param_key in params:
+                spin.setValue(float(params[param_key]))
+
+    def _set_all_bjh_formula_spins(self) -> None:
+        for method_key, params in self.bjh_thickness_params_by_method.items():
+            self._set_bjh_formula_spins_for_method(method_key, params)
+
+    def _on_bjh_option_changed(self, *_args) -> None:
+        if self._syncing_bjh_controls:
+            return
+        if self.bjh_kjs_correction_radio.isChecked():
+            self.bjh_correction = "kjs"
+        elif self.bjh_faas_correction_radio.isChecked():
+            self.bjh_correction = "faas"
+        else:
+            self.bjh_correction = "standard"
+        self.bjh_open_pore_fraction = float(self.bjh_open_fraction_spin.value())
+        self.bjh_smooth_derivative = self.bjh_smooth_checkbox.isChecked()
+        self.bjh_show_adsorption = self.bjh_adsorption_checkbox.isChecked()
+        self.bjh_show_desorption = self.bjh_desorption_checkbox.isChecked()
+        self.refresh_bjh_plot()
 
     def _on_t_plot_surface_area_mode_changed(self) -> None:
         if self._syncing_t_plot_controls:
@@ -1679,7 +1894,26 @@ class MainWindow(QtWidgets.QMainWindow):
         self._refresh_bet_plot(active, p_min, p_max, reset_region=True)
         self._refresh_langmuir_plot(active, p_min, p_max, reset_region=True)
         self._refresh_t_plot_plot(active, p_min, p_max, reset_region=True)
-        plot_pore_distribution_placeholder(self.pore_plot)
+        self.refresh_bjh_plot()
+
+    def refresh_bjh_plot(self) -> None:
+        if not self.results:
+            plot_pore_distribution_placeholder(self.pore_plot)
+            return
+        plot_bjh_distribution_multi(
+            self.pore_plot,
+            self.results,
+            self.visible_results,
+            self.sample_colors,
+            active_index=self.active_index,
+            thickness_method=self.bjh_thickness_method,
+            thickness_params=self.bjh_thickness_params,
+            correction=self.bjh_correction,
+            open_pore_fraction=self.bjh_open_pore_fraction,
+            show_adsorption=self.bjh_show_adsorption,
+            show_desorption=self.bjh_show_desorption,
+            smooth=self.bjh_smooth_derivative,
+        )
 
     def _update_analysis_plots_for_region(self) -> None:
         """等温线选区变化时调用：刷新三个分析图但保留各自的拟合选区。"""
