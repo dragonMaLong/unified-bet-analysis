@@ -732,6 +732,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.plot_tabs.addTab(self.langmuir_tab, "Langmuir")
         self.plot_tabs.addTab(self.t_plot_tab, "t-Plot")
         self.plot_tabs.addTab(self.bjh_tab, "BJH")
+        self.plot_tabs.currentChanged.connect(self.on_plot_tab_changed)
 
         self.isotherm_table = self._make_table(
             [
@@ -2070,12 +2071,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self.refresh_isotherm_plot()
         self.refresh_analysis_plots()
 
+    def on_plot_tab_changed(self, _index: int) -> None:
+        if self._isotherm_region_custom:
+            return
+        self.refresh_isotherm_plot()
+        self.refresh_analysis_plots()
+
     def refresh_isotherm_plot(self) -> None:
-        raw_region = self._current_pressure_region()
+        raw_region = self._current_pressure_region() if self._isotherm_region_custom else None
         pressure = self._all_pressure_values()
         selected_range = None
         if pressure.size:
-            selected_range = self._clamp_pressure_region(raw_region or self._default_pressure_region(pressure), pressure)
+            selected_range = self._clamp_pressure_region(raw_region or self._default_isotherm_region(pressure), pressure)
         self._remove_region()
         self._remove_isotherm_selection()
         plot_isotherm_multi(self.isotherm_plot, self.results, self.visible_results, self.sample_colors, active_index=self.active_index)
@@ -2863,6 +2870,22 @@ class MainWindow(QtWidgets.QMainWindow):
             return [bet_min, bet_max]
         span = data_max - data_min
         return [data_min + span * 0.25, data_min + span * 0.55]
+
+    def _default_isotherm_region(self, pressure: np.ndarray) -> list[float]:
+        if self._is_bjh_tab_active():
+            return self._full_pressure_region(pressure)
+        return self._default_pressure_region(pressure)
+
+    @staticmethod
+    def _full_pressure_region(pressure: np.ndarray) -> list[float]:
+        data_min = float(np.nanmin(pressure))
+        data_max = float(np.nanmax(pressure))
+        if data_min == data_max:
+            return [data_min - 0.01, data_max + 0.01]
+        return [data_min, data_max]
+
+    def _is_bjh_tab_active(self) -> bool:
+        return getattr(self, "plot_tabs", None) is not None and self.plot_tabs.currentWidget() is self.bjh_tab
 
     def _clamp_pressure_region(self, raw_region: list[float] | tuple[float, float], pressure: np.ndarray) -> list[float]:
         data_min = float(np.nanmin(pressure))
