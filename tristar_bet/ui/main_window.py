@@ -18,6 +18,7 @@ from tristar_bet.analysis import (
     THICKNESS_METHOD_DEFAULT_PARAMS,
     analysis_bundle,
     bet_analysis,
+    bjh_pore_volume_cm3_g,
     density_conversion_factor,
     langmuir_analysis,
     t_plot_analysis_by_thickness,
@@ -409,6 +410,7 @@ TEST_TIME_COLUMN = 2
 BET_COLUMN = 3
 LANGMUIR_COLUMN = 4
 T_PLOT_COLUMN = 5
+BJH_PORE_VOLUME_COLUMN = 6
 BET_DEFAULT_RANGE = (0.05, 0.30)
 BET_PLOT_RANGE = (0.0, 1.0)
 LANGMUIR_DEFAULT_RANGE = (0.05, 0.30)
@@ -486,6 +488,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.bet_sort_ascending = False
         self.langmuir_sort_ascending = False
         self.t_plot_sort_ascending = False
+        self.bjh_pore_sort_ascending = False
         self.region = None
         self._isotherm_selection_items = []
         self.bet_region = None
@@ -518,7 +521,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.bjh_open_pore_fraction = 0.0
         self.bjh_smooth_derivative = True
         self.bjh_show_adsorption = True
-        self.bjh_show_desorption = True
+        self.bjh_show_desorption = False
         self.region_is_log = False
         self._metrics_pending = False
         self._bet_region_pending = False
@@ -567,9 +570,9 @@ class MainWindow(QtWidgets.QMainWindow):
             """
         )
 
-        self.sample_table = SampleTableWidget(0, 6)
+        self.sample_table = SampleTableWidget(0, 7)
         self.sample_table.setHorizontalHeaderLabels(
-            ["", "文件名", "测试时间", "BET(m2/g)", "Langmuir(m2/g)", "t-Plot外比(m2/g)"]
+            ["", "文件名", "测试时间", "BET(m2/g)", "Langmuir(m2/g)", "t-Plot外比(m2/g)", "2-10nm孔容量(cm3/g)"]
         )
         sample_header = self.sample_table.horizontalHeader()
         sample_header.setVisible(True)
@@ -587,6 +590,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sample_table.horizontalHeaderItem(LANGMUIR_COLUMN).setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
         self.sample_table.horizontalHeaderItem(T_PLOT_COLUMN).setToolTip("点击按t-Plot外比表面积排序")
         self.sample_table.horizontalHeaderItem(T_PLOT_COLUMN).setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        self.sample_table.horizontalHeaderItem(BJH_PORE_VOLUME_COLUMN).setToolTip("点击按 BJH 2-10 nm 孔容量排序")
+        self.sample_table.horizontalHeaderItem(BJH_PORE_VOLUME_COLUMN).setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
         self.sample_table.verticalHeader().setVisible(False)
         self.sample_table.verticalHeader().setDefaultSectionSize(28)
         self.sample_table.sync_frozen_row_heights()
@@ -603,6 +608,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sample_table.setColumnWidth(BET_COLUMN, 120)
         self.sample_table.setColumnWidth(LANGMUIR_COLUMN, 200)
         self.sample_table.setColumnWidth(T_PLOT_COLUMN, 200)
+        self.sample_table.setColumnWidth(BJH_PORE_VOLUME_COLUMN, 190)
         self.sample_table.setItemDelegate(_NoFocusDelegate(self.sample_table))
         self.sample_table._frozen_table.setItemDelegate(_FrozenColumnsDelegate(self.sample_table._frozen_table))
         self.sample_table.itemChanged.connect(self.on_sample_item_changed)
@@ -942,9 +948,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self.bjh_adsorption_checkbox = QtWidgets.QCheckBox("BJH 吸附")
         self.bjh_desorption_checkbox = QtWidgets.QCheckBox("BJH 脱附")
         self.bjh_adsorption_checkbox.setChecked(True)
-        self.bjh_desorption_checkbox.setChecked(True)
+        self.bjh_desorption_checkbox.setChecked(False)
         self.bjh_adsorption_checkbox.stateChanged.connect(self._on_bjh_option_changed)
         self.bjh_desorption_checkbox.stateChanged.connect(self._on_bjh_option_changed)
+
+        self.bjh_default_button = QtWidgets.QPushButton("默认")
+        self.bjh_default_button.setToolTip("重置 BJH 厚度曲线、校正参数和显示分支")
+        self.bjh_default_button.clicked.connect(self.reset_bjh_to_default)
+        default_button_row = QtWidgets.QHBoxLayout()
+        default_button_row.setContentsMargins(0, 0, 0, 0)
+        default_button_row.addWidget(self.bjh_default_button)
+        default_button_row.addStretch(1)
 
         panel_layout.addWidget(thickness_group)
         panel_layout.addWidget(correction_group)
@@ -953,6 +967,7 @@ class MainWindow(QtWidgets.QMainWindow):
         panel_layout.addWidget(self.bjh_smooth_checkbox)
         panel_layout.addWidget(self.bjh_adsorption_checkbox)
         panel_layout.addWidget(self.bjh_desorption_checkbox)
+        panel_layout.addLayout(default_button_row)
         panel_layout.addStretch(1)
         self._update_bjh_options_panel_width(panel)
         return panel
@@ -1346,6 +1361,7 @@ class MainWindow(QtWidgets.QMainWindow):
         finally:
             self._syncing_bjh_controls = False
         self.refresh_bjh_plot()
+        self._refresh_all_sample_bjh_pore_cells()
 
     def _on_bjh_thickness_param_changed(self, method_key: str | None = None) -> None:
         if self._syncing_bjh_controls:
@@ -1356,6 +1372,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if method_key == self.bjh_thickness_method:
             self.bjh_thickness_params = dict(params)
             self.refresh_bjh_plot()
+            self._refresh_all_sample_bjh_pore_cells()
 
     def _read_bjh_thickness_params(self, method_key: str) -> dict[str, float]:
         params = dict(T_PLOT_THICKNESS_PARAM_DEFAULTS.get(method_key, DEFAULT_T_PLOT_THICKNESS_PARAMS))
@@ -1386,6 +1403,33 @@ class MainWindow(QtWidgets.QMainWindow):
         self.bjh_show_adsorption = self.bjh_adsorption_checkbox.isChecked()
         self.bjh_show_desorption = self.bjh_desorption_checkbox.isChecked()
         self.refresh_bjh_plot()
+        self._refresh_all_sample_bjh_pore_cells()
+
+    def reset_bjh_to_default(self) -> None:
+        default_params_by_method = _default_t_plot_thickness_params_by_method()
+        self._syncing_bjh_controls = True
+        try:
+            self.bjh_thickness_method = DEFAULT_T_PLOT_THICKNESS_METHOD
+            self.bjh_thickness_params_by_method = default_params_by_method
+            self.bjh_thickness_params = dict(default_params_by_method[DEFAULT_T_PLOT_THICKNESS_METHOD])
+            self.bjh_correction = "standard"
+            self.bjh_open_pore_fraction = 0.0
+            self.bjh_smooth_derivative = True
+            self.bjh_show_adsorption = True
+            self.bjh_show_desorption = False
+
+            for key, radio in self.bjh_method_radios.items():
+                radio.setChecked(key == self.bjh_thickness_method)
+            self._set_all_bjh_formula_spins()
+            self.bjh_standard_radio.setChecked(True)
+            self.bjh_open_fraction_spin.setValue(0.0)
+            self.bjh_smooth_checkbox.setChecked(True)
+            self.bjh_adsorption_checkbox.setChecked(True)
+            self.bjh_desorption_checkbox.setChecked(False)
+        finally:
+            self._syncing_bjh_controls = False
+        self.refresh_bjh_plot()
+        self._refresh_all_sample_bjh_pore_cells()
 
     def _on_t_plot_surface_area_mode_changed(self) -> None:
         if self._syncing_t_plot_controls:
@@ -1629,6 +1673,9 @@ class MainWindow(QtWidgets.QMainWindow):
         elif section == T_PLOT_COLUMN:
             self.t_plot_sort_ascending = not self.t_plot_sort_ascending
             self.sort_samples_by_t_plot(self.t_plot_sort_ascending)
+        elif section == BJH_PORE_VOLUME_COLUMN:
+            self.bjh_pore_sort_ascending = not self.bjh_pore_sort_ascending
+            self.sort_samples_by_bjh_pore_volume(self.bjh_pore_sort_ascending)
 
     def on_sample_header_resized(self, logical_index: int, old_size: int, new_size: int) -> None:
         self._position_header_controls()
@@ -1728,6 +1775,20 @@ class MainWindow(QtWidgets.QMainWindow):
                     break
         self.refresh_all()
 
+    def sort_samples_by_bjh_pore_volume(self, ascending: bool) -> None:
+        active = self.active_result()
+        rows = list(zip(self.results, self.visible_results))
+        rows.sort(key=lambda row: self._bjh_pore_volume_sort_key(row[0]), reverse=not ascending)
+        self.results = [row[0] for row in rows]
+        self.visible_results = [row[1] for row in rows]
+        self.active_index = 0
+        if active is not None:
+            for index, result in enumerate(self.results):
+                if result is active:
+                    self.active_index = index
+                    break
+        self.refresh_all()
+
     def move_sample_row(self, source_index: int, insert_index: int) -> None:
         if len(self.results) < 2 or not (0 <= source_index < len(self.results)):
             return
@@ -1801,6 +1862,13 @@ class MainWindow(QtWidgets.QMainWindow):
                 )
                 self._style_sample_t_plot_item(t_plot_item, result)
                 self.sample_table.setItem(row, T_PLOT_COLUMN, t_plot_item)
+
+                bjh_volume_item = self._table_item(
+                    _fmt(self._bjh_pore_volume_for_result(result)),
+                    alignment=QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter,
+                )
+                bjh_volume_item.setToolTip("BJH 2-10 nm 孔容量，按当前 BJH 厚度曲线参数计算")
+                self.sample_table.setItem(row, BJH_PORE_VOLUME_COLUMN, bjh_volume_item)
             if self.results and self.active_index >= 0:
                 self.sample_table.selectRow(min(self.active_index, len(self.results) - 1))
             self._sync_select_all_state()
@@ -1840,6 +1908,21 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self._style_sample_t_plot_item(t_plot_item, result)
         self.sample_table.setItem(row, T_PLOT_COLUMN, t_plot_item)
+
+    def _refresh_sample_bjh_pore_cell(self, row: int) -> None:
+        if row < 0 or row >= len(self.results):
+            return
+        result = self.results[row]
+        item = self._table_item(
+            _fmt(self._bjh_pore_volume_for_result(result)),
+            alignment=QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter,
+        )
+        item.setToolTip("BJH 2-10 nm 孔容量，按当前 BJH 厚度曲线参数计算")
+        self.sample_table.setItem(row, BJH_PORE_VOLUME_COLUMN, item)
+
+    def _refresh_all_sample_bjh_pore_cells(self) -> None:
+        for row in range(len(self.results)):
+            self._refresh_sample_bjh_pore_cell(row)
 
     def _style_sample_bet_item(self, item: QtWidgets.QTableWidgetItem, result) -> None:
         if not self._is_custom_bet_fit(result):
@@ -1900,6 +1983,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self.results:
             plot_pore_distribution_placeholder(self.pore_plot)
             return
+        pressure_range = self._current_pressure_region()
         plot_bjh_distribution_multi(
             self.pore_plot,
             self.results,
@@ -1913,6 +1997,7 @@ class MainWindow(QtWidgets.QMainWindow):
             show_adsorption=self.bjh_show_adsorption,
             show_desorption=self.bjh_show_desorption,
             smooth=self.bjh_smooth_derivative,
+            pressure_range=pressure_range,
         )
 
     def _update_analysis_plots_for_region(self) -> None:
@@ -1925,6 +2010,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._refresh_bet_plot(active, p_min, p_max, reset_region=False)
         self._refresh_langmuir_plot(active, p_min, p_max, reset_region=False)
         self._refresh_t_plot_plot(active, p_min, p_max, reset_region=False)
+        self.refresh_bjh_plot()
 
     def _visible_analysis_indices(self) -> list[int]:
         draw_order = [i for i in range(len(self.results)) if i != self.active_index]
@@ -2891,6 +2977,35 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception:
             return 0.0
 
+    def _bjh_pore_volume_sort_key(self, result) -> float:
+        try:
+            value = self._bjh_pore_volume_for_result(result)
+            return float(value) if value is not None else 0.0
+        except Exception:
+            return 0.0
+
+    def _bjh_pore_volume_for_result(self, result) -> float | None:
+        phase = self._bjh_pore_volume_phase()
+        if phase is None:
+            return None
+        return bjh_pore_volume_cm3_g(
+            result,
+            2.0,
+            10.0,
+            phase=phase,
+            thickness_method=self.bjh_thickness_method,
+            thickness_params=self.bjh_thickness_params,
+            correction=self.bjh_correction,
+            open_pore_fraction=self.bjh_open_pore_fraction,
+        )
+
+    def _bjh_pore_volume_phase(self) -> str | None:
+        if self.bjh_show_adsorption:
+            return "adsorption"
+        if self.bjh_show_desorption:
+            return "desorption"
+        return None
+
     def _resize_sample_columns(self) -> None:
         defaults = {
             VISIBLE_COLUMN: 30,
@@ -2899,6 +3014,7 @@ class MainWindow(QtWidgets.QMainWindow):
             BET_COLUMN: 120,
             LANGMUIR_COLUMN: 200,
             T_PLOT_COLUMN: 200,
+            BJH_PORE_VOLUME_COLUMN: 190,
         }
         self._updating_sample_column_widths = True
         try:

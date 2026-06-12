@@ -443,6 +443,36 @@ def bjh_pore_distribution(
     return PoreDistributionResult("BJH", phase, "ok", len(distribution_rows), rows=distribution_rows)
 
 
+def bjh_pore_volume_cm3_g(
+    result: TriStarResult,
+    diameter_min_nm: float = 2.0,
+    diameter_max_nm: float = 10.0,
+    phase: str = "adsorption",
+    thickness_method: str = DEFAULT_THICKNESS_METHOD,
+    thickness_params: dict[str, float] | None = None,
+    correction: str = "standard",
+    open_pore_fraction: float = 0.0,
+) -> float | None:
+    distribution = bjh_pore_distribution(
+        result,
+        phase=phase,
+        thickness_method=thickness_method,
+        thickness_params=thickness_params,
+        correction=correction,
+        open_pore_fraction=open_pore_fraction,
+        smooth=False,
+    )
+    if not distribution.rows:
+        return None
+    lo, hi = sorted((float(diameter_min_nm), float(diameter_max_nm)))
+    volume = 0.0
+    for row in distribution.rows:
+        diameter = float(row["pore_diameter_nm"])
+        if lo <= diameter <= hi:
+            volume += float(row["incremental_pore_volume_cm3_g"])
+    return volume
+
+
 def kelvin_radius_nm(relative_pressure: float, temperature_k: float = 77.350) -> float | None:
     if not (0.0 < relative_pressure < 1.0) or temperature_k <= 0.0:
         return None

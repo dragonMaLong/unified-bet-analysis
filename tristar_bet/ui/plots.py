@@ -652,12 +652,13 @@ def plot_bjh_distribution_multi(
     show_adsorption: bool = True,
     show_desorption: bool = True,
     smooth: bool = True,
+    pressure_range: tuple[float, float] | None = None,
 ) -> None:
     plot.clear()
     plot.setTitle("BJH 孔径分布")
     plot.setLabel("left", "dV/dlogD (cm3/g)")
     plot.setLabel("bottom", "孔径 (nm)")
-    plot.setLogMode(x=False, y=False)
+    plot.setLogMode(x=True, y=False)
     all_x = []
     all_y = []
     phases: list[tuple[str, bool, QtCore.Qt.PenStyle]] = [
@@ -684,10 +685,11 @@ def plot_bjh_distribution_multi(
                 open_pore_fraction=open_pore_fraction,
                 smooth=smooth,
             )
-            if not distribution.rows:
+            rows = _bjh_rows_in_pressure_range(distribution.rows, pressure_range)
+            if not rows:
                 continue
-            x = np.asarray([row["pore_diameter_nm"] for row in distribution.rows], dtype=float)
-            y = np.asarray([row["differential_pore_volume_cm3_g"] for row in distribution.rows], dtype=float)
+            x = np.asarray([row["pore_diameter_nm"] for row in rows], dtype=float)
+            y = np.asarray([row["differential_pore_volume_cm3_g"] for row in rows], dtype=float)
             mask = np.isfinite(x) & np.isfinite(y) & (x > 0.0) & (y >= 0.0)
             if not np.any(mask):
                 continue
@@ -713,7 +715,7 @@ def plot_bjh_distribution_multi(
             all_y.extend(y.tolist())
 
     if all_x:
-        _fit_range(plot, all_x, all_y)
+        _fit_range(plot, all_x, all_y, x_log=True)
     else:
         _plot_message(plot, "当前样品没有足够的 BJH 孔径分布点")
 
@@ -723,8 +725,21 @@ def plot_pore_distribution_placeholder(plot: pg.PlotWidget) -> None:
     plot.setTitle("BJH 孔径分布")
     plot.setLabel("left", "dV/dlogD (cm3/g)")
     plot.setLabel("bottom", "孔径 (nm)")
-    plot.setLogMode(x=False, y=False)
+    plot.setLogMode(x=True, y=False)
     _plot_message(plot, "当前没有可显示的 BJH 孔径分布")
+
+
+def _bjh_rows_in_pressure_range(rows, pressure_range: tuple[float, float] | None):
+    if pressure_range is None:
+        return rows
+    pressure_min, pressure_max = sorted((float(pressure_range[0]), float(pressure_range[1])))
+    filtered = []
+    for row in rows:
+        interval_min = min(float(row["relative_pressure_low"]), float(row["relative_pressure_high"]))
+        interval_max = max(float(row["relative_pressure_low"]), float(row["relative_pressure_high"]))
+        if interval_max >= pressure_min and interval_min <= pressure_max:
+            filtered.append(row)
+    return filtered
 
 
 def _plot_points(plot: pg.PlotWidget, points, color: str, name: str | None, *, solid: bool, width: int = 2) -> None:
@@ -848,14 +863,18 @@ def _range_text(analysis: FitResult, fallback: str) -> str:
     return f"当前区间 {_plain_number(analysis.pressure_min)}-{_plain_number(analysis.pressure_max)}"
 
 
-def _fit_range(plot: pg.PlotWidget, x_values, y_values) -> None:
+def _fit_range(plot: pg.PlotWidget, x_values, y_values, *, x_log: bool = False) -> None:
     x = np.asarray(x_values, dtype=float)
     y = np.asarray(y_values, dtype=float)
     mask = np.isfinite(x) & np.isfinite(y)
+    if x_log:
+        mask &= x > 0.0
     if not np.any(mask):
         return
     x = x[mask]
     y = y[mask]
+    if x_log:
+        x = np.log10(x)
     x_min = float(np.nanmin(x))
     x_max = float(np.nanmax(x))
     y_min = float(np.nanmin(y))
