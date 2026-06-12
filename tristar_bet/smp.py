@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import math
+import re
 import struct
 from datetime import datetime
 from pathlib import Path
@@ -62,8 +63,11 @@ class TriStarSmpParser:
         free_space = self._parse_free_space(blocks.get(303, b""), self._payload_size(subsets, 303), run_conditions)
         po_records = self._parse_po_records(blocks.get(303, b""), self._payload_size(subsets, 303))
         isotherm = self._parse_isotherm(blocks.get(303, b""), po_records, sample, free_space)
+        if not isotherm:
+            isotherm = self._parse_microactive_isotherm(blocks.get(303, b""), self._payload_size(subsets, 303))
         adsorptive_properties = self._parse_adsorptive_properties(blocks.get(320, b""))
         method_options = self._parse_method_options(blocks.get(302, b""), blocks.get(725, b""), blocks.get(320, b""))
+        method_options.update(self._parse_instrument_info(blocks))
         log_messages = self._parse_log_messages(blocks.get(705, b""))
         sample_tube_strings = self._read_mic_strings(blocks.get(1021, b""))
         raw_strings = {
@@ -190,6 +194,20 @@ class TriStarSmpParser:
 
         adsorptive_short = _first_string_at_or_after(strings, 2890, max_offset=2905)
         adsorptive_name = _first_string_at_or_after(strings, 2905, max_offset=2940)
+        if not adsorptive_short:
+            adsorptive_short = _first_string_at_or_after(strings, 330, max_offset=360)
+        if not adsorptive_name:
+            adsorptive_name = _first_string_at_or_after(strings, 4490, max_offset=4540)
+        if "@" not in adsorptive_name:
+            adsorptive_name = next((item.text for item in strings if "@" in item.text and "K" in item.text), adsorptive_name)
+        bath_temperature = _read_double(block, 2881)
+        if bath_temperature is None or not (50.0 < bath_temperature < 150.0):
+            bath_temperature = _temperature_from_text(adsorptive_name)
+        if bath_temperature is None and (adsorptive_short.upper() == "N2" or "NITROGEN" in adsorptive_name.upper()):
+            bath_temperature = 77.35
+        po_reference = _read_double(block, 2873)
+        if po_reference is not None and not (100.0 < po_reference < 1000.0):
+            po_reference = None
 
         return RunConditions(
             evacuation_rate_mmHg_s=_read_double(block, 61),
@@ -201,8 +219,8 @@ class TriStarSmpParser:
             ambient_free_space_entered_cm3=_read_double(block, 120),
             analysis_free_space_entered_cm3=_read_double(block, 128),
             desorption_test_time_s=_read_uint32(block, 138),
-            po_reference_mmHg=_read_double(block, 2873),
-            bath_temperature_K=_read_double(block, 2881),
+            po_reference_mmHg=po_reference,
+            bath_temperature_K=bath_temperature,
             adsorptive_short=adsorptive_short,
             adsorptive_name=adsorptive_name,
         )
@@ -363,6 +381,68 @@ class TriStarSmpParser:
             )
         return points
 
+    def _parse_microactive_isotherm(self, block: bytes, payload_size: int) -> list[IsothermPoint]:
+        if not block or payload_size <= 0:
+            return []
+        strings = self._read_mic_strings(block)
+        if not any("MicroActive for TriStar II Plus" in item.text for item in strings):
+            return []
+
+        rows = self._scan_microactive_point_rows(block, payload_size)
+        if len(rows) < 3:
+            return []
+
+        max_index = max(range(len(rows)), key=lambda idx: rows[idx][2])
+        points: list[IsothermPoint] = []
+        for idx, (rel, absolute, relative, quantity) in enumerate(rows, start=1):
+            phase = "adsorption" if idx - 1 <= max_index else "desorption"
+            saturation_pressure = absolute / relative if relative else None
+            elapsed = _read_uint32(block, rel + 24)
+            if elapsed is not None and not (0 <= elapsed <= 60 * 60 * 24 * 30):
+                elapsed = None
+            points.append(
+                IsothermPoint(
+                    index=idx,
+                    phase=phase,
+                    record_rel_offset=rel,
+                    absolute_pressure_mmHg=absolute,
+                    relative_pressure=relative,
+                    raw_internal_cm3_stp=quantity,
+                    saturation_pressure_mmHg=saturation_pressure,
+                    elapsed_seconds=elapsed,
+                    quantity_adsorbed_cm3_g_stp=quantity,
+                    quantity_adsorbed_mmol_g=quantity / CM3_STP_PER_MMOL,
+                )
+            )
+        return points
+
+    def _scan_microactive_point_rows(self, block: bytes, payload_size: int) -> list[tuple[int, float, float, float]]:
+        limit = min(len(block), payload_size + 18)
+        best: list[tuple[int, float, float, float]] = []
+        for gap in range(40, 91):
+            start_limit = min(900, max(101, limit - 24))
+            for start in range(100, start_limit):
+                rows: list[tuple[int, float, float, float]] = []
+                rel = start
+                while rel + 28 <= limit:
+                    absolute, relative, quantity = struct.unpack_from("<ddd", block, rel)
+                    if not self._is_valid_microactive_point(absolute, relative, quantity):
+                        break
+                    rows.append((rel, absolute, relative, quantity))
+                    rel += gap
+                if len(rows) > len(best):
+                    best = rows
+        return best
+
+    @staticmethod
+    def _is_valid_microactive_point(absolute: float, relative: float, quantity: float) -> bool:
+        if not (math.isfinite(absolute) and math.isfinite(relative) and math.isfinite(quantity)):
+            return False
+        if not (0.001 < absolute < 1200.0 and 1e-8 < relative < 1.2 and -1000.0 < quantity < 100000.0):
+            return False
+        saturation = absolute / relative
+        return 100.0 < saturation < 1000.0
+
     def _scan_isotherm_record_offsets(self, block: bytes, po_records: Sequence[PoRecord]) -> list[int]:
         offsets: list[int] = []
         rel = 136
@@ -430,7 +510,8 @@ class TriStarSmpParser:
         if not block:
             return None
         strings = self._read_mic_strings(block)
-        if len(block) > 600:
+        has_long_mnemonic_slot = any(item.rel_offset == 71 for item in strings)
+        if len(block) > 600 or has_long_mnemonic_slot:
             name_rel = 26
             mnemonic_rel = 71
             max_rel = 79
@@ -571,6 +652,34 @@ class TriStarSmpParser:
                     "adsorptive_molecular_weight_rel121": _read_double(adsorptive_block, 121),
                 }
             )
+        return options
+
+    def _parse_instrument_info(self, blocks: dict[int, bytes]) -> dict[str, object]:
+        texts: list[str] = []
+        for subset_id in (303, 705, 302, 304, 320, 322, 330):
+            texts.extend(item.text for item in self._read_mic_strings(blocks.get(subset_id, b"")) if item.text)
+        joined = "\n".join(texts)
+
+        software = ""
+        for text in texts:
+            if "MicroActive for TriStar II Plus" in text or "TriStar II 3020 Version" in text:
+                software = text
+                break
+
+        manufacturer = "Micromeritics" if "TriStar" in joined or "MicroActive" in joined else ""
+        model = ""
+        if "TriStar II Plus" in joined:
+            model = "TriStar II Plus"
+        elif "TriStar II 3020" in joined:
+            model = "TriStar II 3020"
+
+        options: dict[str, object] = {}
+        if manufacturer:
+            options["instrument_manufacturer"] = manufacturer
+        if model:
+            options["instrument_model"] = model
+        if software:
+            options["instrument_software"] = software
         return options
 
     def _parse_log_messages(self, block: bytes) -> list[MicString]:
@@ -867,6 +976,14 @@ def _timestamp_text(raw: int) -> str:
         return datetime.fromtimestamp(raw).strftime("%Y-%m-%d %H:%M:%S")
     except (OSError, OverflowError, ValueError):
         return ""
+
+
+def _temperature_from_text(text: str) -> float | None:
+    match = re.search(r"@\s*([0-9]+(?:\.[0-9]+)?)\s*K", text or "", flags=re.IGNORECASE)
+    if not match:
+        return None
+    value = float(match.group(1))
+    return value if 50.0 < value < 150.0 else None
 
 
 def _marker_text(raw: bytes) -> str:

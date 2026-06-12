@@ -3319,6 +3319,8 @@ def active_metric_rows(
         ("文件名", _display_file_name(result)),
         ("样品名称", result.sample_name),
         ("测试时间", result.header.created_time),
+        ("设备厂家", _instrument_manufacturer(result)),
+        ("设备型号", _instrument_model(result)),
         ("当前选区", _pressure_range_text(pressure_range)),
     ]
     if bet_fit_range is not None:
@@ -3342,7 +3344,7 @@ def active_metric_rows(
     )
     rows += [
         ("样品质量", f"{_fmt(result.sample.sample_mass_g)} g"),
-        ("吸附质", result.run_conditions.adsorptive_short or result.run_conditions.adsorptive_name),
+        ("吸附质", _adsorptive_label(result)),
         ("数据点数", str(result.point_count)),
         ("BET 状态", status_text(bet.status)),
         ("BET 比表面积", f"{_fmt(bet.surface_area_m2_g)} m2/g"),
@@ -3423,6 +3425,26 @@ def status_text(status: str) -> str:
 
 def _display_file_name(result) -> str:
     return Path(result.file_name).stem
+
+
+def _instrument_manufacturer(result) -> str:
+    value = result.method_options.get("instrument_manufacturer", "")
+    return str(value) if value else "Micromeritics"
+
+
+def _instrument_model(result) -> str:
+    value = result.method_options.get("instrument_model", "")
+    return str(value) if value else "TriStar II"
+
+
+def _adsorptive_label(result) -> str:
+    value = result.run_conditions.adsorptive_short or result.run_conditions.adsorptive_name
+    if value:
+        return value
+    props = result.adsorptive_properties
+    if props is not None:
+        return props.mnemonic or props.adsorptive
+    return ""
 
 
 def _pressure_range_text(pressure_range: tuple[float, float] | None) -> str:

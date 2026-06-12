@@ -371,6 +371,8 @@ def bjh_pore_distribution(
 
     density_factor = density_conversion_factor(result)
     temperature_k = result.run_conditions.bath_temperature_K or 77.350
+    if not (50.0 < float(temperature_k) < 150.0):
+        temperature_k = 77.350
     base_rows: list[dict[str, float]] = []
     for point in points:
         pressure = float(point.relative_pressure)
