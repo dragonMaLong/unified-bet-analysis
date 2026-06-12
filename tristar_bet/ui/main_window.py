@@ -484,6 +484,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.custom_langmuir_fit_ranges: dict[int, tuple[float, float]] = {}
         self.custom_t_plot_fit_ranges: dict[int, tuple[float, float]] = {}
         self.custom_t_plot_settings: dict[int, dict[str, object]] = {}
+        self.custom_bjh_settings: dict[int, dict[str, object]] = {}
         self._updating_table = False
         self._updating_sample_checks = False
         self._updating_sample_column_widths = False
@@ -1367,8 +1368,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self._set_bjh_formula_spins_for_method(method_key, self.bjh_thickness_params)
         finally:
             self._syncing_bjh_controls = False
+        self._save_bjh_settings_for_active()
         self.refresh_bjh_plot()
-        self._refresh_all_sample_bjh_pore_cells()
+        self._refresh_sample_bjh_pore_cell(self.active_index)
 
     def _on_bjh_thickness_param_changed(self, method_key: str | None = None) -> None:
         if self._syncing_bjh_controls:
@@ -1378,8 +1380,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.bjh_thickness_params_by_method[method_key] = dict(params)
         if method_key == self.bjh_thickness_method:
             self.bjh_thickness_params = dict(params)
+        self._save_bjh_settings_for_active()
+        if method_key == self.bjh_thickness_method:
             self.refresh_bjh_plot()
-            self._refresh_all_sample_bjh_pore_cells()
+            self._refresh_sample_bjh_pore_cell(self.active_index)
 
     def _read_bjh_thickness_params(self, method_key: str) -> dict[str, float]:
         params = dict(T_PLOT_THICKNESS_PARAM_DEFAULTS.get(method_key, DEFAULT_T_PLOT_THICKNESS_PARAMS))
@@ -1409,8 +1413,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.bjh_smooth_derivative = self.bjh_smooth_checkbox.isChecked()
         self.bjh_show_adsorption = self.bjh_adsorption_checkbox.isChecked()
         self.bjh_show_desorption = self.bjh_desorption_checkbox.isChecked()
+        self._save_bjh_settings_for_active()
         self.refresh_bjh_plot()
-        self._refresh_all_sample_bjh_pore_cells()
+        self._refresh_sample_bjh_pore_cell(self.active_index)
 
     def reset_bjh_to_default(self) -> None:
         default_params_by_method = _default_t_plot_thickness_params_by_method()
@@ -1435,8 +1440,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self.bjh_desorption_checkbox.setChecked(DEFAULT_BJH_SHOW_DESORPTION)
         finally:
             self._syncing_bjh_controls = False
+        active = self.active_result()
+        if active is not None:
+            self.custom_bjh_settings.pop(id(active), None)
         self.refresh_bjh_plot()
-        self._refresh_all_sample_bjh_pore_cells()
+        self._refresh_sample_bjh_pore_cell(self.active_index)
 
     def _on_t_plot_surface_area_mode_changed(self) -> None:
         if self._syncing_t_plot_controls:
@@ -1561,6 +1569,94 @@ class MainWindow(QtWidgets.QMainWindow):
         finally:
             self._syncing_t_plot_controls = False
 
+    def _default_bjh_settings(self) -> dict[str, object]:
+        params_by_method = _default_t_plot_thickness_params_by_method()
+        return {
+            "thickness_method": DEFAULT_T_PLOT_THICKNESS_METHOD,
+            "thickness_params_by_method": params_by_method,
+            "thickness_params": dict(params_by_method[DEFAULT_T_PLOT_THICKNESS_METHOD]),
+            "correction": DEFAULT_BJH_CORRECTION,
+            "open_pore_fraction": DEFAULT_BJH_OPEN_PORE_FRACTION,
+            "smooth_derivative": DEFAULT_BJH_SMOOTH_DERIVATIVE,
+            "show_adsorption": DEFAULT_BJH_SHOW_ADSORPTION,
+            "show_desorption": DEFAULT_BJH_SHOW_DESORPTION,
+        }
+
+    def _bjh_settings_for_result(self, result) -> dict[str, object]:
+        settings = self._default_bjh_settings()
+        custom = self.custom_bjh_settings.get(id(result))
+        if custom:
+            settings.update(custom)
+            params_by_method = _default_t_plot_thickness_params_by_method()
+            if "thickness_params_by_method" in custom:
+                for method_key, params in dict(custom["thickness_params_by_method"]).items():
+                    if method_key in params_by_method:
+                        params_by_method[method_key] = {
+                            **params_by_method[method_key],
+                            **dict(params),
+                        }
+            elif "thickness_params" in custom:
+                method_key = str(settings["thickness_method"])
+                if method_key in params_by_method:
+                    params_by_method[method_key] = {
+                        **params_by_method[method_key],
+                        **dict(custom["thickness_params"]),
+                    }
+            settings["thickness_params_by_method"] = params_by_method
+            method_key = str(settings["thickness_method"])
+            settings["thickness_params"] = dict(
+                params_by_method.get(method_key, params_by_method[DEFAULT_T_PLOT_THICKNESS_METHOD])
+            )
+        return settings
+
+    def _save_bjh_settings_for_active(self) -> None:
+        active = self.active_result()
+        if active is None:
+            return
+        self.custom_bjh_settings[id(active)] = {
+            "thickness_method": self.bjh_thickness_method,
+            "thickness_params_by_method": {
+                method_key: dict(params)
+                for method_key, params in self.bjh_thickness_params_by_method.items()
+            },
+            "thickness_params": dict(self.bjh_thickness_params),
+            "correction": self.bjh_correction,
+            "open_pore_fraction": self.bjh_open_pore_fraction,
+            "smooth_derivative": self.bjh_smooth_derivative,
+            "show_adsorption": self.bjh_show_adsorption,
+            "show_desorption": self.bjh_show_desorption,
+        }
+
+    def _load_bjh_settings_for_active(self) -> None:
+        active = self.active_result()
+        settings = self._default_bjh_settings() if active is None else self._bjh_settings_for_result(active)
+        self._syncing_bjh_controls = True
+        try:
+            self.bjh_thickness_method = str(settings["thickness_method"])
+            self.bjh_thickness_params_by_method = {
+                method_key: dict(params)
+                for method_key, params in dict(settings["thickness_params_by_method"]).items()
+            }
+            self.bjh_thickness_params = dict(settings["thickness_params"])
+            self.bjh_correction = str(settings["correction"])
+            self.bjh_open_pore_fraction = float(settings["open_pore_fraction"])
+            self.bjh_smooth_derivative = bool(settings["smooth_derivative"])
+            self.bjh_show_adsorption = bool(settings["show_adsorption"])
+            self.bjh_show_desorption = bool(settings["show_desorption"])
+
+            for key, radio in self.bjh_method_radios.items():
+                radio.setChecked(key == self.bjh_thickness_method)
+            self._set_all_bjh_formula_spins()
+            self.bjh_standard_radio.setChecked(self.bjh_correction == "standard")
+            self.bjh_kjs_correction_radio.setChecked(self.bjh_correction == "kjs")
+            self.bjh_faas_correction_radio.setChecked(self.bjh_correction == "faas")
+            self.bjh_open_fraction_spin.setValue(self.bjh_open_pore_fraction)
+            self.bjh_smooth_checkbox.setChecked(self.bjh_smooth_derivative)
+            self.bjh_adsorption_checkbox.setChecked(self.bjh_show_adsorption)
+            self.bjh_desorption_checkbox.setChecked(self.bjh_show_desorption)
+        finally:
+            self._syncing_bjh_controls = False
+
     def open_files(self) -> None:
         paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
             self,
@@ -1611,6 +1707,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.custom_langmuir_fit_ranges.clear()
             self.custom_t_plot_fit_ranges.clear()
             self.custom_t_plot_settings.clear()
+            self.custom_bjh_settings.clear()
             self._isotherm_region_custom = False
         else:
             self.results.extend(parsed)
@@ -1663,6 +1760,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.active_index = current_row
         self._reset_all_fit_regions()
         self._load_t_plot_settings_for_active()
+        self._load_bjh_settings_for_active()
         self.refresh_active_views()
         self.refresh_analysis_plots()
 
@@ -1712,6 +1810,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.custom_langmuir_fit_ranges.pop(id(deleted), None)
         self.custom_t_plot_fit_ranges.pop(id(deleted), None)
         self.custom_t_plot_settings.pop(id(deleted), None)
+        self.custom_bjh_settings.pop(id(deleted), None)
 
         if not self.results:
             self.active_index = -1
@@ -1826,6 +1925,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def refresh_all(self) -> None:
         self._load_t_plot_settings_for_active()
+        self._load_bjh_settings_for_active()
         self.refresh_isotherm_plot()
         self.refresh_sample_table()
         self.refresh_active_views()
@@ -1876,7 +1976,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     _fmt(self._bjh_pore_volume_for_result(result)),
                     alignment=QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter,
                 )
-                self._style_sample_bjh_pore_item(bjh_volume_item)
+                self._style_sample_bjh_pore_item(bjh_volume_item, result)
                 self.sample_table.setItem(row, BJH_PORE_VOLUME_COLUMN, bjh_volume_item)
             if self.results and self.active_index >= 0:
                 self.sample_table.selectRow(min(self.active_index, len(self.results) - 1))
@@ -1926,7 +2026,7 @@ class MainWindow(QtWidgets.QMainWindow):
             _fmt(self._bjh_pore_volume_for_result(result)),
             alignment=QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter,
         )
-        self._style_sample_bjh_pore_item(item)
+        self._style_sample_bjh_pore_item(item, result)
         self.sample_table.setItem(row, BJH_PORE_VOLUME_COLUMN, item)
 
     def _refresh_all_sample_bjh_pore_cells(self) -> None:
@@ -1951,8 +2051,8 @@ class MainWindow(QtWidgets.QMainWindow):
         item.setForeground(QtGui.QBrush(QtGui.QColor(CUSTOM_BET_COLOR)))
         item.setToolTip("t-Plot 厚度曲线、表面积参数或拟合厚度区间已人工调整")
 
-    def _style_sample_bjh_pore_item(self, item: QtWidgets.QTableWidgetItem) -> None:
-        if self._has_custom_bjh_settings():
+    def _style_sample_bjh_pore_item(self, item: QtWidgets.QTableWidgetItem, result) -> None:
+        if self._has_custom_bjh_settings(result):
             item.setForeground(QtGui.QBrush(QtGui.QColor(CUSTOM_BET_COLOR)))
             item.setToolTip("BJH 厚度曲线、公式参数、校正或显示分支已人工调整")
         else:
@@ -2000,6 +2100,10 @@ class MainWindow(QtWidgets.QMainWindow):
             plot_pore_distribution_placeholder(self.pore_plot)
             return
         pressure_range = self._bjh_pressure_range()
+        bjh_settings_by_index = {
+            index: self._bjh_settings_for_result(result)
+            for index, result in enumerate(self.results)
+        }
         plot_bjh_distribution_multi(
             self.pore_plot,
             self.results,
@@ -2014,6 +2118,7 @@ class MainWindow(QtWidgets.QMainWindow):
             show_desorption=self.bjh_show_desorption,
             smooth=self.bjh_smooth_derivative,
             pressure_range=pressure_range,
+            bjh_settings_by_index=bjh_settings_by_index,
         )
 
     def _bjh_pressure_range(self) -> tuple[float, float] | None:
@@ -3029,7 +3134,8 @@ class MainWindow(QtWidgets.QMainWindow):
             return 0.0
 
     def _bjh_pore_volume_for_result(self, result) -> float | None:
-        phase = self._bjh_pore_volume_phase()
+        settings = self._bjh_settings_for_result(result)
+        phase = self._bjh_pore_volume_phase(settings)
         if phase is None:
             return None
         return bjh_pore_volume_cm3_g(
@@ -3037,38 +3143,47 @@ class MainWindow(QtWidgets.QMainWindow):
             2.0,
             10.0,
             phase=phase,
-            thickness_method=self.bjh_thickness_method,
-            thickness_params=self.bjh_thickness_params,
-            correction=self.bjh_correction,
-            open_pore_fraction=self.bjh_open_pore_fraction,
+            thickness_method=str(settings["thickness_method"]),
+            thickness_params=dict(settings["thickness_params"]),
+            correction=str(settings["correction"]),
+            open_pore_fraction=float(settings["open_pore_fraction"]),
         )
 
-    def _has_custom_bjh_settings(self) -> bool:
-        if self.bjh_thickness_method != DEFAULT_T_PLOT_THICKNESS_METHOD:
+    def _has_custom_bjh_settings(self, result) -> bool:
+        settings = self._bjh_settings_for_result(result)
+        method = str(settings["thickness_method"])
+        if method != DEFAULT_T_PLOT_THICKNESS_METHOD:
             return True
         default_params = T_PLOT_THICKNESS_PARAM_DEFAULTS.get(
-            self.bjh_thickness_method,
+            method,
             DEFAULT_T_PLOT_THICKNESS_PARAMS,
         )
+        active_params = dict(settings["thickness_params"])
         for key, default_value in default_params.items():
-            if not _float_equal(self.bjh_thickness_params.get(key), default_value):
+            if not _float_equal(active_params.get(key), default_value):
                 return True
-        if self.bjh_correction != DEFAULT_BJH_CORRECTION:
+        if str(settings["correction"]) != DEFAULT_BJH_CORRECTION:
             return True
-        if not _float_equal(self.bjh_open_pore_fraction, DEFAULT_BJH_OPEN_PORE_FRACTION):
+        if not _float_equal(settings["open_pore_fraction"], DEFAULT_BJH_OPEN_PORE_FRACTION):
             return True
-        if self.bjh_smooth_derivative != DEFAULT_BJH_SMOOTH_DERIVATIVE:
+        if bool(settings["smooth_derivative"]) != DEFAULT_BJH_SMOOTH_DERIVATIVE:
             return True
-        if self.bjh_show_adsorption != DEFAULT_BJH_SHOW_ADSORPTION:
+        if bool(settings["show_adsorption"]) != DEFAULT_BJH_SHOW_ADSORPTION:
             return True
-        if self.bjh_show_desorption != DEFAULT_BJH_SHOW_DESORPTION:
+        if bool(settings["show_desorption"]) != DEFAULT_BJH_SHOW_DESORPTION:
             return True
         return False
 
-    def _bjh_pore_volume_phase(self) -> str | None:
-        if self.bjh_show_adsorption:
+    def _bjh_pore_volume_phase(self, settings: dict[str, object] | None = None) -> str | None:
+        if settings is None:
+            show_adsorption = self.bjh_show_adsorption
+            show_desorption = self.bjh_show_desorption
+        else:
+            show_adsorption = bool(settings["show_adsorption"])
+            show_desorption = bool(settings["show_desorption"])
+        if show_adsorption:
             return "adsorption"
-        if self.bjh_show_desorption:
+        if show_desorption:
             return "desorption"
         return None
 

@@ -654,6 +654,7 @@ def plot_bjh_distribution_multi(
     show_desorption: bool = True,
     smooth: bool = True,
     pressure_range: tuple[float, float] | None = None,
+    bjh_settings_by_index: dict[int, dict] | None = None,
 ) -> None:
     plot.clear()
     plot.setTitle("BJH 孔径分布")
@@ -662,11 +663,7 @@ def plot_bjh_distribution_multi(
     plot.setLogMode(x=True, y=False)
     all_x = []
     all_y = []
-    phases: list[tuple[str, bool, QtCore.Qt.PenStyle]] = [
-        ("adsorption", show_adsorption, QtCore.Qt.SolidLine),
-        ("desorption", show_desorption, QtCore.Qt.DashLine),
-    ]
-    if not show_adsorption and not show_desorption:
+    if not bjh_settings_by_index and not show_adsorption and not show_desorption:
         _plot_message(plot, "请选择 BJH 吸附或 BJH 脱附")
         return
 
@@ -674,17 +671,29 @@ def plot_bjh_distribution_multi(
         result = results[index]
         color = _analysis_color(colors, index, active_index)
         width = 3 if index == active_index else 2
+        settings = (bjh_settings_by_index or {}).get(index, {})
+        sample_thickness_method = str(settings.get("thickness_method", thickness_method))
+        sample_thickness_params = dict(settings.get("thickness_params", thickness_params or {}))
+        sample_correction = str(settings.get("correction", correction))
+        sample_open_pore_fraction = float(settings.get("open_pore_fraction", open_pore_fraction))
+        sample_show_adsorption = bool(settings.get("show_adsorption", show_adsorption))
+        sample_show_desorption = bool(settings.get("show_desorption", show_desorption))
+        sample_smooth = bool(settings.get("smooth_derivative", smooth))
+        phases: list[tuple[str, bool, QtCore.Qt.PenStyle]] = [
+            ("adsorption", sample_show_adsorption, QtCore.Qt.SolidLine),
+            ("desorption", sample_show_desorption, QtCore.Qt.DashLine),
+        ]
         for phase, enabled, line_style in phases:
             if not enabled:
                 continue
             distribution = bjh_pore_distribution(
                 result,
                 phase=phase,
-                thickness_method=thickness_method,
-                thickness_params=thickness_params,
-                correction=correction,
-                open_pore_fraction=open_pore_fraction,
-                smooth=smooth,
+                thickness_method=sample_thickness_method,
+                thickness_params=sample_thickness_params,
+                correction=sample_correction,
+                open_pore_fraction=sample_open_pore_fraction,
+                smooth=sample_smooth,
             )
             rows = _bjh_rows_in_pressure_range(distribution.rows, pressure_range)
             if not rows:
