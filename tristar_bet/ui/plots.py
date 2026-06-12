@@ -114,6 +114,7 @@ def plot_isotherm_multi(
         adsorption = adsorption_points(result)
         desorption = desorption_points(result)
         _plot_points(plot, adsorption, color, name, solid=True, width=width)
+        _plot_adsorption_desorption_bridge(plot, adsorption, desorption, color, width=width)
         _plot_points(plot, desorption, color, None, solid=False, width=width)
         _collect_xy(adsorption)
         _collect_xy(desorption)
@@ -760,6 +761,36 @@ def _plot_points(plot: pg.PlotWidget, points, color: str, name: str | None, *, s
         symbolBrush=pg.mkBrush(color if solid else "#ffffff"),
         name=name,
     )
+
+
+def _plot_adsorption_desorption_bridge(
+    plot: pg.PlotWidget,
+    adsorption,
+    desorption,
+    color: str,
+    *,
+    width: int = 2,
+) -> None:
+    if not adsorption or not desorption:
+        return
+    adsorption_end = adsorption[-1]
+    desorption_start = max(desorption, key=lambda point: float(point.relative_pressure))
+    x = np.asarray(
+        [float(adsorption_end.relative_pressure), float(desorption_start.relative_pressure)],
+        dtype=float,
+    )
+    y = np.asarray(
+        [
+            float(adsorption_end.quantity_adsorbed_cm3_g_stp or 0.0),
+            float(desorption_start.quantity_adsorbed_cm3_g_stp or 0.0),
+        ],
+        dtype=float,
+    )
+    if not (np.all(np.isfinite(x)) and np.all(np.isfinite(y))):
+        return
+    pen = pg.mkPen(color, width=width)
+    pen.setStyle(QtCore.Qt.DashLine)
+    plot.plot(x, y, pen=pen, name=None)
 
 
 def _analysis_draw_order(results, visible: list[bool], active_index: int) -> list[int]:

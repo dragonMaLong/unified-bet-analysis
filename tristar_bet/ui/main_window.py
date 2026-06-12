@@ -436,6 +436,11 @@ DEFAULT_T_PLOT_THICKNESS_PARAMS = dict(T_PLOT_THICKNESS_PARAM_DEFAULTS[DEFAULT_T
 DEFAULT_T_PLOT_SURFACE_AREA_MODE = "BET"
 DEFAULT_T_PLOT_SURFACE_AREA_INPUT = 1.0
 DEFAULT_T_PLOT_SURFACE_AREA_CORRECTION = 1.0
+DEFAULT_BJH_CORRECTION = "standard"
+DEFAULT_BJH_OPEN_PORE_FRACTION = 0.0
+DEFAULT_BJH_SMOOTH_DERIVATIVE = True
+DEFAULT_BJH_SHOW_ADSORPTION = True
+DEFAULT_BJH_SHOW_DESORPTION = False
 T_PLOT_PANEL_COLLAPSED_WIDTH = 360
 T_PLOT_PANEL_EXPANDED_WIDTH = 660
 BJH_PANEL_COLLAPSED_WIDTH = 380
@@ -517,12 +522,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.bjh_thickness_method = DEFAULT_T_PLOT_THICKNESS_METHOD
         self.bjh_thickness_params_by_method = _default_t_plot_thickness_params_by_method()
         self.bjh_thickness_params = dict(DEFAULT_T_PLOT_THICKNESS_PARAMS)
-        self.bjh_correction = "standard"
-        self.bjh_open_pore_fraction = 0.0
-        self.bjh_smooth_derivative = True
-        self.bjh_show_adsorption = True
-        self.bjh_show_desorption = False
+        self.bjh_correction = DEFAULT_BJH_CORRECTION
+        self.bjh_open_pore_fraction = DEFAULT_BJH_OPEN_PORE_FRACTION
+        self.bjh_smooth_derivative = DEFAULT_BJH_SMOOTH_DERIVATIVE
+        self.bjh_show_adsorption = DEFAULT_BJH_SHOW_ADSORPTION
+        self.bjh_show_desorption = DEFAULT_BJH_SHOW_DESORPTION
         self.region_is_log = False
+        self._isotherm_region_custom = False
+        self._setting_isotherm_region = False
         self._metrics_pending = False
         self._bet_region_pending = False
         self._langmuir_region_pending = False
@@ -1412,20 +1419,20 @@ class MainWindow(QtWidgets.QMainWindow):
             self.bjh_thickness_method = DEFAULT_T_PLOT_THICKNESS_METHOD
             self.bjh_thickness_params_by_method = default_params_by_method
             self.bjh_thickness_params = dict(default_params_by_method[DEFAULT_T_PLOT_THICKNESS_METHOD])
-            self.bjh_correction = "standard"
-            self.bjh_open_pore_fraction = 0.0
-            self.bjh_smooth_derivative = True
-            self.bjh_show_adsorption = True
-            self.bjh_show_desorption = False
+            self.bjh_correction = DEFAULT_BJH_CORRECTION
+            self.bjh_open_pore_fraction = DEFAULT_BJH_OPEN_PORE_FRACTION
+            self.bjh_smooth_derivative = DEFAULT_BJH_SMOOTH_DERIVATIVE
+            self.bjh_show_adsorption = DEFAULT_BJH_SHOW_ADSORPTION
+            self.bjh_show_desorption = DEFAULT_BJH_SHOW_DESORPTION
 
             for key, radio in self.bjh_method_radios.items():
                 radio.setChecked(key == self.bjh_thickness_method)
             self._set_all_bjh_formula_spins()
             self.bjh_standard_radio.setChecked(True)
-            self.bjh_open_fraction_spin.setValue(0.0)
-            self.bjh_smooth_checkbox.setChecked(True)
-            self.bjh_adsorption_checkbox.setChecked(True)
-            self.bjh_desorption_checkbox.setChecked(False)
+            self.bjh_open_fraction_spin.setValue(DEFAULT_BJH_OPEN_PORE_FRACTION)
+            self.bjh_smooth_checkbox.setChecked(DEFAULT_BJH_SMOOTH_DERIVATIVE)
+            self.bjh_adsorption_checkbox.setChecked(DEFAULT_BJH_SHOW_ADSORPTION)
+            self.bjh_desorption_checkbox.setChecked(DEFAULT_BJH_SHOW_DESORPTION)
         finally:
             self._syncing_bjh_controls = False
         self.refresh_bjh_plot()
@@ -1604,6 +1611,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.custom_langmuir_fit_ranges.clear()
             self.custom_t_plot_fit_ranges.clear()
             self.custom_t_plot_settings.clear()
+            self._isotherm_region_custom = False
         else:
             self.results.extend(parsed)
             self.visible_results.extend([True] * len(parsed))
@@ -1708,6 +1716,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self.results:
             self.active_index = -1
             self._reset_all_fit_regions()
+            self._isotherm_region_custom = False
             self.refresh_all()
             self.statusBar().showMessage("已删除样品", 3000)
             return
@@ -1867,7 +1876,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     _fmt(self._bjh_pore_volume_for_result(result)),
                     alignment=QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter,
                 )
-                bjh_volume_item.setToolTip("BJH 2-10 nm 孔容量，按当前 BJH 厚度曲线参数计算")
+                self._style_sample_bjh_pore_item(bjh_volume_item)
                 self.sample_table.setItem(row, BJH_PORE_VOLUME_COLUMN, bjh_volume_item)
             if self.results and self.active_index >= 0:
                 self.sample_table.selectRow(min(self.active_index, len(self.results) - 1))
@@ -1917,7 +1926,7 @@ class MainWindow(QtWidgets.QMainWindow):
             _fmt(self._bjh_pore_volume_for_result(result)),
             alignment=QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter,
         )
-        item.setToolTip("BJH 2-10 nm 孔容量，按当前 BJH 厚度曲线参数计算")
+        self._style_sample_bjh_pore_item(item)
         self.sample_table.setItem(row, BJH_PORE_VOLUME_COLUMN, item)
 
     def _refresh_all_sample_bjh_pore_cells(self) -> None:
@@ -1941,6 +1950,13 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         item.setForeground(QtGui.QBrush(QtGui.QColor(CUSTOM_BET_COLOR)))
         item.setToolTip("t-Plot 厚度曲线、表面积参数或拟合厚度区间已人工调整")
+
+    def _style_sample_bjh_pore_item(self, item: QtWidgets.QTableWidgetItem) -> None:
+        if self._has_custom_bjh_settings():
+            item.setForeground(QtGui.QBrush(QtGui.QColor(CUSTOM_BET_COLOR)))
+            item.setToolTip("BJH 厚度曲线、公式参数、校正或显示分支已人工调整")
+        else:
+            item.setToolTip("BJH 2-10 nm 孔容量，按默认 BJH 吸附分支计算")
 
     def refresh_active_views(self) -> None:
         self.refresh_metrics()
@@ -1983,7 +1999,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self.results:
             plot_pore_distribution_placeholder(self.pore_plot)
             return
-        pressure_range = self._current_pressure_region()
+        pressure_range = self._bjh_pressure_range()
         plot_bjh_distribution_multi(
             self.pore_plot,
             self.results,
@@ -1999,6 +2015,11 @@ class MainWindow(QtWidgets.QMainWindow):
             smooth=self.bjh_smooth_derivative,
             pressure_range=pressure_range,
         )
+
+    def _bjh_pressure_range(self) -> tuple[float, float] | None:
+        if not self._isotherm_region_custom:
+            return None
+        return self._current_pressure_region()
 
     def _update_analysis_plots_for_region(self) -> None:
         """等温线选区变化时调用：刷新三个分析图但保留各自的拟合选区。"""
@@ -2792,19 +2813,30 @@ class MainWindow(QtWidgets.QMainWindow):
         if pressure.size == 0:
             return
         region = self._clamp_pressure_region(raw_region, pressure)
-        self.region = self._make_selection_region(
-            region,
-            bounds=[float(np.nanmin(pressure)), float(np.nanmax(pressure))],
-            movable=True,
-        )
-        self.region.sigRegionChanged.connect(self.on_region_changed)
-        self.isotherm_plot.addItem(self.region, ignoreBounds=True)
+        self._setting_isotherm_region = True
+        try:
+            self.region = self._make_selection_region(
+                region,
+                bounds=[float(np.nanmin(pressure)), float(np.nanmax(pressure))],
+                movable=True,
+            )
+            self.isotherm_plot.addItem(self.region, ignoreBounds=True)
+            self.region.sigRegionChanged.connect(self.on_region_changed)
+            if hasattr(self.region, "sigRegionChangeFinished"):
+                self.region.sigRegionChangeFinished.connect(self.on_region_change_finished)
+        finally:
+            self._setting_isotherm_region = False
 
     def _remove_region(self) -> None:
         if self.region is None:
             return
         try:
             self.region.sigRegionChanged.disconnect(self.on_region_changed)
+        except (RuntimeError, TypeError):
+            pass
+        try:
+            if hasattr(self.region, "sigRegionChangeFinished"):
+                self.region.sigRegionChangeFinished.disconnect(self.on_region_change_finished)
         except (RuntimeError, TypeError):
             pass
         try:
@@ -2816,8 +2848,20 @@ class MainWindow(QtWidgets.QMainWindow):
     def on_region_changed(self) -> None:
         if self._syncing_region_changes:
             return
+        self._mark_isotherm_region_custom()
         self._refresh_isotherm_selection(self._current_pressure_region())
         self.queue_metrics_update()
+
+    def on_region_change_finished(self) -> None:
+        if self._syncing_region_changes:
+            return
+        self._mark_isotherm_region_custom()
+        self._refresh_isotherm_selection(self._current_pressure_region())
+        self.queue_metrics_update()
+
+    def _mark_isotherm_region_custom(self) -> None:
+        if not self._setting_isotherm_region:
+            self._isotherm_region_custom = True
 
     def queue_metrics_update(self) -> None:
         if self._metrics_pending:
@@ -2998,6 +3042,28 @@ class MainWindow(QtWidgets.QMainWindow):
             correction=self.bjh_correction,
             open_pore_fraction=self.bjh_open_pore_fraction,
         )
+
+    def _has_custom_bjh_settings(self) -> bool:
+        if self.bjh_thickness_method != DEFAULT_T_PLOT_THICKNESS_METHOD:
+            return True
+        default_params = T_PLOT_THICKNESS_PARAM_DEFAULTS.get(
+            self.bjh_thickness_method,
+            DEFAULT_T_PLOT_THICKNESS_PARAMS,
+        )
+        for key, default_value in default_params.items():
+            if not _float_equal(self.bjh_thickness_params.get(key), default_value):
+                return True
+        if self.bjh_correction != DEFAULT_BJH_CORRECTION:
+            return True
+        if not _float_equal(self.bjh_open_pore_fraction, DEFAULT_BJH_OPEN_PORE_FRACTION):
+            return True
+        if self.bjh_smooth_derivative != DEFAULT_BJH_SMOOTH_DERIVATIVE:
+            return True
+        if self.bjh_show_adsorption != DEFAULT_BJH_SHOW_ADSORPTION:
+            return True
+        if self.bjh_show_desorption != DEFAULT_BJH_SHOW_DESORPTION:
+            return True
+        return False
 
     def _bjh_pore_volume_phase(self) -> str | None:
         if self.bjh_show_adsorption:
