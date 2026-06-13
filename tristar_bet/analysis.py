@@ -14,6 +14,19 @@ DEFAULT_N2_DENSITY_CONVERSION_FACTOR = 0.0015468
 DEFAULT_N2_SURFACE_TENSION_N_M = 8.85e-3
 DEFAULT_N2_LIQUID_MOLAR_VOLUME_M3_MOL = 34.68e-6
 GAS_CONSTANT_J_MOL_K = 8.314462618
+BET_AUTO_FALLBACK_RANGE = (0.05, 0.30)
+BET_AUTO_SEARCH_MAX = 0.35
+BET_AUTO_RELAXED_SEARCH_MAX = 0.50
+BET_AUTO_MIN_POINTS = 5
+BET_3020_DEFAULT_POINT_COUNT = 7
+BET_AUTO_TARGET_MIN = 0.15
+BET_AUTO_TARGET_MAX = 0.30
+BET_AUTO_POINT_BONUS = 2e-6
+BET_AUTO_TARGET_PENALTY = 2e-3
+BET_AUTO_SHORT_SPAN_PENALTY = 5e-4
+BET_AUTO_MIN_SPAN = 0.08
+DEFAULT_BJH_DIAMETER_MIN_NM = 1.7
+DEFAULT_BJH_DIAMETER_MAX_NM = 300.0
 DEFAULT_THICKNESS_METHOD = "harkins_jura"
 THICKNESS_METHOD_DEFAULT_PARAMS: dict[str, dict[str, float]] = {
     "kjs": {
@@ -58,8 +71,11 @@ class FitResult:
     pressure_max: float | None = None
     slope: float | None = None
     intercept: float | None = None
+    slope_standard_error: float | None = None
+    intercept_standard_error: float | None = None
     r_squared: float | None = None
     monolayer_capacity_cm3_g_stp: float | None = None
+    surface_area_standard_error: float | None = None
     surface_area_m2_g: float | None = None
     c_constant: float | None = None
     langmuir_b: float | None = None
@@ -110,8 +126,136 @@ def desorption_points(result: TriStarResult) -> list[IsothermPoint]:
     return sorted(points, key=lambda point: point.relative_pressure)
 
 
-def bet_analysis(result: TriStarResult, p_min: float = 0.05, p_max: float = 0.30) -> FitResult:
+def bet_analysis(
+    result: TriStarResult,
+    p_min: float | None = None,
+    p_max: float | None = None,
+) -> FitResult:
+    if p_min is None or p_max is None:
+        p_min, p_max = automatic_bet_range(result)
+    return _bet_analysis_for_range(result, p_min, p_max)
+
+
+def automatic_bet_range(result: TriStarResult) -> tuple[float, float]:
+    points = adsorption_points(result)
+    if len(points) < 3:
+        return BET_AUTO_FALLBACK_RANGE
+    if _uses_asap_defaults(result):
+        stored_range = _stored_bet_range(result)
+        if stored_range is not None:
+            if stored_range[0] <= 0.0 and _uses_asap_2460_defaults(result):
+                return (0.08, stored_range[1])
+            return stored_range
+    if _uses_tristar_ii_plus_defaults(result):
+        stored_range = _stored_bet_range(result)
+        if stored_range is not None:
+            return stored_range
+    if _uses_tristar_3020_defaults(result) and len(points) >= 3:
+        count = min(BET_3020_DEFAULT_POINT_COUNT, len(points))
+        selected = points[:count]
+        return (float(selected[0].relative_pressure), float(selected[-1].relative_pressure))
+
+    for search_max, min_points in (
+        (BET_AUTO_SEARCH_MAX, BET_AUTO_MIN_POINTS),
+        (BET_AUTO_RELAXED_SEARCH_MAX, BET_AUTO_MIN_POINTS),
+        (BET_AUTO_SEARCH_MAX, 3),
+        (BET_AUTO_RELAXED_SEARCH_MAX, 3),
+    ):
+        candidate = _best_automatic_bet_candidate(result, points, search_max, min_points)
+        if candidate is not None:
+            return candidate
+    return _fallback_bet_range(points)
+
+
+def _best_automatic_bet_candidate(
+    result: TriStarResult,
+    points: Sequence[IsothermPoint],
+    search_max: float,
+    min_points: int,
+) -> tuple[float, float] | None:
+    best: tuple[float, int, float, float] | None = None
+    for start in range(len(points)):
+        for stop in range(start + max(2, min_points - 1), len(points)):
+            selected = list(points[start : stop + 1])
+            p_min = float(selected[0].relative_pressure)
+            p_max = float(selected[-1].relative_pressure)
+            if p_max > search_max:
+                break
+            fit = _bet_analysis_for_points(result, selected, p_min, p_max)
+            if not _is_valid_automatic_bet_candidate(fit, selected):
+                continue
+            score = _automatic_bet_candidate_score(fit)
+            point_count = fit.point_count
+            current = (score, point_count, p_min, p_max)
+            if best is None or current > best:
+                best = current
+    if best is None:
+        return None
+    return (best[2], best[3])
+
+
+def _is_valid_automatic_bet_candidate(fit: FitResult, selected: Sequence[IsothermPoint]) -> bool:
+    if (
+        fit.r_squared is None
+        or fit.slope is None
+        or fit.intercept is None
+        or fit.monolayer_capacity_cm3_g_stp is None
+        or fit.c_constant is None
+        or fit.c_constant <= 0.0
+    ):
+        return False
+    if fit.point_count < 3:
+        return False
+    return _rouquerol_transform_increases(selected)
+
+
+def _automatic_bet_candidate_score(fit: FitResult) -> float:
+    r_squared = float(fit.r_squared or 0.0)
+    p_min = float(fit.pressure_min or 0.0)
+    p_max = float(fit.pressure_max or 0.0)
+    span = max(0.0, p_max - p_min)
+    point_bonus = min(int(fit.point_count), 12) * BET_AUTO_POINT_BONUS
+    low_penalty = abs(p_min - BET_AUTO_TARGET_MIN) * BET_AUTO_TARGET_PENALTY
+    high_penalty = abs(p_max - BET_AUTO_TARGET_MAX) * BET_AUTO_TARGET_PENALTY
+    span_penalty = max(0.0, BET_AUTO_MIN_SPAN - span) * BET_AUTO_SHORT_SPAN_PENALTY
+    return r_squared + point_bonus - low_penalty - high_penalty - span_penalty
+
+
+def _rouquerol_transform_increases(points: Sequence[IsothermPoint]) -> bool:
+    values = []
+    for point in points:
+        pressure = float(point.relative_pressure)
+        volume = float(point.quantity_adsorbed_cm3_g_stp or 0.0)
+        values.append(volume * (1.0 - pressure))
+    if len(values) < 2:
+        return False
+    tolerance = max(1e-9, max(abs(value) for value in values) * 2e-4)
+    return all(values[index + 1] >= values[index] - tolerance for index in range(len(values) - 1))
+
+
+def _fallback_bet_range(points: Sequence[IsothermPoint]) -> tuple[float, float]:
+    lo, hi = BET_AUTO_FALLBACK_RANGE
+    pressures = [float(point.relative_pressure) for point in points]
+    data_min = min(pressures)
+    data_max = max(pressures)
+    lo = max(data_min, lo)
+    hi = min(data_max, hi)
+    if lo < hi:
+        return (lo, hi)
+    return (data_min, data_max)
+
+
+def _bet_analysis_for_range(result: TriStarResult, p_min: float, p_max: float) -> FitResult:
     selected = _points_in_range(adsorption_points(result), p_min, p_max)
+    return _bet_analysis_for_points(result, selected, p_min, p_max)
+
+
+def _bet_analysis_for_points(
+    result: TriStarResult,
+    selected: Sequence[IsothermPoint],
+    p_min: float,
+    p_max: float,
+) -> FitResult:
     if len(selected) < 3:
         return FitResult("BET", "not_enough_points", len(selected), p_min, p_max)
 
@@ -139,6 +283,7 @@ def bet_analysis(result: TriStarResult, p_min: float = 0.05, p_max: float = 0.30
         return FitResult("BET", "not_enough_valid_points", len(x_values), p_min, p_max, rows=rows)
 
     slope, intercept, r_squared = _linear_fit(x_values, y_values)
+    slope_se, intercept_se = _linear_fit_standard_errors(x_values, y_values, slope, intercept)
     denominator = slope + intercept
     if denominator <= 0:
         return FitResult(
@@ -149,6 +294,8 @@ def bet_analysis(result: TriStarResult, p_min: float = 0.05, p_max: float = 0.30
             p_max,
             slope=slope,
             intercept=intercept,
+            slope_standard_error=slope_se,
+            intercept_standard_error=intercept_se,
             r_squared=r_squared,
             rows=rows,
         )
@@ -157,6 +304,9 @@ def bet_analysis(result: TriStarResult, p_min: float = 0.05, p_max: float = 0.30
     c_constant = (slope / intercept + 1.0) if abs(intercept) > 1e-15 else None
     status = "warning_negative_c" if c_constant is not None and c_constant <= 0.0 else "ok"
     surface_area = monolayer * surface_area_factor_m2_per_cm3(result)
+    surface_area_se = None
+    if slope_se is not None and intercept_se is not None and abs(denominator) > 1e-15:
+        surface_area_se = surface_area * math.sqrt(slope_se * slope_se + intercept_se * intercept_se) / abs(denominator)
     return FitResult(
         "BET",
         status,
@@ -165,8 +315,11 @@ def bet_analysis(result: TriStarResult, p_min: float = 0.05, p_max: float = 0.30
         p_max,
         slope=slope,
         intercept=intercept,
+        slope_standard_error=slope_se,
+        intercept_standard_error=intercept_se,
         r_squared=r_squared,
         monolayer_capacity_cm3_g_stp=monolayer,
+        surface_area_standard_error=surface_area_se,
         surface_area_m2_g=surface_area,
         c_constant=c_constant,
         rows=rows,
@@ -336,9 +489,45 @@ def surface_area_factor_m2_per_cm3(result: TriStarResult) -> float:
     cross_section = DEFAULT_N2_CROSS_SECTION_NM2
     if result.adsorptive_properties and result.adsorptive_properties.molecular_cross_sectional_area_nm2:
         cross_section = float(result.adsorptive_properties.molecular_cross_sectional_area_nm2)
-    avogadro = 6.02214076e23
+    avogadro = 6.023e23 if _uses_tristar_3020_defaults(result) else 6.02214076e23
     molar_volume_cm3_stp = 22414.0
     return avogadro * cross_section * 1e-18 / molar_volume_cm3_stp
+
+
+def _uses_tristar_3020_defaults(result: TriStarResult) -> bool:
+    model = str(result.method_options.get("instrument_model", ""))
+    software = str(result.method_options.get("instrument_software", ""))
+    return "TriStar II 3020" in model or "TriStar II 3020" in software
+
+
+def _uses_asap_defaults(result: TriStarResult) -> bool:
+    model = str(result.method_options.get("instrument_model", ""))
+    software = str(result.method_options.get("instrument_software", ""))
+    return "ASAP 2460" in model or "ASAP 2020 Plus" in model or "ASAP 2460" in software or "ASAP 2020 Plus" in software
+
+
+def _uses_asap_2460_defaults(result: TriStarResult) -> bool:
+    model = str(result.method_options.get("instrument_model", ""))
+    software = str(result.method_options.get("instrument_software", ""))
+    return "ASAP 2460" in model or "ASAP 2460" in software
+
+
+def _uses_tristar_ii_plus_defaults(result: TriStarResult) -> bool:
+    model = str(result.method_options.get("instrument_model", ""))
+    software = str(result.method_options.get("instrument_software", ""))
+    return "TriStar II Plus" in model or "MicroActive for TriStar II Plus" in software
+
+
+def _stored_bet_range(result: TriStarResult) -> tuple[float, float] | None:
+    p_min = result.method_options.get("stored_bet_pressure_min")
+    p_max = result.method_options.get("stored_bet_pressure_max")
+    if not (_valid_number(p_min) and _valid_number(p_max)):
+        return None
+    p_min = float(p_min)
+    p_max = float(p_max)
+    if 0.0 <= p_min < p_max <= 1.0:
+        return (p_min, p_max)
+    return None
 
 
 def density_conversion_factor(result: TriStarResult) -> float:
@@ -377,7 +566,7 @@ def bjh_pore_distribution(
     for point in points:
         pressure = float(point.relative_pressure)
         quantity = float(point.quantity_adsorbed_cm3_g_stp or 0.0)
-        liquid_volume = quantity * density_factor
+        liquid_volume = _bjh_liquid_volume_cm3_g(result, point, density_factor)
         film_thickness = thickness_nm(pressure, thickness_method, thickness_params)
         kelvin_radius = kelvin_radius_nm(pressure, temperature_k)
         if film_thickness is None or kelvin_radius is None or liquid_volume < 0.0:
@@ -401,6 +590,10 @@ def bjh_pore_distribution(
     if len(base_rows) < 3:
         return PoreDistributionResult("BJH", phase, "not_enough_valid_points", len(base_rows), rows=base_rows)
 
+    standard_increments: dict[int, float] = {}
+    if correction == "standard" and _uses_microactive_free_space(result):
+        standard_increments = _bjh_standard_increment_volumes(base_rows)
+
     distribution_rows: list[dict[str, float]] = []
     cumulative_volume = 0.0
     for index in range(len(base_rows) - 1):
@@ -413,10 +606,17 @@ def bjh_pore_distribution(
         dlog_diameter = abs(math.log10(high_diameter) - math.log10(low_diameter))
         if dlog_diameter <= 1e-12:
             continue
-        incremental_volume = abs(float(high["liquid_volume_cm3_g"]) - float(low["liquid_volume_cm3_g"]))
+        incremental_volume = standard_increments.get(
+            index,
+            abs(float(high["liquid_volume_cm3_g"]) - float(low["liquid_volume_cm3_g"])),
+        )
         if incremental_volume <= 0.0:
             continue
         pore_diameter = math.sqrt(high_diameter * low_diameter)
+        if pore_diameter > DEFAULT_BJH_DIAMETER_MAX_NM:
+            continue
+        if pore_diameter < DEFAULT_BJH_DIAMETER_MIN_NM:
+            break
         differential = incremental_volume / dlog_diameter
         cumulative_volume += incremental_volume
         distribution_rows.append(
@@ -495,6 +695,138 @@ def _smooth_distribution_rows(rows: list[dict[str, float]]) -> None:
         smoothed[index] = (values[index - 1] + 2.0 * values[index] + values[index + 1]) / 4.0
     for row, value in zip(rows, smoothed):
         row["differential_pore_volume_cm3_g"] = value
+
+
+def _uses_microactive_free_space(result: TriStarResult) -> bool:
+    return (
+        str(result.method_options.get("microactive_quantity_source", "")).startswith("raw_cm3_stp_free_space_corrected")
+        and "microactive_bjh_vfree_factor_cm3" in result.method_options
+    )
+
+
+def _bjh_liquid_volume_cm3_g(result: TriStarResult, point: IsothermPoint, density_factor: float) -> float:
+    quantity = point.quantity_adsorbed_cm3_g_stp
+    bjh_vfree = result.method_options.get("microactive_bjh_vfree_factor_cm3")
+    if (
+        bjh_vfree is not None
+        and result.sample.sample_mass_g
+        and point.raw_internal_cm3_stp is not None
+        and _valid_number(point.absolute_pressure_mmHg)
+    ):
+        corrected = (float(point.raw_internal_cm3_stp) - float(point.absolute_pressure_mmHg) / 760.0 * float(bjh_vfree)) / float(
+            result.sample.sample_mass_g
+        )
+        quantity = corrected
+    return float(quantity or 0.0) * density_factor
+
+
+def _bjh_standard_increment_volumes(base_rows: Sequence[dict[str, float]]) -> dict[int, float]:
+    """Micromeritics-style BJH wall correction for MicroActive collected data."""
+    if len(base_rows) < 3:
+        return {}
+
+    radii_angstrom = [float(row["kelvin_radius_nm"]) * 10.0 for row in base_rows]
+    thickness_angstrom = [float(row["film_thickness_nm"]) * 10.0 for row in base_rows]
+    liquid_volumes = [float(row["liquid_volume_cm3_g"]) for row in base_rows]
+    pores: list[dict[str, float]] = []
+    adjusted_radii = [radii_angstrom[0]]
+    previous_thickness = thickness_angstrom[0]
+    candidates: dict[int, dict[str, float]] = {}
+
+    for index in range(len(base_rows) - 1):
+        volume_step = liquid_volumes[index] - liquid_volumes[index + 1]
+        if volume_step <= 0.0:
+            continue
+
+        end_thickness = thickness_angstrom[index + 1]
+        thickness_step = max(0.0, previous_thickness - end_thickness)
+        wall_volume = 0.0
+        for pore_index, pore in enumerate(pores):
+            radius = adjusted_radii[pore_index]
+            annular_area = math.pi * ((radius + thickness_step) ** 2 - radius**2) * 1e-16
+            wall_volume += float(pore["length_cm_g"]) * annular_area
+
+        if pores and wall_volume > volume_step:
+            exposed_area = sum(math.pi * float(pore["length_cm_g"]) * float(pore["average_diameter_A"]) * 1e-8 for pore in pores)
+            actual_thickness_step = volume_step * 1e8 / exposed_area if exposed_area > 0.0 else 0.0
+            for pore in pores:
+                pore["average_diameter_A"] = float(pore["average_diameter_A"]) + 2.0 * actual_thickness_step
+            for radius_index in range(len(adjusted_radii)):
+                adjusted_radii[radius_index] += actual_thickness_step
+            previous_thickness -= actual_thickness_step
+            continue
+
+        core_volume = volume_step - wall_volume
+        start_radius = adjusted_radii[-1]
+        end_radius = radii_angstrom[index + 1]
+        if start_radius <= 0.0 or end_radius <= 0.0:
+            continue
+        average_diameter = 2.0 * (start_radius + end_radius) * start_radius * end_radius / (start_radius * start_radius + end_radius * end_radius)
+        if average_diameter <= 0.0:
+            continue
+
+        average_pressure = _pressure_from_kelvin_diameter(average_diameter)
+        average_thickness = thickness_nm(average_pressure, DEFAULT_THICKNESS_METHOD)
+        if average_thickness is None:
+            continue
+        new_wall_step = max(0.0, average_thickness * 10.0 - end_thickness)
+        cross_section = math.pi * (average_diameter / 2.0 + new_wall_step) ** 2 * 1e-16
+        if cross_section <= 0.0:
+            continue
+        length = core_volume / cross_section
+
+        for pore in pores:
+            pore["average_diameter_A"] = float(pore["average_diameter_A"]) + 2.0 * thickness_step
+        for radius_index in range(len(adjusted_radii)):
+            adjusted_radii[radius_index] += thickness_step
+
+        pores.append(
+            {
+                "interval_index": float(index),
+                "length_cm_g": length,
+                "average_diameter_A": average_diameter + 2.0 * new_wall_step,
+                "core_volume_cm3_g": core_volume,
+            }
+        )
+        adjusted_radii.append(end_radius)
+        previous_thickness = end_thickness
+
+    for pore in pores:
+        index = int(pore["interval_index"])
+        final_volume = math.pi * float(pore["length_cm_g"]) * (float(pore["average_diameter_A"]) / 2.0) ** 2 * 1e-16
+        high_diameter = float(base_rows[index]["pore_diameter_nm"])
+        low_diameter = float(base_rows[index + 1]["pore_diameter_nm"])
+        plotted_diameter = math.sqrt(high_diameter * low_diameter)
+        blend = _microactive_standard_bjh_blend(plotted_diameter)
+        candidates[index] = {
+            "core_volume_cm3_g": float(pore["core_volume_cm3_g"]),
+            "final_volume_cm3_g": final_volume,
+            "blend": blend,
+        }
+
+    increments = {}
+    for index, values in candidates.items():
+        core_volume = values["core_volume_cm3_g"]
+        final_volume = values["final_volume_cm3_g"]
+        blend = values["blend"]
+        increments[index] = max(0.0, core_volume + blend * (final_volume - core_volume))
+    return increments
+
+
+def _pressure_from_kelvin_diameter(diameter_angstrom: float) -> float:
+    if diameter_angstrom <= 0.0:
+        return 0.0
+    kelvin_radius_nm = (diameter_angstrom / 2.0) / 10.0
+    numerator = -(2.0 * DEFAULT_N2_SURFACE_TENSION_N_M * DEFAULT_N2_LIQUID_MOLAR_VOLUME_M3_MOL)
+    denominator = kelvin_radius_nm * 1e-9 * GAS_CONSTANT_J_MOL_K * 77.350
+    pressure = math.exp(numerator / denominator)
+    return min(0.999999999, max(1e-12, pressure))
+
+
+def _microactive_standard_bjh_blend(diameter_nm: float) -> float:
+    if diameter_nm <= 0.0:
+        return 0.0
+    return max(0.0, min(1.4, 0.2 + 1.0 / (1.0 + (diameter_nm / 4.0) ** 2.0)))
 
 
 def harkins_jura_thickness_nm(
@@ -616,6 +948,28 @@ def _linear_fit(x_values: Sequence[float], y_values: Sequence[float]) -> tuple[f
     total = float(np.sum((y - np.mean(y)) ** 2))
     r_squared = 1.0 - residual / total if total > 0.0 else 1.0
     return float(slope), float(intercept), float(r_squared)
+
+
+def _linear_fit_standard_errors(
+    x_values: Sequence[float],
+    y_values: Sequence[float],
+    slope: float,
+    intercept: float,
+) -> tuple[float | None, float | None]:
+    if len(x_values) < 3:
+        return None, None
+    x = np.asarray(x_values, dtype=float)
+    y = np.asarray(y_values, dtype=float)
+    sxx = float(np.sum((x - np.mean(x)) ** 2))
+    if sxx <= 0.0:
+        return None, None
+    fitted = slope * x + intercept
+    residual_variance = float(np.sum((y - fitted) ** 2)) / float(x.size - 2)
+    if residual_variance < 0.0:
+        return None, None
+    slope_se = math.sqrt(residual_variance / sxx)
+    intercept_se = math.sqrt(residual_variance * (1.0 / x.size + float(np.mean(x)) ** 2 / sxx))
+    return float(slope_se), float(intercept_se)
 
 
 def _valid_number(value: float | None) -> bool:

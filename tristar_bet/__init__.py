@@ -10,7 +10,7 @@ from .models import (
     TargetPressureRow,
     TriStarResult,
 )
-from .analysis import FitResult, analysis_bundle, bet_analysis, langmuir_analysis, t_plot_analysis
+from .analysis import FitResult, analysis_bundle, automatic_bet_range, bet_analysis, langmuir_analysis, t_plot_analysis
 from .smp import TriStarParseError, export_results_csv, load_many, load_smp
 
 __all__ = [
@@ -27,6 +27,7 @@ __all__ = [
     "TriStarResult",
     "FitResult",
     "analysis_bundle",
+    "automatic_bet_range",
     "bet_analysis",
     "export_results_csv",
     "langmuir_analysis",

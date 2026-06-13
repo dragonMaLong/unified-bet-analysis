@@ -9,6 +9,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Sequence
 
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover - Python < 3.9 fallback
+    ZoneInfo = None
+
 from .models import (
     AdsorptiveProperties,
     FreeSpaceInfo,
@@ -34,6 +39,21 @@ VFREE_INTERCEPT = -2.12304152e-05
 VFREE_COLD_COEFF = 0.996624395
 VFREE_WARM_COEFF = 0.00337683123
 VFREE_STEM_COEFF = 0.999997685
+MICROACTIVE_BET_FREE_SPACE_COLD_FRACTION = 1.0 / 24.0
+MICROACTIVE_BJH_FREE_SPACE_COLD_FRACTION = 0.3362697292133636
+MICROACTIVE_PORT_FREE_SPACE_OFFSETS_CM3 = {
+    1: 0.72130228,
+    2: 0.72695300,
+    3: 0.74996550,
+}
+ASAP_2460_VFREE_COLD_COEFF = 0.997299507937274
+ASAP_2460_VFREE_WARM_COEFF = 0.002700500767790325
+ASAP_2460_VBATH_COLD_COEFF = 1.2827383463131363
+ASAP_2460_VBATH_WARM_COEFF = -1.282742509264505
+ASAP_2460_VBATH_INTERCEPT = 2.120842412745617e-05
+ASAP_2020_PLUS_VFREE_COLD_COEFF = 0.9959455914168879
+ASAP_2020_PLUS_VFREE_WARM_COEFF = 0.004054408583112112
+ASAP_2020_PLUS_VBATH_DIFF_COEFF = 1.351469213988709
 
 
 class TriStarParseError(ValueError):
@@ -60,14 +80,47 @@ class TriStarSmpParser:
         sample = self._parse_sample_info(blocks.get(301, b""))
         run_conditions = self._parse_run_conditions(blocks.get(302, b""))
         target_pressure_table = self._parse_target_pressure_table(blocks.get(302, b""))
-        free_space = self._parse_free_space(blocks.get(303, b""), self._payload_size(subsets, 303), run_conditions)
+        adsorptive_properties = self._parse_adsorptive_properties(blocks.get(320, b""))
+        free_space = self._parse_free_space(
+            blocks.get(303, b""),
+            self._payload_size(subsets, 303),
+            run_conditions,
+            adsorptive_properties,
+            blocks.get(705, b""),
+        )
         po_records = self._parse_po_records(blocks.get(303, b""), self._payload_size(subsets, 303))
         isotherm = self._parse_isotherm(blocks.get(303, b""), po_records, sample, free_space)
+        used_microactive_point_table = False
+        used_asap_point_table = False
         if not isotherm:
-            isotherm = self._parse_microactive_isotherm(blocks.get(303, b""), self._payload_size(subsets, 303))
-        adsorptive_properties = self._parse_adsorptive_properties(blocks.get(320, b""))
+            isotherm = self._parse_asap_isotherm(blocks.get(303, b""), self._payload_size(subsets, 303), po_records, sample, free_space)
+            used_asap_point_table = bool(isotherm)
+        if not isotherm:
+            isotherm = self._parse_microactive_isotherm(blocks.get(303, b""), self._payload_size(subsets, 303), sample, free_space)
+            used_microactive_point_table = bool(isotherm)
         method_options = self._parse_method_options(blocks.get(302, b""), blocks.get(725, b""), blocks.get(320, b""))
         method_options.update(self._parse_instrument_info(blocks))
+        method_options.update(self._parse_stored_bet_range(blocks.get(311, b"")))
+        method_options.update(self._parse_test_time_options(header, method_options))
+        if used_asap_point_table:
+            method_options["asap_quantity_source"] = "raw_cm3_stp_free_space_corrected_and_normalized"
+            if free_space.vfree_factor_cm3 is not None:
+                method_options["asap_vfree_factor_cm3"] = free_space.vfree_factor_cm3
+            if free_space.vbath_cm3 is not None:
+                method_options["asap_vbath_cm3"] = free_space.vbath_cm3
+        if used_microactive_point_table:
+            if free_space.vfree_factor_cm3 is not None:
+                method_options["microactive_bet_vfree_factor_cm3"] = free_space.vfree_factor_cm3
+            bjh_vfree = self._microactive_bjh_vfree_factor(free_space)
+            if bjh_vfree is not None:
+                method_options["microactive_bjh_vfree_factor_cm3"] = bjh_vfree
+            method_options["microactive_quantity_source"] = (
+                "raw_cm3_stp_free_space_corrected_and_normalized"
+                if free_space.vfree_factor_cm3 is not None
+                else "raw_cm3_stp_normalized_by_sample_mass"
+                if sample.sample_mass_g
+                else "raw_cm3_stp_unscaled_missing_sample_mass"
+            )
         log_messages = self._parse_log_messages(blocks.get(705, b""))
         sample_tube_strings = self._read_mic_strings(blocks.get(1021, b""))
         raw_strings = {
@@ -158,6 +211,8 @@ class TriStarSmpParser:
         mass = _read_double(block, 19)
         if mass is not None and not (1e-8 < mass < 100.0):
             mass = None
+        if mass is None:
+            mass = self._parse_compact_sample_mass(block, strings)
         density = _read_double(block, 192)
         if density is not None and not (0.01 < density < 100.0):
             density = None
@@ -170,6 +225,28 @@ class TriStarSmpParser:
             sample_mass_g=mass,
             sample_density_g_cm3=density,
         )
+
+    def _parse_compact_sample_mass(self, block: bytes, strings: Sequence[MicString]) -> float | None:
+        barcode_rel = next((item.rel_offset for item in strings if item.text == "Bar Code:"), None)
+        start = (barcode_rel + 24) if barcode_rel is not None else 180
+        end = min(len(block) - 8, start + 90)
+        candidates: list[tuple[int, float]] = []
+        for rel in range(max(0, start), max(0, end + 1)):
+            value = _read_double(block, rel)
+            if value is None or not (1e-8 < value < 100.0) or math.isclose(value, 1.0, abs_tol=1e-12):
+                continue
+            candidates.append((rel, value))
+        for rel, value in candidates:
+            following = _read_double(block, rel + 8)
+            following_sum = _read_double(block, rel + 16)
+            if (
+                following is not None
+                and math.isclose(following, 1.0, rel_tol=0.0, abs_tol=1e-12)
+                and following_sum is not None
+                and math.isclose(following_sum, value + 1.0, rel_tol=0.0, abs_tol=1e-8)
+            ):
+                return value
+        return candidates[0][1] if candidates else None
 
     def _parse_run_conditions(self, block: bytes) -> RunConditions:
         strings = self._read_mic_strings(block)
@@ -258,9 +335,24 @@ class TriStarSmpParser:
             previous_end = ending
         return rows
 
-    def _parse_free_space(self, block: bytes, payload_size: int, run: RunConditions) -> FreeSpaceInfo:
+    def _parse_free_space(
+        self,
+        block: bytes,
+        payload_size: int,
+        run: RunConditions,
+        adsorptive_properties: AdsorptiveProperties | None = None,
+        log_block: bytes = b"",
+    ) -> FreeSpaceInfo:
         if not block or payload_size <= 0:
             return FreeSpaceInfo(None, None, None, None, None, None, None, None, "missing")
+
+        asap_free_space = self._parse_asap_free_space(block, adsorptive_properties)
+        if asap_free_space is not None:
+            return asap_free_space
+
+        microactive_free_space = self._parse_microactive_free_space(block, run, adsorptive_properties, log_block)
+        if microactive_free_space is not None:
+            return microactive_free_space
 
         if payload_size < 1200:
             return FreeSpaceInfo(
@@ -309,6 +401,151 @@ class TriStarSmpParser:
             vfree_factor_cm3=vfree,
             vfree_factor_source=source,
         )
+
+    def _parse_asap_free_space(
+        self,
+        block: bytes,
+        adsorptive_properties: AdsorptiveProperties | None = None,
+    ) -> FreeSpaceInfo | None:
+        software = self._asap_software_text(block)
+        if not software:
+            return None
+        sample_tube_rel = next((item.rel_offset for item in self._read_mic_strings(block) if item.text == "Sample Tube"), None)
+        if sample_tube_rel is None:
+            return None
+
+        cold = _read_double(block, sample_tube_rel - 24)
+        warm = _read_double(block, sample_tube_rel - 16)
+        if cold is None or warm is None or not (0.0 < float(warm) < float(cold) < 300.0):
+            return None
+
+        if "ASAP 2020 Plus" in software:
+            vfree = ASAP_2020_PLUS_VFREE_COLD_COEFF * float(cold) + ASAP_2020_PLUS_VFREE_WARM_COEFF * float(warm)
+            vbath = ASAP_2020_PLUS_VBATH_DIFF_COEFF * (float(cold) - float(warm))
+            source = "asap_2020_plus_sample_tube_fields"
+        else:
+            vfree = ASAP_2460_VFREE_COLD_COEFF * float(cold) + ASAP_2460_VFREE_WARM_COEFF * float(warm)
+            vbath = (
+                ASAP_2460_VBATH_INTERCEPT
+                + ASAP_2460_VBATH_COLD_COEFF * float(cold)
+                + ASAP_2460_VBATH_WARM_COEFF * float(warm)
+            )
+            source = "asap_2460_sample_tube_fields"
+
+        nonideality = (
+            float(adsorptive_properties.nonideality_factor)
+            if adsorptive_properties is not None and adsorptive_properties.nonideality_factor is not None
+            else 0.0
+        )
+        return FreeSpaceInfo(
+            analysis_entered_cm3=float(cold),
+            ambient_entered_cm3=float(warm),
+            nonideality_factor=nonideality,
+            cold_free_space_cm3=float(cold),
+            warm_free_space_cm3=float(warm),
+            stem_volume_cm3=0.0,
+            vbath_cm3=vbath,
+            vfree_factor_cm3=vfree,
+            vfree_factor_source=source,
+        )
+
+    def _asap_software_text(self, block: bytes) -> str:
+        for item in self._read_mic_strings(block):
+            if "ASAP 2460 Version" in item.text or "ASAP 2020 Plus Version" in item.text:
+                return item.text
+        return ""
+
+    def _parse_microactive_free_space(
+        self,
+        block: bytes,
+        run: RunConditions,
+        adsorptive_properties: AdsorptiveProperties | None = None,
+        log_block: bytes = b"",
+    ) -> FreeSpaceInfo | None:
+        strings = self._read_mic_strings(block)
+        if not any("MicroActive for TriStar II Plus" in item.text for item in strings):
+            return None
+        sample_tube_rel = next((item.rel_offset for item in strings if item.text == "Sample Tube"), None)
+        if sample_tube_rel is None:
+            return None
+
+        warm = _read_double(block, sample_tube_rel - 24)
+        cold = _read_double(block, sample_tube_rel - 16)
+        if warm is None or cold is None or not (0.0 < warm < 200.0 and 0.0 < cold < 200.0):
+            return None
+
+        ambient_temperature = _read_double(block, sample_tube_rel - 57) or ASSUMED_AMBIENT_TEMPERATURE_K
+        if not (250.0 <= ambient_temperature <= 330.0):
+            ambient_temperature = ASSUMED_AMBIENT_TEMPERATURE_K
+        bath_temperature = run.bath_temperature_K or 77.350
+        if not (50.0 < float(bath_temperature) < 150.0):
+            bath_temperature = 77.350
+
+        denominator = 1.0 - float(bath_temperature) / float(ambient_temperature)
+        vbath = (float(warm) - float(cold)) / denominator if abs(denominator) > 1e-12 else 0.0
+        nonideality = (
+            float(adsorptive_properties.nonideality_factor)
+            if adsorptive_properties is not None and adsorptive_properties.nonideality_factor is not None
+            else 0.0
+        )
+
+        port = self._parse_analysis_port(log_block)
+        port_offset = MICROACTIVE_PORT_FREE_SPACE_OFFSETS_CM3.get(port or 0)
+        if port_offset is not None:
+            log_warm = float(cold) - port_offset
+            log_cold = float(warm) - port_offset
+            vfree = VFREE_INTERCEPT + VFREE_COLD_COEFF * log_cold + VFREE_WARM_COEFF * log_warm
+            source = "microactive_port_corrected_free_space_fields"
+        else:
+            log_warm, log_cold = self._parse_measured_free_space_log(log_block)
+            if log_warm is not None and log_cold is not None:
+                vfree = VFREE_INTERCEPT + VFREE_COLD_COEFF * float(log_cold) + VFREE_WARM_COEFF * float(log_warm)
+                source = "microactive_log_free_space_fields"
+            else:
+                vfree = float(warm) - (float(warm) - float(cold)) * MICROACTIVE_BET_FREE_SPACE_COLD_FRACTION
+                source = "microactive_sample_tube_bet_fields"
+        if not (0.0 < vfree < 200.0):
+            return None
+
+        return FreeSpaceInfo(
+            analysis_entered_cm3=float(cold),
+            ambient_entered_cm3=float(warm),
+            nonideality_factor=nonideality,
+            cold_free_space_cm3=float(cold),
+            warm_free_space_cm3=float(warm),
+            stem_volume_cm3=0.0,
+            vbath_cm3=vbath,
+            vfree_factor_cm3=vfree,
+            vfree_factor_source=source,
+            ambient_temperature_K_assumed=float(ambient_temperature),
+        )
+
+    def _parse_analysis_port(self, log_block: bytes) -> int | None:
+        for item in self._parse_log_messages(log_block):
+            match = re.search(r"\bport\s+([0-9]+)\b", item.text, flags=re.IGNORECASE)
+            if match:
+                return int(match.group(1))
+        return None
+
+    def _parse_measured_free_space_log(self, log_block: bytes) -> tuple[float | None, float | None]:
+        for item in self._parse_log_messages(log_block):
+            match = re.search(
+                r"Measured free space .*Warm:\s*([0-9]+(?:\.[0-9]+)?)\s*cm.\s*,\s*Cold:\s*([0-9]+(?:\.[0-9]+)?)\s*cm",
+                item.text,
+                flags=re.IGNORECASE,
+            )
+            if match:
+                return float(match.group(1)), float(match.group(2))
+        return None, None
+
+    @staticmethod
+    def _microactive_bjh_vfree_factor(free_space: FreeSpaceInfo) -> float | None:
+        warm = free_space.ambient_entered_cm3
+        cold = free_space.analysis_entered_cm3
+        if warm is None or cold is None or not (0.0 < float(cold) < float(warm) < 200.0):
+            return None
+        vfree = float(warm) - (float(warm) - float(cold)) * MICROACTIVE_BJH_FREE_SPACE_COLD_FRACTION
+        return vfree if 0.0 < vfree < 200.0 else None
 
     def _parse_po_records(self, block: bytes, payload_size: int) -> list[PoRecord]:
         if not block or payload_size <= 0:
@@ -381,7 +618,13 @@ class TriStarSmpParser:
             )
         return points
 
-    def _parse_microactive_isotherm(self, block: bytes, payload_size: int) -> list[IsothermPoint]:
+    def _parse_microactive_isotherm(
+        self,
+        block: bytes,
+        payload_size: int,
+        sample: SampleInfo,
+        free_space: FreeSpaceInfo,
+    ) -> list[IsothermPoint]:
         if not block or payload_size <= 0:
             return []
         strings = self._read_mic_strings(block)
@@ -394,12 +637,16 @@ class TriStarSmpParser:
 
         max_index = max(range(len(rows)), key=lambda idx: rows[idx][2])
         points: list[IsothermPoint] = []
+        sample_mass = float(sample.sample_mass_g) if sample.sample_mass_g and sample.sample_mass_g > 0.0 else None
         for idx, (rel, absolute, relative, quantity) in enumerate(rows, start=1):
             phase = "adsorption" if idx - 1 <= max_index else "desorption"
             saturation_pressure = absolute / relative if relative else None
             elapsed = _read_uint32(block, rel + 24)
             if elapsed is not None and not (0 <= elapsed <= 60 * 60 * 24 * 30):
                 elapsed = None
+            quantity_per_g = self._calculate_quantity(absolute, quantity, sample, free_space)
+            if quantity_per_g is None:
+                quantity_per_g = quantity / sample_mass if sample_mass else quantity
             points.append(
                 IsothermPoint(
                     index=idx,
@@ -410,11 +657,87 @@ class TriStarSmpParser:
                     raw_internal_cm3_stp=quantity,
                     saturation_pressure_mmHg=saturation_pressure,
                     elapsed_seconds=elapsed,
-                    quantity_adsorbed_cm3_g_stp=quantity,
-                    quantity_adsorbed_mmol_g=quantity / CM3_STP_PER_MMOL,
+                    quantity_adsorbed_cm3_g_stp=quantity_per_g,
+                    quantity_adsorbed_mmol_g=quantity_per_g / CM3_STP_PER_MMOL,
                 )
             )
         return points
+
+    def _parse_asap_isotherm(
+        self,
+        block: bytes,
+        payload_size: int,
+        po_records: Sequence[PoRecord],
+        sample: SampleInfo,
+        free_space: FreeSpaceInfo,
+    ) -> list[IsothermPoint]:
+        if not block or payload_size <= 0 or not self._asap_software_text(block):
+            return []
+
+        rows = self._scan_asap_point_rows(block)
+        if len(rows) < 3:
+            return []
+
+        max_index = max(range(len(rows)), key=lambda idx: rows[idx][2])
+        points: list[IsothermPoint] = []
+        for idx, (rel_offset, absolute, relative, raw_internal) in enumerate(rows, start=1):
+            phase = "adsorption" if idx - 1 <= max_index else "desorption"
+            saturation_pressure = absolute / relative if relative else None
+            elapsed = None
+            if idx < len(po_records):
+                po = po_records[idx]
+                if saturation_pressure is None or abs(po.saturation_pressure_mmHg - saturation_pressure) < 5.0:
+                    elapsed = po.elapsed_seconds
+            quantity = self._calculate_quantity(absolute, raw_internal, sample, free_space)
+            points.append(
+                IsothermPoint(
+                    index=idx,
+                    phase=phase,
+                    record_rel_offset=rel_offset,
+                    absolute_pressure_mmHg=absolute,
+                    relative_pressure=relative,
+                    raw_internal_cm3_stp=raw_internal,
+                    saturation_pressure_mmHg=saturation_pressure,
+                    elapsed_seconds=elapsed,
+                    quantity_adsorbed_cm3_g_stp=quantity,
+                    quantity_adsorbed_mmol_g=(quantity / CM3_STP_PER_MMOL if quantity is not None else None),
+                )
+            )
+        return points
+
+    def _scan_asap_point_rows(self, block: bytes) -> list[tuple[int, float, float, float]]:
+        candidates: list[tuple[int, float, float, float]] = []
+        for rel in range(0, len(block) - 24):
+            absolute, relative, raw_internal = struct.unpack_from("<ddd", block, rel)
+            if not (
+                math.isfinite(absolute)
+                and math.isfinite(relative)
+                and math.isfinite(raw_internal)
+                and 0.0001 <= absolute <= 800.0
+                and 1e-9 <= relative <= 1.1
+                and 0.0 <= raw_internal <= 1000.0
+            ):
+                continue
+            saturation = absolute / relative
+            if 700.0 <= saturation <= 800.0:
+                candidates.append((rel, absolute, relative, raw_internal))
+
+        if len(candidates) < 3:
+            return []
+
+        by_offset = {row[0]: row for row in candidates}
+        best: list[tuple[int, float, float, float]] = []
+        for row in candidates:
+            if row[0] - 66 in by_offset:
+                continue
+            sequence = []
+            rel = row[0]
+            while rel in by_offset:
+                sequence.append(by_offset[rel])
+                rel += 66
+            if len(sequence) > len(best):
+                best = sequence
+        return best if len(best) >= 3 else candidates
 
     def _scan_microactive_point_rows(self, block: bytes, payload_size: int) -> list[tuple[int, float, float, float]]:
         limit = min(len(block), payload_size + 18)
@@ -662,16 +985,26 @@ class TriStarSmpParser:
 
         software = ""
         for text in texts:
-            if "MicroActive for TriStar II Plus" in text or "TriStar II 3020 Version" in text:
+            if (
+                "MicroActive for TriStar II Plus" in text
+                or "TriStar II Plus Version" in text
+                or "TriStar II 3020 Version" in text
+                or "ASAP 2460 Version" in text
+                or "ASAP 2020 Plus Version" in text
+            ):
                 software = text
                 break
 
-        manufacturer = "Micromeritics" if "TriStar" in joined or "MicroActive" in joined else ""
+        manufacturer = "Micromeritics" if "TriStar" in joined or "MicroActive" in joined or "ASAP" in joined else ""
         model = ""
         if "TriStar II Plus" in joined:
             model = "TriStar II Plus"
         elif "TriStar II 3020" in joined:
             model = "TriStar II 3020"
+        elif "ASAP 2460" in joined:
+            model = "ASAP 2460"
+        elif "ASAP 2020 Plus" in joined:
+            model = "ASAP 2020 Plus"
 
         options: dict[str, object] = {}
         if manufacturer:
@@ -681,6 +1014,37 @@ class TriStarSmpParser:
         if software:
             options["instrument_software"] = software
         return options
+
+    def _parse_test_time_options(self, header: SmpHeader, method_options: dict[str, object]) -> dict[str, object]:
+        time_zone = _timestamp_zone_for_instrument(method_options)
+        file_modified_raw, file_modified_time = _file_modified_timestamp(header.file_path)
+        return {
+            "test_started_raw": header.created_raw,
+            "test_started_time": _timestamp_text(header.created_raw, time_zone),
+            "test_modified_raw": header.modified_raw,
+            "test_modified_time": _timestamp_text(header.modified_raw, time_zone),
+            "sample_saved_raw": file_modified_raw,
+            "sample_saved_time": file_modified_time,
+            "sample_saved_time_source": "file last modified time",
+            "test_file_modified_raw": file_modified_raw,
+            "test_file_modified_time": file_modified_time,
+            "test_time_zone": time_zone or "system_local",
+            "test_time_source": "SMP header timestamp",
+        }
+
+    def _parse_stored_bet_range(self, block: bytes) -> dict[str, object]:
+        if not block or len(block) < 26:
+            return {}
+        p_min = _read_double(block, len(block) - 18)
+        p_max = _read_double(block, len(block) - 10)
+        if p_min is None or p_max is None:
+            return {}
+        if 0.0 <= float(p_min) < float(p_max) <= 1.0:
+            return {
+                "stored_bet_pressure_min": float(p_min),
+                "stored_bet_pressure_max": float(p_max),
+            }
+        return {}
 
     def _parse_log_messages(self, block: bytes) -> list[MicString]:
         strings = self._read_mic_strings(block)
@@ -737,6 +1101,11 @@ def _header_rows(results: Sequence[TriStarResult]) -> list[dict[str, object]]:
             "version": result.header.version,
             "created_raw": result.header.created_raw,
             "created_time": result.header.created_time,
+            "test_started_raw": result.test_started_raw,
+            "test_started_time": result.test_started_time,
+            "sample_saved_raw": result.sample_saved_raw,
+            "sample_saved_time": result.sample_saved_time,
+            "test_time_zone": result.method_options.get("test_time_zone", ""),
             "modified_raw": result.header.modified_raw,
             "modified_time": result.header.modified_time,
             "directory_offset": result.header.directory_offset,
@@ -971,11 +1340,29 @@ def _int_from_double(data: bytes, rel: int) -> int | None:
     return int(round(value))
 
 
-def _timestamp_text(raw: int) -> str:
+def _timestamp_text(raw: int, time_zone: str | None = None) -> str:
     try:
+        if time_zone and ZoneInfo is not None:
+            return datetime.fromtimestamp(raw, ZoneInfo(time_zone)).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
         return datetime.fromtimestamp(raw).strftime("%Y-%m-%d %H:%M:%S")
-    except (OSError, OverflowError, ValueError):
+    except (OSError, OverflowError, ValueError, KeyError):
         return ""
+
+
+def _timestamp_zone_for_instrument(method_options: dict[str, object]) -> str | None:
+    software = str(method_options.get("instrument_software") or "")
+    model = str(method_options.get("instrument_model") or "")
+    if "MicroActive for TriStar II Plus" in software or "TriStar II Plus Version" in software or model == "TriStar II Plus":
+        return "America/New_York"
+    return None
+
+
+def _file_modified_timestamp(file_path: str) -> tuple[int, str]:
+    try:
+        raw = int(Path(file_path).stat().st_mtime)
+    except OSError:
+        return 0, ""
+    return raw, _timestamp_text(raw)
 
 
 def _temperature_from_text(text: str) -> float | None:

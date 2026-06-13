@@ -10,6 +10,7 @@ from pyqtgraph.Qt import QtCore
 from tristar_bet.analysis import (
     FitResult,
     adsorption_points,
+    automatic_bet_range,
     bet_analysis,
     bjh_pore_distribution,
     desorption_points,
@@ -157,8 +158,10 @@ def plot_bet(
     """仅绘制 BET 散点（不含拟合线），返回 x 坐标数组用于初始化选区边界。
     拟合线由 replace_bet_fit_line() 单独管理，以支持拖动时的快速更新。
     """
-    data_min = p_min if p_min is not None else 0.05
-    data_max = p_max if p_max is not None else 0.30
+    if p_min is None or p_max is None:
+        data_min, data_max = automatic_bet_range(result)
+    else:
+        data_min, data_max = p_min, p_max
     analysis = bet_analysis(result, data_min, data_max)
 
     plot.clear()
@@ -168,7 +171,7 @@ def plot_bet(
     plot.setLogMode(x=False, y=False)
 
     if not analysis.rows:
-        _plot_message(plot, f"BET {_range_text(analysis, '默认区间 0.05-0.30')} 内有效点不足")
+        _plot_message(plot, f"BET {_range_text(analysis, '自动选点区间')} 内有效点不足")
         return np.array([])
 
     x = np.asarray([row["relative_pressure"] for row in analysis.rows], dtype=float)
@@ -655,7 +658,7 @@ def plot_bjh_distribution_multi(
     smooth: bool = True,
     pressure_range: tuple[float, float] | None = None,
     bjh_settings_by_index: dict[int, dict] | None = None,
-) -> None:
+) -> dict[tuple[int, str], list[dict[str, float]]]:
     plot.clear()
     plot.setTitle("BJH 孔径分布")
     plot.setLabel("left", "dV/dlogD (cm3/g)")
@@ -663,9 +666,10 @@ def plot_bjh_distribution_multi(
     plot.setLogMode(x=True, y=False)
     all_x = []
     all_y = []
+    rows_by_key: dict[tuple[int, str], list[dict[str, float]]] = {}
     if not bjh_settings_by_index and not show_adsorption and not show_desorption:
         _plot_message(plot, "请选择 BJH 吸附或 BJH 脱附")
-        return
+        return rows_by_key
 
     for index in _analysis_draw_order(results, visible, active_index):
         result = results[index]
@@ -695,7 +699,8 @@ def plot_bjh_distribution_multi(
                 open_pore_fraction=sample_open_pore_fraction,
                 smooth=sample_smooth,
             )
-            rows = _bjh_rows_in_pressure_range(distribution.rows, pressure_range)
+            rows = distribution.rows
+            rows_by_key[(index, phase)] = list(rows)
             if not rows:
                 continue
             x = np.asarray([row["pore_diameter_nm"] for row in rows], dtype=float)
@@ -728,6 +733,7 @@ def plot_bjh_distribution_multi(
         _fit_range(plot, all_x, all_y, x_log=True)
     else:
         _plot_message(plot, "当前样品没有足够的 BJH 孔径分布点")
+    return rows_by_key
 
 
 def plot_pore_distribution_placeholder(plot: pg.PlotWidget) -> None:

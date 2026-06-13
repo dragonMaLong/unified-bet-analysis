@@ -163,12 +163,41 @@ class TriStarResult:
     def point_count(self) -> int:
         return len(self.isotherm)
 
+    @property
+    def test_started_time(self) -> str:
+        value = self.method_options.get("test_started_time")
+        return str(value) if value else self.header.created_time
+
+    @property
+    def test_started_raw(self) -> int:
+        value = self.method_options.get("test_started_raw", self.header.created_raw)
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return int(self.header.created_raw or 0)
+
+    @property
+    def sample_saved_time(self) -> str:
+        value = self.method_options.get("sample_saved_time")
+        return str(value) if value else ""
+
+    @property
+    def sample_saved_raw(self) -> int:
+        value = self.method_options.get("sample_saved_raw", 0)
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
     def summary_dict(self) -> dict[str, Any]:
         return {
             "file": self.header.file_name,
             "sample_name": self.sample_name,
             "operator": self.sample.operator,
             "sample_mass_g": self.sample.sample_mass_g,
+            "test_started_time": self.test_started_time,
+            "sample_saved_time": self.sample_saved_time,
+            "test_time_zone": self.method_options.get("test_time_zone", ""),
             "created_time": self.header.created_time,
             "modified_time": self.header.modified_time,
             "adsorptive": self.run_conditions.adsorptive_short,

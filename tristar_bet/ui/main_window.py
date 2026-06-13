@@ -17,6 +17,7 @@ from tristar_bet.analysis import (
     DEFAULT_THICKNESS_METHOD,
     THICKNESS_METHOD_DEFAULT_PARAMS,
     analysis_bundle,
+    automatic_bet_range,
     bet_analysis,
     bjh_pore_volume_cm3_g,
     density_conversion_factor,
@@ -43,7 +44,7 @@ from tristar_bet.ui.plots import (
 )
 
 
-APP_NAME = "TriStar II 3020 BET 综合分析"
+APP_NAME = "Micromeritics BET 综合分析"
 Signal = getattr(QtCore, "Signal", None) or getattr(QtCore, "pyqtSignal")
 
 
@@ -512,6 +513,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._t_plot_selection_item = None
         self._t_plot_x_range = None
         self._t_plot_p_range = None
+        self.bjh_region = None
+        self._bjh_distribution_rows_by_key: dict[tuple[int, str], list[dict[str, float]]] = {}
+        self._bjh_diameter_log_bounds: tuple[float, float] | None = None
         self._syncing_t_plot_controls = False
         self.t_plot_thickness_method = DEFAULT_T_PLOT_THICKNESS_METHOD
         self.t_plot_thickness_params_by_method = _default_t_plot_thickness_params_by_method()
@@ -535,10 +539,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._bet_region_pending = False
         self._langmuir_region_pending = False
         self._t_plot_region_pending = False
+        self._bjh_region_pending = False
         self._syncing_region_changes = False
         self._setting_bet_region = False
         self._setting_langmuir_region = False
         self._setting_t_plot_region = False
+        self._setting_bjh_region = False
 
         self.setWindowTitle(APP_NAME)
         self.resize(1280, 780)
@@ -672,7 +678,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.pore_plot = make_plot("BJH 孔径分布", "dV/dlogD (cm3/g)", "孔径 (nm)")
 
         self.bet_default_button = QtWidgets.QPushButton("默认")
-        self.bet_default_button.setToolTip("按默认 BET 区间 0.05-0.30 重新计算")
+        self.bet_default_button.setToolTip("按自动 BET 选点算法重新计算")
         self.bet_default_button.setMinimumWidth(76)
         self.bet_default_button.clicked.connect(self.reset_bet_fit_to_default)
         bet_controls = QtWidgets.QHBoxLayout()
@@ -820,7 +826,7 @@ class MainWindow(QtWidgets.QMainWindow):
         splitter.setSizes([390, 890])
         self.setCentralWidget(splitter)
 
-        self.statusBar().showMessage("打开或拖入 TriStar II 3020 2.0 SMP 文件")
+        self.statusBar().showMessage("打开或拖入 Micromeritics SMP 文件")
         self.refresh_all()
         self._sync_select_all_state()
         QtCore.QTimer.singleShot(0, self._position_header_controls)
@@ -1951,8 +1957,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 file_item = self._table_item(_display_file_name(result), tooltip=result.header.file_path)
                 self.sample_table.setItem(row, FILE_COLUMN, file_item)
 
-                test_time_item = self._table_item(result.header.created_time)
-                test_time_item.setToolTip("来自 SMP 文件创建时间，精确到秒")
+                test_time_item = self._table_item(result.test_started_time)
+                test_time_item.setToolTip("来自 SMP 文件头的 Started 时间")
                 self.sample_table.setItem(row, TEST_TIME_COLUMN, test_time_item)
 
                 bet_item = self._table_item(_fmt(bet.surface_area_m2_g), alignment=QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
@@ -2072,9 +2078,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.refresh_analysis_plots()
 
     def on_plot_tab_changed(self, _index: int) -> None:
-        if self._isotherm_region_custom:
-            return
-        self.refresh_isotherm_plot()
+        if not self._isotherm_region_custom:
+            self.refresh_isotherm_plot()
         self.refresh_analysis_plots()
 
     def refresh_isotherm_plot(self) -> None:
@@ -2091,18 +2096,29 @@ class MainWindow(QtWidgets.QMainWindow):
             self._refresh_isotherm_selection(selected_range)
 
     def refresh_analysis_plots(self) -> None:
+        self._refresh_current_analysis_plot(reset_region=True)
+
+    def _refresh_current_analysis_plot(self, *, reset_region: bool) -> None:
         active = self.active_result()
         if active is None:
             self._clear_analysis_plots()
             return
         pressure_range = self._current_pressure_region()
         p_min, p_max = pressure_range if pressure_range else (None, None)
-        self._refresh_bet_plot(active, p_min, p_max, reset_region=True)
-        self._refresh_langmuir_plot(active, p_min, p_max, reset_region=True)
-        self._refresh_t_plot_plot(active, p_min, p_max, reset_region=True)
-        self.refresh_bjh_plot()
+        current_tab = self.plot_tabs.currentWidget() if getattr(self, "plot_tabs", None) is not None else None
+        if current_tab is self.langmuir_tab:
+            self._refresh_langmuir_plot(active, p_min, p_max, reset_region=reset_region)
+        elif current_tab is self.t_plot_tab:
+            self._refresh_t_plot_plot(active, p_min, p_max, reset_region=reset_region)
+        elif current_tab is self.bjh_tab:
+            self.refresh_bjh_plot()
+        else:
+            self._refresh_bet_plot(active, p_min, p_max, reset_region=reset_region)
 
     def refresh_bjh_plot(self) -> None:
+        self._remove_bjh_region()
+        self._bjh_distribution_rows_by_key = {}
+        self._bjh_diameter_log_bounds = None
         if not self.results:
             plot_pore_distribution_placeholder(self.pore_plot)
             return
@@ -2111,7 +2127,7 @@ class MainWindow(QtWidgets.QMainWindow):
             index: self._bjh_settings_for_result(result)
             for index, result in enumerate(self.results)
         }
-        plot_bjh_distribution_multi(
+        self._bjh_distribution_rows_by_key = plot_bjh_distribution_multi(
             self.pore_plot,
             self.results,
             self.visible_results,
@@ -2127,6 +2143,8 @@ class MainWindow(QtWidgets.QMainWindow):
             pressure_range=pressure_range,
             bjh_settings_by_index=bjh_settings_by_index,
         )
+        self._bjh_diameter_log_bounds = self._bjh_log_bounds_from_rows(self._bjh_distribution_rows_by_key)
+        self._sync_bjh_region_from_pressure_region(pressure_range or self._current_pressure_region())
 
     def _bjh_pressure_range(self) -> tuple[float, float] | None:
         if not self._isotherm_region_custom:
@@ -2135,15 +2153,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _update_analysis_plots_for_region(self) -> None:
         """等温线选区变化时调用：刷新三个分析图但保留各自的拟合选区。"""
-        active = self.active_result()
-        if active is None:
-            return
-        pressure_range = self._current_pressure_region()
-        p_min, p_max = pressure_range if pressure_range else (None, None)
-        self._refresh_bet_plot(active, p_min, p_max, reset_region=False)
-        self._refresh_langmuir_plot(active, p_min, p_max, reset_region=False)
-        self._refresh_t_plot_plot(active, p_min, p_max, reset_region=False)
-        self.refresh_bjh_plot()
+        self._refresh_current_analysis_plot(reset_region=False)
 
     def _visible_analysis_indices(self) -> list[int]:
         draw_order = [i for i in range(len(self.results)) if i != self.active_index]
@@ -2664,6 +2674,186 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # ── reset all fit regions ─────────────────────────────────────────────────
 
+    def _remove_bjh_region(self) -> None:
+        if self.bjh_region is None:
+            return
+        try:
+            self.bjh_region.sigRegionChanged.disconnect(self.on_bjh_region_changed)
+        except (RuntimeError, TypeError):
+            pass
+        try:
+            self.pore_plot.removeItem(self.bjh_region)
+        except RuntimeError:
+            pass
+        self.bjh_region = None
+
+    def _add_bjh_region(self, values: list[float], bounds: list[float]) -> None:
+        region = self._make_selection_region(values, bounds=bounds, movable=True)
+        region.sigRegionChanged.connect(self.on_bjh_region_changed)
+        self.pore_plot.addItem(region, ignoreBounds=True)
+        self.bjh_region = region
+
+    def on_bjh_region_changed(self) -> None:
+        if self._syncing_region_changes or self._setting_bjh_region:
+            return
+        if not self._bjh_region_pending:
+            self._bjh_region_pending = True
+            QtCore.QTimer.singleShot(25, self._update_pressure_from_bjh_region)
+
+    def _update_pressure_from_bjh_region(self) -> None:
+        self._bjh_region_pending = False
+        pressure_range = self._pressure_range_from_bjh_region()
+        if pressure_range is None:
+            return
+        pressure = self._all_pressure_values()
+        if pressure.size:
+            pressure_range = tuple(self._clamp_pressure_region(pressure_range, pressure))
+        if self.region is None:
+            if pressure.size:
+                self._add_region(list(pressure_range), pressure)
+        else:
+            self._syncing_region_changes = True
+            self._setting_isotherm_region = True
+            try:
+                self.region.setRegion(list(pressure_range))
+            finally:
+                self._setting_isotherm_region = False
+                self._syncing_region_changes = False
+        self._isotherm_region_custom = True
+        self._refresh_isotherm_selection(pressure_range)
+        self.refresh_metrics()
+
+    def _sync_bjh_region_from_pressure_region(self, pressure_range: tuple[float, float] | None = None) -> None:
+        if self._setting_bjh_region or self._bjh_diameter_log_bounds is None:
+            return
+        diameter_range = (
+            self._bjh_diameter_range_for_pressure_range(pressure_range)
+            if pressure_range is not None
+            else self._bjh_diameter_range_from_log_bounds()
+        )
+        if diameter_range is None:
+            return
+        values = self._diameter_range_to_log_region(diameter_range)
+        if values is None:
+            return
+        bounds = list(self._bjh_diameter_log_bounds)
+        self._setting_bjh_region = True
+        try:
+            if self.bjh_region is None:
+                self._add_bjh_region(values, bounds)
+            else:
+                if hasattr(self.bjh_region, "setBounds"):
+                    self.bjh_region.setBounds(bounds)
+                self.bjh_region.setRegion(values)
+        finally:
+            self._setting_bjh_region = False
+
+    def _diameter_range_to_log_region(self, diameter_range: tuple[float, float]) -> list[float] | None:
+        lo, hi = sorted((float(diameter_range[0]), float(diameter_range[1])))
+        if not (np.isfinite(lo) and np.isfinite(hi)) or lo <= 0.0 or hi <= 0.0:
+            return None
+        log_lo = math.log10(lo)
+        log_hi = math.log10(hi)
+        if log_lo == log_hi:
+            log_lo -= 0.01
+            log_hi += 0.01
+        return [log_lo, log_hi]
+
+    def _current_bjh_diameter_range(self) -> tuple[float, float] | None:
+        if self.bjh_region is None:
+            return None
+        try:
+            log_lo, log_hi = self.bjh_region.getRegion()
+        except RuntimeError:
+            return None
+        lo, hi = sorted((float(log_lo), float(log_hi)))
+        return (10.0**lo, 10.0**hi)
+
+    def _pressure_range_from_bjh_region(self) -> tuple[float, float] | None:
+        diameter_range = self._current_bjh_diameter_range()
+        if diameter_range is None:
+            return None
+        rows = self._active_bjh_rows()
+        if not rows:
+            return None
+        d_min, d_max = sorted((float(diameter_range[0]), float(diameter_range[1])))
+        selected = [
+            row
+            for row in rows
+            if d_min <= float(row["pore_diameter_nm"]) <= d_max
+        ]
+        if not selected:
+            center = math.sqrt(d_min * d_max) if d_min > 0.0 and d_max > 0.0 else (d_min + d_max) / 2.0
+            selected = [min(rows, key=lambda row: abs(float(row["pore_diameter_nm"]) - center))]
+        pressures = []
+        for row in selected:
+            pressures.append(float(row["relative_pressure_low"]))
+            pressures.append(float(row["relative_pressure_high"]))
+        if not pressures:
+            return None
+        return (min(pressures), max(pressures))
+
+    def _bjh_diameter_range_for_pressure_range(self, pressure_range: tuple[float, float] | None) -> tuple[float, float] | None:
+        if pressure_range is None:
+            return self._bjh_diameter_range_from_log_bounds()
+        rows = self._active_bjh_rows()
+        if not rows:
+            return self._bjh_diameter_range_from_log_bounds()
+        p_min, p_max = sorted((float(pressure_range[0]), float(pressure_range[1])))
+        selected = []
+        for row in rows:
+            interval_min = min(float(row["relative_pressure_low"]), float(row["relative_pressure_high"]))
+            interval_max = max(float(row["relative_pressure_low"]), float(row["relative_pressure_high"]))
+            if interval_max >= p_min and interval_min <= p_max:
+                selected.append(row)
+        if not selected:
+            return None
+        diameters = [float(row["pore_diameter_nm"]) for row in selected if float(row["pore_diameter_nm"]) > 0.0]
+        if not diameters:
+            return None
+        return (min(diameters), max(diameters))
+
+    def _active_bjh_rows(self) -> list[dict[str, float]]:
+        if not (0 <= self.active_index < len(self.results)):
+            return []
+        active = self.results[self.active_index]
+        settings = self._bjh_settings_for_result(active)
+        phases = []
+        if bool(settings["show_adsorption"]):
+            phases.append("adsorption")
+        if bool(settings["show_desorption"]):
+            phases.append("desorption")
+        for phase in phases:
+            rows = self._bjh_distribution_rows_by_key.get((self.active_index, phase), [])
+            if rows:
+                return rows
+        return []
+
+    def _bjh_diameter_range_from_log_bounds(self) -> tuple[float, float] | None:
+        if self._bjh_diameter_log_bounds is None:
+            return None
+        return (10.0**self._bjh_diameter_log_bounds[0], 10.0**self._bjh_diameter_log_bounds[1])
+
+    @staticmethod
+    def _bjh_log_bounds_from_rows(rows_by_key: dict[tuple[int, str], list[dict[str, float]]]) -> tuple[float, float] | None:
+        diameters = []
+        for rows in rows_by_key.values():
+            for row in rows:
+                try:
+                    diameter = float(row["pore_diameter_nm"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if np.isfinite(diameter) and diameter > 0.0:
+                    diameters.append(diameter)
+        if not diameters:
+            return None
+        log_min = math.log10(min(diameters))
+        log_max = math.log10(max(diameters))
+        if log_min == log_max:
+            log_min -= 0.01
+            log_max += 0.01
+        return (log_min, log_max)
+
     def _reset_all_fit_regions(self) -> None:
         self._remove_bet_region()
         self._remove_bet_selection()
@@ -2671,6 +2861,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._remove_langmuir_selection()
         self._remove_t_plot_region()
         self._remove_t_plot_selection()
+        self._remove_bjh_region()
         self._bet_fit_line = None
         self._bet_x_range = None
         self._bet_plot_p_range = None
@@ -2680,6 +2871,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._t_plot_fit_line = None
         self._t_plot_x_range = None
         self._t_plot_p_range = None
+        self._bjh_distribution_rows_by_key = {}
+        self._bjh_diameter_log_bounds = None
 
     def refresh_metrics(self) -> None:
         active = self.active_result()
@@ -2838,9 +3031,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._remove_langmuir_selection()
         self._remove_t_plot_region()
         self._remove_t_plot_selection()
+        self._remove_bjh_region()
         self._bet_plot_p_range = None
         self._langmuir_plot_p_range = None
         self._t_plot_p_range = None
+        self._bjh_distribution_rows_by_key = {}
+        self._bjh_diameter_log_bounds = None
         for plot in (self.bet_plot, self.langmuir_plot, self.t_plot, self.pore_plot):
             plot.clear()
 
@@ -2977,14 +3173,20 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._syncing_region_changes:
             return
         self._mark_isotherm_region_custom()
-        self._refresh_isotherm_selection(self._current_pressure_region())
+        pressure_range = self._current_pressure_region()
+        self._refresh_isotherm_selection(pressure_range)
+        if self._is_bjh_tab_active():
+            self._sync_bjh_region_from_pressure_region(pressure_range)
         self.queue_metrics_update()
 
     def on_region_change_finished(self) -> None:
         if self._syncing_region_changes:
             return
         self._mark_isotherm_region_custom()
-        self._refresh_isotherm_selection(self._current_pressure_region())
+        pressure_range = self._current_pressure_region()
+        self._refresh_isotherm_selection(pressure_range)
+        if self._is_bjh_tab_active():
+            self._sync_bjh_region_from_pressure_region(pressure_range)
         self.queue_metrics_update()
 
     def _mark_isotherm_region_custom(self) -> None:
@@ -2999,6 +3201,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def update_metrics_from_region(self) -> None:
         self._metrics_pending = False
+        if self._is_bjh_tab_active():
+            self._sync_bjh_region_from_pressure_region(self._current_pressure_region())
+            self.refresh_metrics()
+            return
         self.refresh_sample_table()
         self._update_analysis_plots_for_region()
         self.refresh_metrics()
@@ -3019,7 +3225,12 @@ class MainWindow(QtWidgets.QMainWindow):
         return analysis_bundle(result, pressure_range[0], pressure_range[1])
 
     def _bet_fit_range_for_result(self, result) -> tuple[float, float]:
-        return self.custom_bet_fit_ranges.get(id(result), BET_DEFAULT_RANGE)
+        if id(result) in self.custom_bet_fit_ranges:
+            return self.custom_bet_fit_ranges[id(result)]
+        try:
+            return automatic_bet_range(result)
+        except Exception:
+            return BET_DEFAULT_RANGE
 
     def _is_custom_bet_fit(self, result) -> bool:
         return id(result) in self.custom_bet_fit_ranges
@@ -3126,7 +3337,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     @staticmethod
     def _test_time_sort_key(result) -> tuple[int, str]:
-        return (int(result.header.created_raw or 0), str(result.header.created_time or ""))
+        return (int(result.test_started_raw or 0), str(result.test_started_time or ""))
 
     def _bet_sort_key(self, result) -> float:
         try:
@@ -3318,7 +3529,8 @@ def active_metric_rows(
     rows = [
         ("文件名", _display_file_name(result)),
         ("样品名称", result.sample_name),
-        ("测试时间", result.header.created_time),
+        ("测试时间", result.test_started_time),
+        ("样品保存时间", result.sample_saved_time),
         ("设备厂家", _instrument_manufacturer(result)),
         ("设备型号", _instrument_model(result)),
         ("当前选区", _pressure_range_text(pressure_range)),
@@ -3330,6 +3542,7 @@ def active_metric_rows(
     if t_plot_fit_range is not None:
         rows.append(("t-Plot 厚度区间", _thickness_range_text(t_plot_fit_range)))
     t_plot_regression = _t_plot_mmol_regression(t_plot)
+    bet_correlation = _correlation_from_r_squared(bet.r_squared)
     t_plot_correlation = _correlation_from_r_squared(t_plot.r_squared)
     t_plot_total_surface_area = _t_plot_total_surface_area(
         t_plot_surface_area_mode,
@@ -3347,9 +3560,12 @@ def active_metric_rows(
         ("吸附质", _adsorptive_label(result)),
         ("数据点数", str(result.point_count)),
         ("BET 状态", status_text(bet.status)),
-        ("BET 比表面积", f"{_fmt(bet.surface_area_m2_g)} m2/g"),
+        ("BET 比表面积", _value_pm_text(bet.surface_area_m2_g, bet.surface_area_standard_error, "m2/g")),
+        ("BET 斜率", _value_pm_text(bet.slope, bet.slope_standard_error, "g/cm3 STP")),
+        ("BET Y 截距", _value_pm_text(bet.intercept, bet.intercept_standard_error, "g/cm3 STP")),
         ("BET 单层容量", f"{_fmt(bet.monolayer_capacity_cm3_g_stp)} cm3/g STP"),
         ("BET C 常数", _fmt(bet.c_constant)),
+        ("BET 相关系数", _fmt(bet_correlation, 7)),
         ("BET R2", _fmt(bet.r_squared, 6)),
         ("Langmuir 状态", status_text(langmuir.status)),
         ("Langmuir 比表面积", f"{_fmt(langmuir.surface_area_m2_g)} m2/g"),
@@ -3381,6 +3597,7 @@ def condition_rows(result) -> list[tuple[str, str]]:
         ("文件路径", result.header.file_path),
         ("文件创建时间", result.header.created_time),
         ("文件修改时间", result.header.modified_time),
+        ("样品保存时间", result.sample_saved_time),
         ("样品名称", result.sample_name),
         ("操作员", sample.operator),
         ("样品质量", f"{_fmt(sample.sample_mass_g)} g"),
