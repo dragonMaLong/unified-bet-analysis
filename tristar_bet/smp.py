@@ -65,8 +65,21 @@ def load_smp(path: str | Path) -> TriStarResult:
     return parser.parse(path)
 
 
+def load_file(path: str | Path) -> TriStarResult:
+    """Load any supported instrument file, dispatching on its extension.
+
+    Micromeritics ``.smp`` containers go to :func:`load_smp`; MicrotracBEL
+    BELMaster ``.dat`` exports go to :func:`tristar_bet.belmaster.load_dat`.
+    """
+    if Path(path).suffix.lower() == ".dat":
+        from .belmaster import load_dat
+
+        return load_dat(path)
+    return load_smp(path)
+
+
 def load_many(paths: Iterable[str | Path]) -> list[TriStarResult]:
-    return [load_smp(path) for path in paths]
+    return [load_file(path) for path in paths]
 
 
 class TriStarSmpParser:

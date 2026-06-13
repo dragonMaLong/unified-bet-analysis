@@ -4,7 +4,7 @@ import argparse
 import os
 from pathlib import Path
 
-from tristar_bet import export_results_csv, load_many, load_smp
+from tristar_bet import export_results_csv, load_file, load_many
 
 
 DEFAULT_OUT_DIR = Path(r"D:\software\analysis\Data\BET\TriStar_II_3020_format_analysis")
@@ -24,15 +24,14 @@ def main(argv: list[str] | None = None) -> int:
 
     input_path = Path(args.input)
     if input_path.is_dir():
-        smp_paths = sorted({path.resolve(): path for path in input_path.glob("*.SMP")}.values())
-        lower_case_hits = {path.resolve(): path for path in input_path.glob("*.smp")}
-        for resolved, path in lower_case_hits.items():
-            if resolved not in {item.resolve() for item in smp_paths}:
-                smp_paths.append(path)
-        smp_paths = sorted(smp_paths)
-        results = load_many(smp_paths)
+        unique: dict[Path, Path] = {}
+        for pattern in ("*.SMP", "*.smp", "*.DAT", "*.dat"):
+            for path in input_path.glob(pattern):
+                unique.setdefault(path.resolve(), path)
+        data_paths = sorted(unique.values())
+        results = load_many(data_paths)
     else:
-        results = [load_smp(input_path)]
+        results = [load_file(input_path)]
 
     for result in results:
         _print_summary(result)

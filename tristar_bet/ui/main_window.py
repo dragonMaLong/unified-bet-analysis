@@ -12,7 +12,7 @@ import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
-from tristar_bet import TriStarParseError, load_smp
+from tristar_bet import BELMasterParseError, TriStarParseError, load_file
 from tristar_bet.analysis import (
     DEFAULT_THICKNESS_METHOD,
     THICKNESS_METHOD_DEFAULT_PARAMS,
@@ -382,7 +382,7 @@ class SampleTableWidget(QtWidgets.QTableWidget):
             if not url.isLocalFile():
                 continue
             path = Path(url.toLocalFile())
-            if path.is_file() and path.suffix.lower() == ".smp":
+            if path.is_file() and path.suffix.lower() in (".smp", ".dat"):
                 paths.append(str(path))
         return paths
 
@@ -826,7 +826,7 @@ class MainWindow(QtWidgets.QMainWindow):
         splitter.setSizes([390, 890])
         self.setCentralWidget(splitter)
 
-        self.statusBar().showMessage("打开或拖入 Micromeritics SMP 文件")
+        self.statusBar().showMessage("打开或拖入 Micromeritics SMP 或 BELMaster DAT 文件")
         self.refresh_all()
         self._sync_select_all_state()
         QtCore.QTimer.singleShot(0, self._position_header_controls)
@@ -1667,9 +1667,9 @@ class MainWindow(QtWidgets.QMainWindow):
     def open_files(self) -> None:
         paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
             self,
-            "打开 SMP",
+            "打开数据文件",
             str(Path.cwd()),
-            "SMP 文件 (*.SMP *.smp)",
+            "BET 数据文件 (*.SMP *.smp *.DAT *.dat);;SMP 文件 (*.SMP *.smp);;BELMaster DAT 文件 (*.DAT *.dat)",
         )
         if paths:
             self.load_files(paths, replace=True)
@@ -1677,9 +1677,9 @@ class MainWindow(QtWidgets.QMainWindow):
     def add_files(self) -> None:
         paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
             self,
-            "添加 SMP",
+            "添加数据文件",
             str(Path.cwd()),
-            "SMP 文件 (*.SMP *.smp)",
+            "BET 数据文件 (*.SMP *.smp *.DAT *.dat);;SMP 文件 (*.SMP *.smp);;BELMaster DAT 文件 (*.DAT *.dat)",
         )
         if paths:
             self.load_files(paths, replace=False)
@@ -1692,12 +1692,12 @@ class MainWindow(QtWidgets.QMainWindow):
         errors = []
         for path in paths:
             try:
-                result = load_smp(path)
-            except (OSError, TriStarParseError, ValueError) as exc:
+                result = load_file(path)
+            except (OSError, TriStarParseError, BELMasterParseError, ValueError) as exc:
                 errors.append(f"{Path(path).name}: {exc}")
                 continue
             if result.point_count <= 0:
-                errors.append(f"{Path(path).name}: 没有解析到 2.0 实际等温线，已跳过")
+                errors.append(f"{Path(path).name}: 没有解析到实际等温线，已跳过")
                 continue
             parsed.append(result)
 
