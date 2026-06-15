@@ -90,6 +90,11 @@ class BELMasterDatParser:
             "test_started_raw": created_raw,
             "belmaster_quantity_source": "dat_v_ml_stp_per_g",
         }
+        duration_text, duration_seconds = self._parse_measurement_duration(labels)
+        if duration_text:
+            method_options["test_duration_time"] = duration_text
+            method_options["test_duration_seconds"] = duration_seconds
+            method_options["test_duration_source"] = "DAT Time of measurement"
         vs = self._label_float(labels, "Vs/ml")
         if vs is not None:
             method_options["belmaster_vs_cm3"] = vs
@@ -304,6 +309,16 @@ class BELMasterDatParser:
             except (ValueError, OverflowError, OSError):
                 pass
         return 0, raw_date
+
+    @staticmethod
+    def _parse_measurement_duration(labels: dict[str, str]) -> tuple[str, int]:
+        raw_time = labels.get("Time of measurement", "").strip()
+        match = re.match(r"^(\d+):([0-5]?\d):([0-5]?\d)$", raw_time)
+        if not match:
+            return raw_time, 0
+        hours, minutes, seconds = (int(group) for group in match.groups())
+        total_seconds = hours * 3600 + minutes * 60 + seconds
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}", total_seconds
 
     @staticmethod
     def _file_modified_timestamp(path: Path) -> tuple[int, str]:

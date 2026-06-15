@@ -7,6 +7,7 @@ from typing import Sequence
 import numpy as np
 
 from .models import IsothermPoint, TriStarResult
+from .reference_thickness import default_reference_params, reference_thickness_nm
 
 
 DEFAULT_N2_CROSS_SECTION_NM2 = 0.162
@@ -28,7 +29,8 @@ BET_AUTO_MIN_SPAN = 0.08
 DEFAULT_BJH_DIAMETER_MIN_NM = 1.7
 DEFAULT_BJH_DIAMETER_MAX_NM = 300.0
 DEFAULT_THICKNESS_METHOD = "harkins_jura"
-THICKNESS_METHOD_DEFAULT_PARAMS: dict[str, dict[str, float]] = {
+THICKNESS_METHOD_DEFAULT_PARAMS: dict[str, dict[str, object]] = {
+    "reference": default_reference_params(),
     "kjs": {
         "numerator": 60.65,
         "offset": 0.03071,
@@ -845,6 +847,8 @@ def thickness_nm(
         return None
     method = method if method in THICKNESS_METHOD_DEFAULT_PARAMS else DEFAULT_THICKNESS_METHOD
     merged_params = _thickness_params(method, params)
+    if method == "reference":
+        return reference_thickness_nm(relative_pressure, merged_params)
     if method == "halsey":
         return _halsey_thickness_nm(relative_pressure, merged_params)
     if method == "broekhoff_de_boer":
@@ -854,7 +858,7 @@ def thickness_nm(
     return _power_log_thickness_nm(relative_pressure, merged_params)
 
 
-def _thickness_params(method: str, params: dict[str, float] | None) -> dict[str, float]:
+def _thickness_params(method: str, params: dict[str, object] | None) -> dict[str, object]:
     defaults = THICKNESS_METHOD_DEFAULT_PARAMS.get(method, THICKNESS_METHOD_DEFAULT_PARAMS[DEFAULT_THICKNESS_METHOD])
     merged = dict(defaults)
     if params:

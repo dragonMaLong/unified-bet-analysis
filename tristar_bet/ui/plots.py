@@ -24,20 +24,37 @@ pg.setConfigOptions(antialias=True, useOpenGL=False)
 
 DEFAULT_COLORS = (
     "#2563eb",
-    "#dc2626",
     "#16a34a",
     "#9333ea",
     "#f97316",
     "#0891b2",
     "#4f46e5",
-    "#be123c",
     "#65a30d",
     "#b45309",
     "#0f766e",
     "#db2777",
+    "#7c3aed",
+    "#ea580c",
+    "#0284c7",
+    "#84cc16",
+    "#c026d3",
+    "#ca8a04",
+    "#14b8a6",
+    "#0369a1",
+    "#4d7c0f",
+    "#a855f7",
+    "#a16207",
+    "#0d9488",
+    "#6366f1",
 )
-SELECTED_SYMBOL_SIZE = 8
-SELECTED_SYMBOL_PEN_WIDTH = 2
+ACTIVE_LINE_WIDTH = 4
+ACTIVE_SYMBOL_SIZE = 11
+ACTIVE_SYMBOL_PEN_WIDTH = 3
+DEFAULT_LINE_WIDTH = 2
+DEFAULT_SYMBOL_SIZE = 6
+DEFAULT_SYMBOL_PEN_WIDTH = 1
+SELECTED_SYMBOL_SIZE = 11
+SELECTED_SYMBOL_PEN_WIDTH = 3
 
 
 class PlainNumberAxis(pg.AxisItem):
@@ -94,13 +111,14 @@ def plot_isotherm_multi(
     plot.setLogMode(x=False, y=False)
     all_x = []
     all_y = []
+    legend_entries = []
 
     def _collect_xy(pts):
         for p in pts:
             all_x.append(float(p.relative_pressure))
             all_y.append(float(p.quantity_adsorbed_cm3_g_stp or 0.0))
 
-    # 先画非活跃样品，再画活跃样品（确保红色曲线在最上层）
+    # 先画非活跃样品，再画活跃样品，确保当前样品始终在最上层。
     draw_order = [i for i in range(len(results)) if i != active_index] + (
         [active_index] if 0 <= active_index < len(results) else []
     )
@@ -109,17 +127,42 @@ def plot_isotherm_multi(
             continue
         result = results[index]
         is_active = index == active_index
-        color = "#dc2626" if is_active else colors[index % len(colors)]
-        width = 3 if is_active else 2
+        color = _analysis_color(colors, index, active_index)
+        width = ACTIVE_LINE_WIDTH if is_active else DEFAULT_LINE_WIDTH
+        symbol_size = ACTIVE_SYMBOL_SIZE if is_active else DEFAULT_SYMBOL_SIZE
+        symbol_pen_width = ACTIVE_SYMBOL_PEN_WIDTH if is_active else DEFAULT_SYMBOL_PEN_WIDTH
         name = _legend_name(result)
         adsorption = adsorption_points(result)
         desorption = desorption_points(result)
-        _plot_points(plot, adsorption, color, name, solid=True, width=width)
+        item = _plot_points(
+            plot,
+            adsorption,
+            color,
+            None,
+            solid=True,
+            width=width,
+            symbol_size=symbol_size,
+            symbol_pen_width=symbol_pen_width,
+            filled=not is_active,
+        )
+        if item is not None:
+            legend_entries.append((index, item, name))
         _plot_adsorption_desorption_bridge(plot, adsorption, desorption, color, width=width)
-        _plot_points(plot, desorption, color, None, solid=False, width=width)
+        _plot_points(
+            plot,
+            desorption,
+            color,
+            None,
+            solid=False,
+            width=width,
+            symbol_size=symbol_size,
+            symbol_pen_width=symbol_pen_width,
+            filled=False,
+        )
         _collect_xy(adsorption)
         _collect_xy(desorption)
 
+    _set_sample_legend_entries(plot, legend_entries)
     _fit_range(plot, all_x, all_y)
 
 
@@ -143,7 +186,7 @@ def plot_isotherm_selection(
         if index >= len(visible) or not visible[index]:
             continue
         result = results[index]
-        color = "#dc2626" if index == active_index else colors[index % len(colors)]
+        color = _analysis_color(colors, index, active_index)
         items.append(_plot_selected_isotherm_points(plot, adsorption_points(result), color, lo, hi))
         items.append(_plot_selected_isotherm_points(plot, desorption_points(result), color, lo, hi))
     return [item for item in items if item is not None]
@@ -178,9 +221,9 @@ def plot_bet(
     y = np.asarray([row["bet_y"] for row in analysis.rows], dtype=float)
     plot.plot(
         x, y,
-        pen=None, symbol="o", symbolSize=7,
-        symbolPen=pg.mkPen("#2563eb", width=1),
-        symbolBrush=pg.mkBrush("#ffffff"),
+        pen=None, symbol="o", symbolSize=ACTIVE_SYMBOL_SIZE,
+        symbolPen=pg.mkPen("#2563eb", width=ACTIVE_SYMBOL_PEN_WIDTH),
+        symbolBrush=pg.mkBrush("#2563eb"),
         name="BET 点",
     )
     _fit_range(plot, x, y)
@@ -201,6 +244,7 @@ def plot_bet_multi(
     data_max = p_max if p_max is not None else 0.30
 
     plot.clear()
+    _clear_manual_legend_entries(plot)
     plot.setTitle("BET 拟合")
     plot.setLabel("left", "P/[V(P0-P)]")
     plot.setLabel("bottom", "相对压力 (P/P0)")
@@ -221,7 +265,8 @@ def plot_bet_multi(
         x = x[mask]
         y = y[mask]
         color = _analysis_color(colors, index, active_index)
-        _plot_analysis_xy(plot, x, y, color, _legend_name(results[index]), index == active_index)
+        item = _plot_analysis_xy(plot, x, y, color, _legend_name(results[index]), index == active_index)
+        _append_sample_legend_entry(plot, index, item, _legend_name(results[index]))
         x_by_index[index] = x
         all_x.extend(x.tolist())
         all_y.extend(y.tolist())
@@ -240,6 +285,7 @@ def plot_bet_selection(
     fit_p_max: float,
     data_p_min: float | None = None,
     data_p_max: float | None = None,
+    color: str = "#2563eb",
 ):
     data_min = data_p_min if data_p_min is not None else 0.05
     data_max = data_p_max if data_p_max is not None else 0.30
@@ -253,7 +299,7 @@ def plot_bet_selection(
     mask = np.isfinite(x) & np.isfinite(y) & (x >= lo) & (x <= hi)
     if not np.any(mask):
         return None
-    return _plot_selected_xy(plot, x[mask], y[mask], "#2563eb")
+    return _plot_selected_xy(plot, x[mask], y[mask], color)
 
 
 def plot_langmuir_selection(
@@ -263,6 +309,7 @@ def plot_langmuir_selection(
     fit_p_max: float,
     data_p_min: float | None = None,
     data_p_max: float | None = None,
+    color: str = "#2563eb",
 ):
     data_min = data_p_min if data_p_min is not None else 0.05
     data_max = data_p_max if data_p_max is not None else 0.30
@@ -276,7 +323,7 @@ def plot_langmuir_selection(
     mask = np.isfinite(x) & np.isfinite(y) & (x >= lo) & (x <= hi)
     if not np.any(mask):
         return None
-    return _plot_selected_xy(plot, x[mask], y[mask], "#2563eb")
+    return _plot_selected_xy(plot, x[mask], y[mask], color)
 
 
 def replace_bet_fit_line(
@@ -287,7 +334,7 @@ def replace_bet_fit_line(
     fit_p_max: float,
     line_x_min: float | None = None,
     line_x_max: float | None = None,
-    color: str = "#dc2626",
+    color: str = "#2563eb",
     name: str | None = "线性拟合",
     width: int = 2,
 ):
@@ -338,9 +385,9 @@ def plot_langmuir_points(
     y = np.asarray([row["langmuir_y"] for row in analysis.rows], dtype=float)
     plot.plot(
         x, y,
-        pen=None, symbol="o", symbolSize=7,
-        symbolPen=pg.mkPen("#2563eb", width=1),
-        symbolBrush=pg.mkBrush("#ffffff"),
+        pen=None, symbol="o", symbolSize=ACTIVE_SYMBOL_SIZE,
+        symbolPen=pg.mkPen("#2563eb", width=ACTIVE_SYMBOL_PEN_WIDTH),
+        symbolBrush=pg.mkBrush("#2563eb"),
         name="Langmuir 点",
     )
     _fit_range(plot, x, y)
@@ -361,6 +408,7 @@ def plot_langmuir_points_multi(
     data_max = p_max if p_max is not None else 0.30
 
     plot.clear()
+    _clear_manual_legend_entries(plot)
     plot.setTitle("Langmuir 拟合")
     plot.setLabel("left", "(P/P0) / V")
     plot.setLabel("bottom", "相对压力 (P/P0)")
@@ -381,7 +429,8 @@ def plot_langmuir_points_multi(
         x = x[mask]
         y = y[mask]
         color = _analysis_color(colors, index, active_index)
-        _plot_analysis_xy(plot, x, y, color, _legend_name(results[index]), index == active_index)
+        item = _plot_analysis_xy(plot, x, y, color, _legend_name(results[index]), index == active_index)
+        _append_sample_legend_entry(plot, index, item, _legend_name(results[index]))
         x_by_index[index] = x
         all_x.extend(x.tolist())
         all_y.extend(y.tolist())
@@ -401,7 +450,7 @@ def replace_langmuir_fit_line(
     fit_p_max: float,
     line_x_min: float | None = None,
     line_x_max: float | None = None,
-    color: str = "#dc2626",
+    color: str = "#2563eb",
     name: str | None = "线性拟合",
     width: int = 2,
 ):
@@ -451,9 +500,9 @@ def plot_t_plot_points(
     y = np.asarray([row["liquid_volume_cm3_g"] for row in analysis.rows], dtype=float)
     plot.plot(
         x, y,
-        pen=None, symbol="o", symbolSize=7,
-        symbolPen=pg.mkPen("#2563eb", width=1),
-        symbolBrush=pg.mkBrush("#ffffff"),
+        pen=None, symbol="o", symbolSize=ACTIVE_SYMBOL_SIZE,
+        symbolPen=pg.mkPen("#2563eb", width=ACTIVE_SYMBOL_PEN_WIDTH),
+        symbolBrush=pg.mkBrush("#2563eb"),
         name="t-Plot 点",
     )
     _fit_range(plot, x, y)
@@ -476,6 +525,7 @@ def plot_t_plot_points_multi(
     data_max = p_max if p_max is not None else 0.50
 
     plot.clear()
+    _clear_manual_legend_entries(plot)
     plot.setTitle("t-Plot")
     plot.setLabel("left", "液体体积 (cm3/g)")
     plot.setLabel("bottom", "统计膜厚 t (nm)")
@@ -502,7 +552,8 @@ def plot_t_plot_points_multi(
         x = x[mask]
         y = y[mask]
         color = _analysis_color(colors, index, active_index)
-        _plot_analysis_xy(plot, x, y, color, _legend_name(results[index]), index == active_index)
+        item = _plot_analysis_xy(plot, x, y, color, _legend_name(results[index]), index == active_index)
+        _append_sample_legend_entry(plot, index, item, _legend_name(results[index]))
         x_by_index[index] = x
         all_x.extend(x.tolist())
         all_y.extend(y.tolist())
@@ -523,6 +574,7 @@ def plot_t_plot_selection(
     data_p_max: float | None = None,
     thickness_params: dict[str, float] | None = None,
     thickness_method: str = "harkins_jura",
+    color: str = "#2563eb",
 ):
     analysis = t_plot_analysis_by_thickness(
         result,
@@ -541,7 +593,7 @@ def plot_t_plot_selection(
     mask = np.isfinite(x) & np.isfinite(y)
     if not np.any(mask):
         return None
-    return _plot_selected_xy(plot, x[mask], y[mask], "#2563eb")
+    return _plot_selected_xy(plot, x[mask], y[mask], color)
 
 
 def replace_t_plot_fit_line(
@@ -556,7 +608,7 @@ def replace_t_plot_fit_line(
     data_p_max: float | None = None,
     thickness_params: dict[str, float] | None = None,
     thickness_method: str = "harkins_jura",
-    color: str = "#dc2626",
+    color: str = "#2563eb",
     name: str | None = "线性拟合",
     width: int = 2,
 ):
@@ -608,12 +660,12 @@ def plot_langmuir(plot: pg.PlotWidget, result, p_min: float | None = None, p_max
         y,
         pen=None,
         symbol="o",
-        symbolSize=7,
-        symbolPen=pg.mkPen("#2563eb", width=1),
-        symbolBrush=pg.mkBrush("#ffffff"),
+        symbolSize=ACTIVE_SYMBOL_SIZE,
+        symbolPen=pg.mkPen("#2563eb", width=ACTIVE_SYMBOL_PEN_WIDTH),
+        symbolBrush=pg.mkBrush("#2563eb"),
         name="Langmuir 点",
     )
-    _plot_fit_line(plot, analysis, x, "#dc2626")
+    _plot_fit_line(plot, analysis, x, "#2563eb")
     _fit_range(plot, x, y)
 
 
@@ -634,12 +686,12 @@ def plot_t_plot(plot: pg.PlotWidget, result, p_min: float | None = None, p_max: 
         y,
         pen=None,
         symbol="o",
-        symbolSize=7,
-        symbolPen=pg.mkPen("#2563eb", width=1),
-        symbolBrush=pg.mkBrush("#ffffff"),
+        symbolSize=ACTIVE_SYMBOL_SIZE,
+        symbolPen=pg.mkPen("#2563eb", width=ACTIVE_SYMBOL_PEN_WIDTH),
+        symbolBrush=pg.mkBrush("#2563eb"),
         name="t-Plot 点",
     )
-    _plot_fit_line(plot, analysis, x, "#dc2626")
+    _plot_fit_line(plot, analysis, x, "#2563eb")
     _fit_range(plot, x, y)
 
 
@@ -660,12 +712,14 @@ def plot_bjh_distribution_multi(
     bjh_settings_by_index: dict[int, dict] | None = None,
 ) -> dict[tuple[int, str], list[dict[str, float]]]:
     plot.clear()
+    _clear_manual_legend_entries(plot)
     plot.setTitle("BJH 孔径分布")
     plot.setLabel("left", "dV/dlogD (cm3/g)")
     plot.setLabel("bottom", "孔径 (nm)")
     plot.setLogMode(x=True, y=False)
     all_x = []
     all_y = []
+    legend_entries = []
     rows_by_key: dict[tuple[int, str], list[dict[str, float]]] = {}
     if not bjh_settings_by_index and not show_adsorption and not show_desorption:
         _plot_message(plot, "请选择 BJH 吸附或 BJH 脱附")
@@ -673,8 +727,9 @@ def plot_bjh_distribution_multi(
 
     for index in _analysis_draw_order(results, visible, active_index):
         result = results[index]
+        is_active = index == active_index
         color = _analysis_color(colors, index, active_index)
-        width = 3 if index == active_index else 2
+        width = ACTIVE_LINE_WIDTH if is_active else DEFAULT_LINE_WIDTH
         settings = (bjh_settings_by_index or {}).get(index, {})
         sample_thickness_method = str(settings.get("thickness_method", thickness_method))
         sample_thickness_params = dict(settings.get("thickness_params", thickness_params or {}))
@@ -699,7 +754,8 @@ def plot_bjh_distribution_multi(
                 open_pore_fraction=sample_open_pore_fraction,
                 smooth=sample_smooth,
             )
-            rows = distribution.rows
+            all_rows = list(distribution.rows)
+            rows = _bjh_rows_in_pressure_range(all_rows, pressure_range)
             rows_by_key[(index, phase)] = list(rows)
             if not rows:
                 continue
@@ -716,24 +772,73 @@ def plot_bjh_distribution_multi(
             pen = pg.mkPen(color, width=width)
             pen.setStyle(line_style)
             phase_label = "吸附" if phase == "adsorption" else "脱附"
-            plot.plot(
+            item = plot.plot(
                 x,
                 y,
                 pen=pen,
                 symbol="o",
-                symbolSize=6 if index == active_index else 5,
-                symbolPen=pg.mkPen(color, width=1),
+                symbolSize=ACTIVE_SYMBOL_SIZE if is_active else DEFAULT_SYMBOL_SIZE,
+                symbolPen=pg.mkPen(color, width=ACTIVE_SYMBOL_PEN_WIDTH if is_active else DEFAULT_SYMBOL_PEN_WIDTH),
                 symbolBrush=pg.mkBrush("#ffffff"),
-                name=f"{_legend_name(result)} BJH{phase_label}",
+                name=None,
             )
+            legend_entries.append((index, item, f"{_legend_name(result)} BJH{phase_label}"))
             all_x.extend(x.tolist())
             all_y.extend(y.tolist())
 
+    _set_sample_legend_entries(plot, legend_entries)
     if all_x:
         _fit_range(plot, all_x, all_y, x_log=True)
     else:
         _plot_message(plot, "当前样品没有足够的 BJH 孔径分布点")
     return rows_by_key
+
+
+def plot_bjh_selection(
+    plot: pg.PlotWidget,
+    rows_by_key: dict[tuple[int, str], list[dict[str, float]]],
+    colors: list[str],
+    diameter_range: tuple[float, float] | None,
+    active_index: int = -1,
+) -> list:
+    if diameter_range is None:
+        return []
+    lo, hi = sorted((float(diameter_range[0]), float(diameter_range[1])))
+    if not (np.isfinite(lo) and np.isfinite(hi)):
+        return []
+    items = []
+    keys = sorted(rows_by_key, key=lambda key: (key[0] == active_index, key[0], key[1]))
+    for index, phase in keys:
+        rows = rows_by_key.get((index, phase), [])
+        selected_x = []
+        selected_y = []
+        for row in rows:
+            try:
+                diameter = float(row["pore_diameter_nm"])
+                pore_volume = float(row["differential_pore_volume_cm3_g"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not (np.isfinite(diameter) and np.isfinite(pore_volume)):
+                continue
+            if diameter <= 0.0 or pore_volume < 0.0 or diameter < lo or diameter > hi:
+                continue
+            selected_x.append(diameter)
+            selected_y.append(pore_volume)
+        if not selected_x:
+            continue
+        color = _analysis_color(colors, index, active_index)
+        is_active = index == active_index
+        items.append(
+            _plot_selected_xy(
+                plot,
+                np.asarray(selected_x, dtype=float),
+                np.asarray(selected_y, dtype=float),
+                color,
+                symbol_size=SELECTED_SYMBOL_SIZE if is_active else DEFAULT_SYMBOL_SIZE,
+                symbol_pen_width=SELECTED_SYMBOL_PEN_WIDTH if is_active else DEFAULT_SYMBOL_PEN_WIDTH,
+            )
+        )
+    return [item for item in items if item is not None]
 
 
 def plot_pore_distribution_placeholder(plot: pg.PlotWidget) -> None:
@@ -758,22 +863,35 @@ def _bjh_rows_in_pressure_range(rows, pressure_range: tuple[float, float] | None
     return filtered
 
 
-def _plot_points(plot: pg.PlotWidget, points, color: str, name: str | None, *, solid: bool, width: int = 2) -> None:
+def _plot_points(
+    plot: pg.PlotWidget,
+    points,
+    color: str,
+    name: str | None,
+    *,
+    solid: bool,
+    width: int = DEFAULT_LINE_WIDTH,
+    symbol_size: int = DEFAULT_SYMBOL_SIZE,
+    symbol_pen_width: int = DEFAULT_SYMBOL_PEN_WIDTH,
+    filled: bool | None = None,
+):
     if not points:
-        return
+        return None
+    if filled is None:
+        filled = solid
     x = np.asarray([float(point.relative_pressure) for point in points], dtype=float)
     y = np.asarray([float(point.quantity_adsorbed_cm3_g_stp or 0.0) for point in points], dtype=float)
     pen = pg.mkPen(color, width=width)
     if not solid:
         pen.setStyle(QtCore.Qt.DashLine)
-    plot.plot(
+    return plot.plot(
         x,
         y,
         pen=pen,
         symbol="o",
-        symbolSize=5,
-        symbolPen=pg.mkPen(color, width=1),
-        symbolBrush=pg.mkBrush(color if solid else "#ffffff"),
+        symbolSize=symbol_size,
+        symbolPen=pg.mkPen(color, width=symbol_pen_width),
+        symbolBrush=pg.mkBrush(color if filled else "#ffffff"),
         name=name,
     )
 
@@ -816,9 +934,32 @@ def _analysis_draw_order(results, visible: list[bool], active_index: int) -> lis
 
 
 def _analysis_color(colors: list[str], index: int, active_index: int) -> str:
-    if index == active_index:
-        return "#dc2626"
     return colors[index % len(colors)] if colors else "#2563eb"
+
+
+def _clear_manual_legend_entries(plot: pg.PlotWidget) -> None:
+    setattr(plot, "_manual_sample_legend_entries", [])
+    legend = getattr(plot.plotItem, "legend", None)
+    if legend is not None:
+        legend.clear()
+
+
+def _append_sample_legend_entry(plot: pg.PlotWidget, index: int, item, name: str | None) -> None:
+    if item is None or not name:
+        return
+    entries = list(getattr(plot, "_manual_sample_legend_entries", []))
+    entries.append((index, item, name))
+    setattr(plot, "_manual_sample_legend_entries", entries)
+    _set_sample_legend_entries(plot, entries)
+
+
+def _set_sample_legend_entries(plot: pg.PlotWidget, entries) -> None:
+    legend = getattr(plot.plotItem, "legend", None)
+    if legend is None:
+        return
+    legend.clear()
+    for _index, item, name in sorted(entries, key=lambda entry: entry[0]):
+        legend.addItem(item, name)
 
 
 def _plot_analysis_xy(
@@ -828,16 +969,16 @@ def _plot_analysis_xy(
     color: str,
     name: str | None,
     is_active: bool,
-) -> None:
-    plot.plot(
+):
+    return plot.plot(
         x,
         y,
         pen=None,
         symbol="o",
-        symbolSize=8 if is_active else 6,
-        symbolPen=pg.mkPen(color, width=2 if is_active else 1),
+        symbolSize=ACTIVE_SYMBOL_SIZE if is_active else DEFAULT_SYMBOL_SIZE,
+        symbolPen=pg.mkPen(color, width=ACTIVE_SYMBOL_PEN_WIDTH if is_active else DEFAULT_SYMBOL_PEN_WIDTH),
         symbolBrush=pg.mkBrush("#ffffff"),
-        name=name,
+        name=None,
     )
 
 
@@ -869,14 +1010,22 @@ def _plot_selected_isotherm_points(
     )
 
 
-def _plot_selected_xy(plot: pg.PlotWidget, x: np.ndarray, y: np.ndarray, color: str):
+def _plot_selected_xy(
+    plot: pg.PlotWidget,
+    x: np.ndarray,
+    y: np.ndarray,
+    color: str,
+    *,
+    symbol_size: int = SELECTED_SYMBOL_SIZE,
+    symbol_pen_width: int = SELECTED_SYMBOL_PEN_WIDTH,
+):
     return plot.plot(
         x,
         y,
         pen=None,
         symbol="o",
-        symbolSize=SELECTED_SYMBOL_SIZE,
-        symbolPen=pg.mkPen(color, width=SELECTED_SYMBOL_PEN_WIDTH),
+        symbolSize=symbol_size,
+        symbolPen=pg.mkPen(color, width=symbol_pen_width),
         symbolBrush=pg.mkBrush(color),
     )
 
@@ -892,7 +1041,7 @@ def _plot_fit_line(plot: pg.PlotWidget, analysis: FitResult, x_values: np.ndarra
     x_max = float(np.nanmax(x_values))
     line_x = np.linspace(x_min, x_max, 120)
     line_y = analysis.slope * line_x + analysis.intercept
-    plot.plot(line_x, line_y, pen=pg.mkPen(color, width=2), name="线性拟合")
+    plot.plot(line_x, line_y, pen=pg.mkPen(color, width=ACTIVE_LINE_WIDTH), name="线性拟合")
 
 
 def _plot_message(plot: pg.PlotWidget, text: str) -> None:

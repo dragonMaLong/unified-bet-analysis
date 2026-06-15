@@ -177,6 +177,32 @@ class TriStarResult:
             return int(self.header.created_raw or 0)
 
     @property
+    def test_completed_time(self) -> str:
+        value = self.method_options.get("test_completed_time")
+        return str(value) if value else ""
+
+    @property
+    def test_completed_raw(self) -> int:
+        value = self.method_options.get("test_completed_raw", 0)
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    @property
+    def test_duration_time(self) -> str:
+        value = self.method_options.get("test_duration_time")
+        return str(value) if value else ""
+
+    @property
+    def test_duration_seconds(self) -> int:
+        value = self.method_options.get("test_duration_seconds", 0)
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    @property
     def sample_saved_time(self) -> str:
         value = self.method_options.get("sample_saved_time")
         return str(value) if value else ""
@@ -196,6 +222,8 @@ class TriStarResult:
             "operator": self.sample.operator,
             "sample_mass_g": self.sample.sample_mass_g,
             "test_started_time": self.test_started_time,
+            "test_completed_time": self.test_completed_time,
+            "test_duration_time": self.test_duration_time,
             "sample_saved_time": self.sample_saved_time,
             "test_time_zone": self.method_options.get("test_time_zone", ""),
             "created_time": self.header.created_time,

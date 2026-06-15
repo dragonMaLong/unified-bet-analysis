@@ -114,7 +114,7 @@ class TriStarSmpParser:
         method_options = self._parse_method_options(blocks.get(302, b""), blocks.get(725, b""), blocks.get(320, b""))
         method_options.update(self._parse_instrument_info(blocks))
         method_options.update(self._parse_stored_bet_range(blocks.get(311, b"")))
-        method_options.update(self._parse_test_time_options(header, method_options))
+        method_options.update(self._parse_test_time_options(header, method_options, blocks.get(705, b"")))
         if used_asap_point_table:
             method_options["asap_quantity_source"] = "raw_cm3_stp_free_space_corrected_and_normalized"
             if free_space.vfree_factor_cm3 is not None:
@@ -1028,12 +1028,33 @@ class TriStarSmpParser:
             options["instrument_software"] = software
         return options
 
-    def _parse_test_time_options(self, header: SmpHeader, method_options: dict[str, object]) -> dict[str, object]:
+    def _parse_test_time_options(
+        self,
+        header: SmpHeader,
+        method_options: dict[str, object],
+        log_block: bytes = b"",
+    ) -> dict[str, object]:
         time_zone = _timestamp_zone_for_instrument(method_options)
         file_modified_raw, file_modified_time = _file_modified_timestamp(header.file_path)
+        log_times = self._parse_log_event_times(log_block)
+        started_time = str(log_times.get("log_started_time") or _timestamp_text(header.created_raw, time_zone))
+        completed_time = str(log_times.get("log_completed_time") or "")
+        started_raw = log_times.get("log_started_sort_key", header.created_raw)
+        completed_raw = log_times.get("log_completed_sort_key", 0)
+        duration_seconds = 0
+        duration_time = ""
+        started_dt = log_times.get("_log_started_datetime")
+        completed_dt = log_times.get("_log_completed_datetime")
+        if isinstance(started_dt, datetime) and isinstance(completed_dt, datetime) and completed_dt >= started_dt:
+            duration_seconds = int((completed_dt - started_dt).total_seconds())
+            duration_time = _duration_text_from_seconds(duration_seconds)
         return {
-            "test_started_raw": header.created_raw,
-            "test_started_time": _timestamp_text(header.created_raw, time_zone),
+            "test_started_raw": started_raw,
+            "test_started_time": started_time,
+            "test_completed_raw": completed_raw,
+            "test_completed_time": completed_time,
+            "test_duration_seconds": duration_seconds,
+            "test_duration_time": duration_time,
             "test_modified_raw": header.modified_raw,
             "test_modified_time": _timestamp_text(header.modified_raw, time_zone),
             "sample_saved_raw": file_modified_raw,
@@ -1042,8 +1063,61 @@ class TriStarSmpParser:
             "test_file_modified_raw": file_modified_raw,
             "test_file_modified_time": file_modified_time,
             "test_time_zone": time_zone or "system_local",
-            "test_time_source": "SMP header timestamp",
+            "test_time_source": "SMP log Started event timestamp" if log_times.get("log_started_time") else "SMP header timestamp",
+            "test_completed_time_source": "SMP log Finished/Done event timestamp" if completed_time else "",
+            "test_duration_source": "SMP log Started/Finished event timestamps" if duration_time else "",
         }
+
+    def _parse_log_event_times(self, log_block: bytes) -> dict[str, object]:
+        events: dict[str, object] = {}
+        for item in self._parse_log_messages(log_block):
+            event_time = self._log_event_datetime(log_block, item.rel_offset)
+            if event_time is None:
+                continue
+            text = item.text.strip()
+            text_lower = text.lower()
+            event_text = event_time.strftime("%Y-%m-%d %H:%M:%S")
+            event_key = _datetime_sort_key(event_time)
+
+            if (
+                "started analysis of file" in text_lower
+                or "starting a sample analysis" in text_lower
+                or ("analysis on file" in text_lower and " started" in text_lower)
+            ):
+                events.setdefault("log_started_time", event_text)
+                events.setdefault("log_started_sort_key", event_key)
+                events.setdefault("log_started_event", text)
+                events.setdefault("_log_started_datetime", event_time)
+            elif "finished a sample analysis" in text_lower or ("analysis on file" in text_lower and " done" in text_lower):
+                events["log_completed_time"] = event_text
+                events["log_completed_sort_key"] = event_key
+                events["log_completed_event"] = text
+                events["_log_completed_datetime"] = event_time
+        return events
+
+    @staticmethod
+    def _log_event_datetime(block: bytes, text_rel_offset: int) -> datetime | None:
+        timestamp_rel = text_rel_offset - 25
+        if timestamp_rel < 0 or timestamp_rel + 18 > len(block):
+            return None
+        second, minute, hour, day, month_zero, year_from_1900, _weekday, _yearday, _is_dst = struct.unpack_from(
+            "<9H",
+            block,
+            timestamp_rel,
+        )
+        if not (
+            0 <= second < 60
+            and 0 <= minute < 60
+            and 0 <= hour < 24
+            and 1 <= day <= 31
+            and 0 <= month_zero <= 11
+            and 70 <= year_from_1900 <= 300
+        ):
+            return None
+        try:
+            return datetime(1900 + year_from_1900, month_zero + 1, day, hour, minute, second)
+        except ValueError:
+            return None
 
     def _parse_stored_bet_range(self, block: bytes) -> dict[str, object]:
         if not block or len(block) < 26:
@@ -1116,6 +1190,10 @@ def _header_rows(results: Sequence[TriStarResult]) -> list[dict[str, object]]:
             "created_time": result.header.created_time,
             "test_started_raw": result.test_started_raw,
             "test_started_time": result.test_started_time,
+            "test_completed_raw": result.test_completed_raw,
+            "test_completed_time": result.test_completed_time,
+            "test_duration_seconds": result.test_duration_seconds,
+            "test_duration_time": result.test_duration_time,
             "sample_saved_raw": result.sample_saved_raw,
             "sample_saved_time": result.sample_saved_time,
             "test_time_zone": result.method_options.get("test_time_zone", ""),
@@ -1360,6 +1438,16 @@ def _timestamp_text(raw: int, time_zone: str | None = None) -> str:
         return datetime.fromtimestamp(raw).strftime("%Y-%m-%d %H:%M:%S")
     except (OSError, OverflowError, ValueError, KeyError):
         return ""
+
+
+def _datetime_sort_key(value: datetime) -> int:
+    return int(value.strftime("%Y%m%d%H%M%S"))
+
+
+def _duration_text_from_seconds(total_seconds: int) -> str:
+    hours, remainder = divmod(max(0, int(total_seconds)), 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
 def _timestamp_zone_for_instrument(method_options: dict[str, object]) -> str | None:

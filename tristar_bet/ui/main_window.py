@@ -19,17 +19,26 @@ from tristar_bet.analysis import (
     analysis_bundle,
     automatic_bet_range,
     bet_analysis,
+    bjh_pore_distribution,
     bjh_pore_volume_cm3_g,
     density_conversion_factor,
     langmuir_analysis,
     t_plot_analysis_by_thickness,
     thickness_nm,
 )
+from tristar_bet.reference_thickness import (
+    DEFAULT_REFERENCE_DIR,
+    normalize_reference_points,
+    read_reference_points,
+    write_reference_points,
+)
 from tristar_bet.ui.plots import (
+    ACTIVE_LINE_WIDTH,
     DEFAULT_COLORS,
     make_plot,
     plot_bet_multi,
     plot_bet_selection,
+    plot_bjh_selection,
     plot_isotherm_multi,
     plot_isotherm_selection,
     plot_bjh_distribution_multi,
@@ -422,6 +431,7 @@ CM3_STP_PER_MMOL = 22.414
 SURFACE_AREA_CORRECTION_FACTOR = 1.0
 CUSTOM_BET_COLOR = "#2563eb"
 T_PLOT_THICKNESS_METHOD_LABELS = {
+    "reference": "参比",
     "kjs": "Kruk-Jaroniec-Sayari",
     "halsey": "Halsey",
     "harkins_jura": "Harkins-Jura",
@@ -442,6 +452,7 @@ DEFAULT_BJH_OPEN_PORE_FRACTION = 0.0
 DEFAULT_BJH_SMOOTH_DERIVATIVE = True
 DEFAULT_BJH_SHOW_ADSORPTION = True
 DEFAULT_BJH_SHOW_DESORPTION = False
+DEFAULT_BJH_PORE_VOLUME_RANGE = (2.0, 10.0)
 T_PLOT_PANEL_COLLAPSED_WIDTH = 360
 T_PLOT_PANEL_EXPANDED_WIDTH = 660
 BJH_PANEL_COLLAPSED_WIDTH = 380
@@ -450,6 +461,12 @@ REGION_LINE_COLOR = "#2563eb"
 REGION_LINE_HOVER_COLOR = "#dc2626"
 REGION_FILL_COLOR = (37, 99, 235, 34)
 REGION_FILL_HOVER_COLOR = (37, 99, 235, 48)
+BJH_REGION_LINE_COLOR = "#16a34a"
+BJH_REGION_LINE_HOVER_COLOR = "#15803d"
+BJH_REGION_FILL_COLOR = (22, 163, 74, 34)
+BJH_REGION_FILL_HOVER_COLOR = (22, 163, 74, 48)
+REFERENCE_INVALID_BACKGROUND = "#fee2e2"
+REFERENCE_INVALID_FOREGROUND = "#b91c1c"
 
 
 def _region_pen(color: str) -> QtGui.QPen:
@@ -486,6 +503,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.custom_t_plot_fit_ranges: dict[int, tuple[float, float]] = {}
         self.custom_t_plot_settings: dict[int, dict[str, object]] = {}
         self.custom_bjh_settings: dict[int, dict[str, object]] = {}
+        self.bjh_pore_volume_range: tuple[float, float] = DEFAULT_BJH_PORE_VOLUME_RANGE
         self._updating_table = False
         self._updating_sample_checks = False
         self._updating_sample_column_widths = False
@@ -514,6 +532,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._t_plot_x_range = None
         self._t_plot_p_range = None
         self.bjh_region = None
+        self._bjh_selection_items = []
         self._bjh_distribution_rows_by_key: dict[tuple[int, str], list[dict[str, float]]] = {}
         self._bjh_diameter_log_bounds: tuple[float, float] | None = None
         self._syncing_t_plot_controls = False
@@ -532,6 +551,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.bjh_smooth_derivative = DEFAULT_BJH_SMOOTH_DERIVATIVE
         self.bjh_show_adsorption = DEFAULT_BJH_SHOW_ADSORPTION
         self.bjh_show_desorption = DEFAULT_BJH_SHOW_DESORPTION
+        self.reference_tables: dict[str, QtWidgets.QTableWidget] = {}
+        self.reference_name_edits: dict[str, QtWidgets.QLineEdit] = {}
+        self._syncing_reference_tables = False
         self.region_is_log = False
         self._isotherm_region_custom = False
         self._setting_isotherm_region = False
@@ -549,14 +571,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setWindowTitle(APP_NAME)
         self.resize(1280, 780)
 
-        open_button = QtWidgets.QPushButton("打开 SMP")
+        open_button = QtWidgets.QPushButton("导入文件")
         open_button.clicked.connect(self.open_files)
-        add_button = QtWidgets.QPushButton("添加 SMP")
+        add_button = QtWidgets.QPushButton("添加文件")
         add_button.clicked.connect(self.add_files)
         export_button = QtWidgets.QPushButton("导出 XLSX")
         export_button.clicked.connect(self.export_xlsx)
         for button in (open_button, add_button, export_button):
-            button.setMinimumHeight(32)
+            button.setFixedHeight(32)
+            button.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+            button.setFixedWidth(96)
 
         self.select_all_check = SelectAllCheckBox()
         self.select_all_check.setTristate(True)
@@ -586,7 +610,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.sample_table = SampleTableWidget(0, 7)
         self.sample_table.setHorizontalHeaderLabels(
-            ["", "文件名", "测试时间", "BET(m2/g)", "Langmuir(m2/g)", "t-Plot外比(m2/g)", "2-10nm孔容量(cm3/g)"]
+            ["", "文件名", "测试时间", "BET(m2/g)", "Langmuir(m2/g)", "t-Plot外比(m2/g)", "选区孔容量(cm3/g)"]
         )
         sample_header = self.sample_table.horizontalHeader()
         sample_header.setVisible(True)
@@ -604,7 +628,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sample_table.horizontalHeaderItem(LANGMUIR_COLUMN).setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
         self.sample_table.horizontalHeaderItem(T_PLOT_COLUMN).setToolTip("点击按t-Plot外比表面积排序")
         self.sample_table.horizontalHeaderItem(T_PLOT_COLUMN).setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
-        self.sample_table.horizontalHeaderItem(BJH_PORE_VOLUME_COLUMN).setToolTip("点击按 BJH 2-10 nm 孔容量排序")
+        self.sample_table.horizontalHeaderItem(BJH_PORE_VOLUME_COLUMN).setToolTip("点击按 BJH 选区孔容量排序")
         self.sample_table.horizontalHeaderItem(BJH_PORE_VOLUME_COLUMN).setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
         self.sample_table.verticalHeader().setVisible(False)
         self.sample_table.verticalHeader().setDefaultSectionSize(28)
@@ -793,9 +817,14 @@ class MainWindow(QtWidgets.QMainWindow):
         side_layout = QtWidgets.QVBoxLayout(side_panel)
         side_layout.setContentsMargins(6, 6, 6, 6)
         side_layout.setSpacing(6)
-        side_layout.addWidget(open_button)
-        side_layout.addWidget(add_button)
-        side_layout.addWidget(export_button)
+        button_row = QtWidgets.QHBoxLayout()
+        button_row.setContentsMargins(0, 0, 0, 0)
+        button_row.setSpacing(6)
+        button_row.addWidget(open_button)
+        button_row.addWidget(add_button)
+        button_row.addWidget(export_button)
+        button_row.addStretch(1)
+        side_layout.addLayout(button_row)
         side_layout.addWidget(self.left_splitter, 1)
 
         right_splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
@@ -850,7 +879,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.t_plot_formula_widgets = {}
         self.t_plot_formula_expanded = {}
         thickness_methods = [
-            ("reference", "参比", False),
+            ("reference", "参比", True),
             ("kjs", "Kruk-Jaroniec-Sayari E", True),
             ("halsey", "Halsey", True),
             ("harkins_jura", "Harkins and Jura 厚度", True),
@@ -926,7 +955,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.bjh_formula_widgets = {}
         self.bjh_formula_expanded = {}
         thickness_methods = [
-            ("reference", "参比", False),
+            ("reference", "参比", True),
             ("kjs", "Kruk-Jaroniec-Sayari E", True),
             ("halsey", "Halsey", True),
             ("harkins_jura", "Harkins and Jura 厚度", True),
@@ -1031,6 +1060,8 @@ class MainWindow(QtWidgets.QMainWindow):
         return container
 
     def _make_t_plot_formula_widget(self, method_key: str, *, context: str = "t_plot") -> QtWidgets.QWidget:
+        if method_key == "reference":
+            return self._make_reference_table_widget(context=context)
         if method_key in {"kjs", "harkins_jura"}:
             return self._make_power_log_formula_widget(method_key, context=context)
         if method_key == "halsey":
@@ -1040,6 +1071,310 @@ class MainWindow(QtWidgets.QMainWindow):
         if method_key == "carbon_black_stsa":
             return self._make_carbon_black_stsa_formula_widget(context=context)
         return self._make_pending_formula_widget()
+
+    def _make_reference_table_widget(self, *, context: str = "t_plot") -> QtWidgets.QWidget:
+        frame = QtWidgets.QFrame()
+        frame.setFrameShape(QtWidgets.QFrame.StyledPanel)
+        outer_layout = QtWidgets.QVBoxLayout(frame)
+        outer_layout.setContentsMargins(8, 8, 8, 8)
+        outer_layout.setSpacing(6)
+
+        name_row = QtWidgets.QHBoxLayout()
+        name_row.setContentsMargins(0, 0, 0, 0)
+        name_row.addWidget(QtWidgets.QLabel("名称"))
+        name_edit = QtWidgets.QLineEdit()
+        name_edit.setMinimumWidth(220)
+        name_edit.editingFinished.connect(lambda ctx=context: self._on_reference_name_changed(ctx))
+        name_row.addWidget(name_edit, 1)
+        outer_layout.addLayout(name_row)
+
+        body_layout = QtWidgets.QHBoxLayout()
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(10)
+
+        table = QtWidgets.QTableWidget(0, 2)
+        table.setHorizontalHeaderLabels(["相对\n压力\n(p/p°)", "厚度\n(nm)"])
+        table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        table.verticalHeader().setDefaultSectionSize(25)
+        table.verticalHeader().setMinimumWidth(42)
+        table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        table.setEditTriggers(
+            QtWidgets.QAbstractItemView.DoubleClicked
+            | QtWidgets.QAbstractItemView.EditKeyPressed
+        )
+        table.setFixedHeight(230)
+        table.setMinimumWidth(250)
+        table.itemChanged.connect(lambda item, ctx=context: self._on_reference_table_item_changed(ctx, item))
+        body_layout.addWidget(table, 1)
+
+        button_layout = QtWidgets.QVBoxLayout()
+        button_layout.setContentsMargins(0, 0, 0, 0)
+        button_layout.setSpacing(8)
+        for text, handler in (
+            ("插入", self._insert_reference_row),
+            ("删除", self._delete_reference_row),
+            ("清除", self._clear_reference_table),
+            ("附加", self._append_reference_row),
+        ):
+            button = QtWidgets.QPushButton(text)
+            button.setFixedWidth(110)
+            button.clicked.connect(lambda _checked=False, ctx=context, fn=handler: fn(ctx))
+            button_layout.addWidget(button)
+        button_layout.addStretch(1)
+        for text, handler in (("打开...", self._open_reference_file), ("另存为...", self._save_reference_file_as)):
+            button = QtWidgets.QPushButton(text)
+            button.setFixedWidth(110)
+            button.clicked.connect(lambda _checked=False, ctx=context, fn=handler: fn(ctx))
+            button_layout.addWidget(button)
+        body_layout.addLayout(button_layout)
+        outer_layout.addLayout(body_layout)
+
+        self.reference_tables[context] = table
+        self.reference_name_edits[context] = name_edit
+        self._sync_reference_table_for_context(context)
+        return frame
+
+    def _reference_params_for_context(self, context: str) -> dict[str, object]:
+        params_by_method = self.bjh_thickness_params_by_method if context == "bjh" else self.t_plot_thickness_params_by_method
+        params = dict(params_by_method.get("reference") or T_PLOT_THICKNESS_PARAM_DEFAULTS.get("reference", {}))
+        params["reference_points"] = normalize_reference_points(params.get("reference_points"))
+        return params
+
+    def _set_reference_params_for_context(self, context: str, params: dict[str, object]) -> None:
+        params = dict(params)
+        params["reference_points"] = normalize_reference_points(params.get("reference_points"))
+        if context == "bjh":
+            self.bjh_thickness_params_by_method["reference"] = params
+            if self.bjh_thickness_method == "reference":
+                self.bjh_thickness_params = dict(params)
+        else:
+            self.t_plot_thickness_params_by_method["reference"] = params
+            if self.t_plot_thickness_method == "reference":
+                self.t_plot_thickness_params = dict(params)
+
+    def _sync_reference_table_for_context(self, context: str) -> None:
+        table = self.reference_tables.get(context)
+        name_edit = self.reference_name_edits.get(context)
+        if table is None or name_edit is None:
+            return
+        params = self._reference_params_for_context(context)
+        points = normalize_reference_points(params.get("reference_points"))
+        self._syncing_reference_tables = True
+        try:
+            name_edit.setText(str(params.get("reference_name") or params.get("reference_path") or ""))
+            table.setRowCount(len(points))
+            for row, (pressure, thickness) in enumerate(points):
+                pressure_item = QtWidgets.QTableWidgetItem(self._format_reference_pressure(pressure))
+                thickness_item = QtWidgets.QTableWidgetItem(self._format_reference_thickness(thickness))
+                pressure_item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+                thickness_item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+                table.setItem(row, 0, pressure_item)
+                table.setItem(row, 1, thickness_item)
+                self._style_reference_item(pressure_item, 0)
+                self._style_reference_item(thickness_item, 1)
+        finally:
+            self._syncing_reference_tables = False
+
+    def _on_reference_name_changed(self, context: str) -> None:
+        self._sync_reference_params_from_table(context)
+        self._save_reference_settings_for_active(context)
+
+    def _on_reference_table_item_changed(self, context: str, item: QtWidgets.QTableWidgetItem) -> None:
+        if self._syncing_reference_tables:
+            return
+        self._style_reference_item(item, item.column())
+        self._sync_reference_params_from_table(context)
+        self._save_reference_settings_for_active(context)
+        self._refresh_after_reference_change(context)
+
+    def _sync_reference_params_from_table(self, context: str) -> dict[str, object]:
+        table = self.reference_tables.get(context)
+        name_edit = self.reference_name_edits.get(context)
+        current = self._reference_params_for_context(context)
+        points = []
+        if table is not None:
+            for row in range(table.rowCount()):
+                pressure_item = table.item(row, 0)
+                thickness_item = table.item(row, 1)
+                if pressure_item is None or thickness_item is None:
+                    continue
+                try:
+                    pressure = float(pressure_item.text())
+                    thickness = float(thickness_item.text())
+                except ValueError:
+                    continue
+                points.append((pressure, thickness))
+        current["reference_points"] = normalize_reference_points(points)
+        if name_edit is not None:
+            current["reference_name"] = name_edit.text().strip()
+        self._set_reference_params_for_context(context, current)
+        return current
+
+    def _save_reference_settings_for_active(self, context: str) -> None:
+        if context == "bjh":
+            self._save_bjh_settings_for_active()
+        else:
+            self._save_t_plot_settings_for_active()
+
+    def _refresh_after_reference_change(self, context: str) -> None:
+        if context == "bjh":
+            if self.bjh_thickness_method == "reference":
+                self.refresh_bjh_plot()
+                self._refresh_all_sample_bjh_pore_cells()
+                self.refresh_metrics()
+        elif self.t_plot_thickness_method == "reference":
+            active = self.active_result()
+            if active is not None and self.plot_tabs.currentWidget() is self.t_plot_tab:
+                pressure_range = self._current_pressure_region()
+                p_min, p_max = pressure_range if pressure_range else (None, None)
+                self._refresh_t_plot_plot(active, p_min, p_max, reset_region=True)
+            self._refresh_sample_t_plot_cell(self.active_index)
+            self.refresh_metrics()
+
+    def _insert_reference_row(self, context: str) -> None:
+        table = self.reference_tables.get(context)
+        if table is None:
+            return
+        row = table.currentRow()
+        if row < 0:
+            row = table.rowCount()
+        insert_at = max(0, min(row, table.rowCount()))
+        points = self._reference_points_from_table(context)
+        if len(points) >= 2:
+            if insert_at <= 0:
+                left, right = points[0], points[1]
+            elif insert_at >= len(points):
+                left, right = points[-2], points[-1]
+            else:
+                left, right = points[insert_at - 1], points[insert_at]
+            new_point = ((left[0] + right[0]) / 2.0, (left[1] + right[1]) / 2.0)
+        elif points:
+            new_point = (points[0][0] + 0.01, points[0][1] + 0.01)
+        else:
+            new_point = (0.0, 0.0)
+        points.insert(insert_at, new_point)
+        self._replace_reference_points(context, points, select_row=insert_at)
+
+    def _delete_reference_row(self, context: str) -> None:
+        table = self.reference_tables.get(context)
+        if table is None or table.currentRow() < 0:
+            return
+        row = table.currentRow()
+        points = self._reference_points_from_table(context)
+        if 0 <= row < len(points):
+            points.pop(row)
+        self._replace_reference_points(context, points, select_row=min(row, len(points) - 1))
+
+    def _clear_reference_table(self, context: str) -> None:
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            "清除",
+            "清除整个表？",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if reply != QtWidgets.QMessageBox.Yes:
+            return
+        self._replace_reference_points(context, [], select_row=-1)
+
+    def _append_reference_row(self, context: str) -> None:
+        points = self._reference_points_from_table(context)
+        if len(points) >= 2:
+            previous, last = points[-2], points[-1]
+            new_point = (last[0] + (last[0] - previous[0]), last[1] + (last[1] - previous[1]))
+        elif points:
+            new_point = (points[-1][0] + 0.01, points[-1][1] + 0.01)
+        else:
+            new_point = (0.0, 0.0)
+        points.append(new_point)
+        self._replace_reference_points(context, points, select_row=len(points) - 1)
+
+    def _open_reference_file(self, context: str) -> None:
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "打开厚度参比表",
+            str(DEFAULT_REFERENCE_DIR),
+            "Thickness files (*.thk *.als);;All files (*.*)",
+        )
+        if not path:
+            return
+        try:
+            points = read_reference_points(path)
+        except OSError as exc:
+            QtWidgets.QMessageBox.warning(self, "打开失败", str(exc))
+            return
+        params = self._reference_params_for_context(context)
+        params["reference_name"] = Path(path).name
+        params["reference_path"] = path
+        params["reference_points"] = points
+        self._set_reference_params_for_context(context, params)
+        self._sync_reference_table_for_context(context)
+        self._save_reference_settings_for_active(context)
+        self._refresh_after_reference_change(context)
+
+    def _save_reference_file_as(self, context: str) -> None:
+        points = self._reference_points_from_table(context)
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "另存为厚度参比表",
+            str(DEFAULT_REFERENCE_DIR / "reference.thk"),
+            "Thickness files (*.thk);;ALS files (*.als);;All files (*.*)",
+        )
+        if not path:
+            return
+        if Path(path).suffix == "":
+            path += ".thk"
+        try:
+            write_reference_points(path, points)
+        except OSError as exc:
+            QtWidgets.QMessageBox.warning(self, "保存失败", str(exc))
+            return
+        params = self._reference_params_for_context(context)
+        params["reference_name"] = Path(path).name
+        params["reference_path"] = path
+        params["reference_points"] = points
+        self._set_reference_params_for_context(context, params)
+        self._sync_reference_table_for_context(context)
+        self._save_reference_settings_for_active(context)
+
+    def _replace_reference_points(self, context: str, points, *, select_row: int = -1) -> None:
+        params = self._reference_params_for_context(context)
+        params["reference_points"] = normalize_reference_points(points)
+        self._set_reference_params_for_context(context, params)
+        self._sync_reference_table_for_context(context)
+        table = self.reference_tables.get(context)
+        if table is not None and 0 <= select_row < table.rowCount():
+            table.selectRow(select_row)
+            table.scrollToItem(table.item(select_row, 0))
+        self._save_reference_settings_for_active(context)
+        self._refresh_after_reference_change(context)
+
+    def _reference_points_from_table(self, context: str) -> list[tuple[float, float]]:
+        params = self._sync_reference_params_from_table(context)
+        return list(normalize_reference_points(params.get("reference_points")))
+
+    def _style_reference_item(self, item: QtWidgets.QTableWidgetItem, column: int) -> None:
+        try:
+            value = float(item.text())
+        except ValueError:
+            invalid = True
+        else:
+            invalid = value > (1.0 if column == 0 else 10.0)
+        if invalid:
+            item.setBackground(QtGui.QBrush(QtGui.QColor(REFERENCE_INVALID_BACKGROUND)))
+            item.setForeground(QtGui.QBrush(QtGui.QColor(REFERENCE_INVALID_FOREGROUND)))
+        else:
+            item.setBackground(QtGui.QBrush(QtGui.QColor("#ffffff")))
+            item.setForeground(QtGui.QBrush(QtGui.QColor("#111827")))
+
+    @staticmethod
+    def _format_reference_pressure(value: float) -> str:
+        return f"{float(value):.9f}"
+
+    @staticmethod
+    def _format_reference_thickness(value: float) -> str:
+        return f"{float(value):.5f}"
 
     def _make_param_spin_for_method(
         self,
@@ -1345,7 +1680,9 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             self._refresh_sample_t_plot_cell(self.active_index)
 
-    def _read_t_plot_thickness_params(self, method_key: str) -> dict[str, float]:
+    def _read_t_plot_thickness_params(self, method_key: str) -> dict[str, object]:
+        if method_key == "reference":
+            return self._sync_reference_params_from_table("t_plot")
         params = dict(T_PLOT_THICKNESS_PARAM_DEFAULTS.get(method_key, DEFAULT_T_PLOT_THICKNESS_PARAMS))
         for param_key, spin in self.t_plot_param_spins.get(method_key, {}).items():
             params[param_key] = float(spin.value())
@@ -1377,7 +1714,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._syncing_bjh_controls = False
         self._save_bjh_settings_for_active()
         self.refresh_bjh_plot()
-        self._refresh_sample_bjh_pore_cell(self.active_index)
+        self._refresh_all_sample_bjh_pore_cells()
 
     def _on_bjh_thickness_param_changed(self, method_key: str | None = None) -> None:
         if self._syncing_bjh_controls:
@@ -1390,9 +1727,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._save_bjh_settings_for_active()
         if method_key == self.bjh_thickness_method:
             self.refresh_bjh_plot()
-            self._refresh_sample_bjh_pore_cell(self.active_index)
+            self._refresh_all_sample_bjh_pore_cells()
 
-    def _read_bjh_thickness_params(self, method_key: str) -> dict[str, float]:
+    def _read_bjh_thickness_params(self, method_key: str) -> dict[str, object]:
+        if method_key == "reference":
+            return self._sync_reference_params_from_table("bjh")
         params = dict(T_PLOT_THICKNESS_PARAM_DEFAULTS.get(method_key, DEFAULT_T_PLOT_THICKNESS_PARAMS))
         for param_key, spin in self.bjh_param_spins.get(method_key, {}).items():
             params[param_key] = float(spin.value())
@@ -1422,7 +1761,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.bjh_show_desorption = self.bjh_desorption_checkbox.isChecked()
         self._save_bjh_settings_for_active()
         self.refresh_bjh_plot()
-        self._refresh_sample_bjh_pore_cell(self.active_index)
+        self._refresh_all_sample_bjh_pore_cells()
 
     def reset_bjh_to_default(self) -> None:
         default_params_by_method = _default_t_plot_thickness_params_by_method()
@@ -1445,13 +1784,16 @@ class MainWindow(QtWidgets.QMainWindow):
             self.bjh_smooth_checkbox.setChecked(DEFAULT_BJH_SMOOTH_DERIVATIVE)
             self.bjh_adsorption_checkbox.setChecked(DEFAULT_BJH_SHOW_ADSORPTION)
             self.bjh_desorption_checkbox.setChecked(DEFAULT_BJH_SHOW_DESORPTION)
+            self._sync_reference_table_for_context("bjh")
         finally:
             self._syncing_bjh_controls = False
         active = self.active_result()
         if active is not None:
             self.custom_bjh_settings.pop(id(active), None)
+        self.bjh_pore_volume_range = DEFAULT_BJH_PORE_VOLUME_RANGE
+        self._remove_bjh_region()
         self.refresh_bjh_plot()
-        self._refresh_sample_bjh_pore_cell(self.active_index)
+        self._refresh_all_sample_bjh_pore_cells()
 
     def _on_t_plot_surface_area_mode_changed(self) -> None:
         if self._syncing_t_plot_controls:
@@ -1573,6 +1915,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.surface_area_input_spin.setValue(self.t_plot_surface_area_input)
             self.surface_area_input_spin.setEnabled(self.t_plot_surface_area_mode == "Input")
             self.surface_area_correction_spin.setValue(self.t_plot_surface_area_correction)
+            self._sync_reference_table_for_context("t_plot")
         finally:
             self._syncing_t_plot_controls = False
 
@@ -1661,6 +2004,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.bjh_smooth_checkbox.setChecked(self.bjh_smooth_derivative)
             self.bjh_adsorption_checkbox.setChecked(self.bjh_show_adsorption)
             self.bjh_desorption_checkbox.setChecked(self.bjh_show_desorption)
+            self._sync_reference_table_for_context("bjh")
         finally:
             self._syncing_bjh_controls = False
 
@@ -1715,6 +2059,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.custom_t_plot_fit_ranges.clear()
             self.custom_t_plot_settings.clear()
             self.custom_bjh_settings.clear()
+            self.bjh_pore_volume_range = DEFAULT_BJH_PORE_VOLUME_RANGE
+            self._remove_bjh_region()
             self._isotherm_region_custom = False
         else:
             self.results.extend(parsed)
@@ -1768,6 +2114,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._reset_all_fit_regions()
         self._load_t_plot_settings_for_active()
         self._load_bjh_settings_for_active()
+        self.refresh_isotherm_plot()
         self.refresh_active_views()
         self.refresh_analysis_plots()
 
@@ -1958,7 +2305,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.sample_table.setItem(row, FILE_COLUMN, file_item)
 
                 test_time_item = self._table_item(result.test_started_time)
-                test_time_item.setToolTip("来自 SMP 文件头的 Started 时间")
+                test_time_item.setToolTip("SMP 优先来自日志 Started 时间；DAT 来自测量日期")
                 self.sample_table.setItem(row, TEST_TIME_COLUMN, test_time_item)
 
                 bet_item = self._table_item(_fmt(bet.surface_area_m2_g), alignment=QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
@@ -2063,7 +2410,7 @@ class MainWindow(QtWidgets.QMainWindow):
             item.setForeground(QtGui.QBrush(QtGui.QColor(CUSTOM_BET_COLOR)))
             item.setToolTip("BJH 厚度曲线、公式参数、校正或显示分支已人工调整")
         else:
-            item.setToolTip("BJH 2-10 nm 孔容量，按默认 BJH 吸附分支计算")
+            item.setToolTip("BJH 当前绿色选区孔容量；仅方法参数变化时标记为蓝色")
 
     def refresh_active_views(self) -> None:
         self.refresh_metrics()
@@ -2116,7 +2463,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self._refresh_bet_plot(active, p_min, p_max, reset_region=reset_region)
 
     def refresh_bjh_plot(self) -> None:
+        target_diameter_range = self._current_bjh_diameter_range() or self.bjh_pore_volume_range
         self._remove_bjh_region()
+        self._remove_bjh_selection()
         self._bjh_distribution_rows_by_key = {}
         self._bjh_diameter_log_bounds = None
         if not self.results:
@@ -2144,12 +2493,37 @@ class MainWindow(QtWidgets.QMainWindow):
             bjh_settings_by_index=bjh_settings_by_index,
         )
         self._bjh_diameter_log_bounds = self._bjh_log_bounds_from_rows(self._bjh_distribution_rows_by_key)
-        self._sync_bjh_region_from_pressure_region(pressure_range or self._current_pressure_region())
+        if self._is_bjh_default_region_active():
+            if pressure_range is not None:
+                self._set_default_isotherm_region(pressure_range)
+        self._sync_bjh_region_to_diameter_range(target_diameter_range)
+        current_range = self._current_bjh_diameter_range()
+        if current_range is not None:
+            self.bjh_pore_volume_range = current_range
+            self._refresh_bjh_selection(current_range)
+            self._refresh_all_sample_bjh_pore_cells()
 
     def _bjh_pressure_range(self) -> tuple[float, float] | None:
         if not self._isotherm_region_custom:
-            return None
+            return self._default_bjh_pressure_range()
         return self._current_pressure_region()
+
+    def _is_bjh_default_region_active(self) -> bool:
+        return self._is_bjh_tab_active() and not self._isotherm_region_custom
+
+    def _default_bjh_pressure_range(self) -> tuple[float, float] | None:
+        pressure = self._all_pressure_values()
+        if pressure.size == 0:
+            return None
+        data_min = float(np.nanmin(pressure))
+        data_max = float(np.nanmax(pressure))
+        start_pressure = self._pressure_for_bjh_diameter(DEFAULT_BJH_PORE_VOLUME_RANGE[0])
+        if start_pressure is None or not np.isfinite(start_pressure):
+            return self._full_pressure_region(pressure)
+        start_pressure = max(data_min, min(float(start_pressure), data_max))
+        if start_pressure >= data_max:
+            return self._full_pressure_region(pressure)
+        return (start_pressure, data_max)
 
     def _update_analysis_plots_for_region(self) -> None:
         """等温线选区变化时调用：刷新三个分析图但保留各自的拟合选区。"""
@@ -2162,8 +2536,6 @@ class MainWindow(QtWidgets.QMainWindow):
         return [i for i in draw_order if i < len(self.visible_results) and self.visible_results[i]]
 
     def _analysis_sample_color(self, index: int) -> str:
-        if index == self.active_index:
-            return "#dc2626"
         return self.sample_colors[index % len(self.sample_colors)] if self.sample_colors else DEFAULT_COLORS[0]
 
     def _refresh_bet_plot(self, active, p_min=None, p_max=None, *, reset_region: bool = False) -> None:
@@ -2215,7 +2587,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 line_x_max=x_max,
                 color=self._analysis_sample_color(index),
                 name="线性拟合" if is_active else None,
-                width=2 if is_active else 1,
+                width=ACTIVE_LINE_WIDTH if is_active else 1,
             )
             if not is_active:
                 continue
@@ -2293,7 +2665,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 line_x_max=x_max,
                 color=self._analysis_sample_color(index),
                 name="线性拟合" if is_active else None,
-                width=2 if is_active else 1,
+                width=ACTIVE_LINE_WIDTH if is_active else 1,
             )
             if not is_active:
                 continue
@@ -2387,7 +2759,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 thickness_method=thickness_method,
                 color=self._analysis_sample_color(index),
                 name="线性拟合" if is_active else None,
-                width=2 if is_active else 1,
+                width=ACTIVE_LINE_WIDTH if is_active else 1,
             )
             if not is_active:
                 continue
@@ -2470,6 +2842,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.bet_plot, self._bet_fit_line, active,
             bet_fit_range[0], bet_fit_range[1],
             line_x_min=lx_min, line_x_max=lx_max,
+            color=self._analysis_sample_color(self.active_index),
+            width=ACTIVE_LINE_WIDTH,
         )
         data_p_min, data_p_max = self._bet_plot_p_range or BET_PLOT_RANGE
         self._refresh_bet_selection(active, bet_fit_range, data_p_min, data_p_max)
@@ -2507,6 +2881,7 @@ class MainWindow(QtWidgets.QMainWindow):
             fit_range[1],
             data_p_min=data_p_min,
             data_p_max=data_p_max,
+            color=self._analysis_sample_color(self.active_index),
         )
 
     def _remove_langmuir_selection(self) -> None:
@@ -2529,6 +2904,7 @@ class MainWindow(QtWidgets.QMainWindow):
             fit_range[1],
             data_p_min=data_p_min,
             data_p_max=data_p_max,
+            color=self._analysis_sample_color(self.active_index),
         )
 
     def _remove_langmuir_region(self) -> None:
@@ -2572,6 +2948,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.langmuir_plot, self._langmuir_fit_line, active,
             fit_range[0], fit_range[1],
             line_x_min=lx_min, line_x_max=lx_max,
+            color=self._analysis_sample_color(self.active_index),
+            width=ACTIVE_LINE_WIDTH,
         )
         data_p_min, data_p_max = self._langmuir_plot_p_range or LANGMUIR_PLOT_RANGE
         self._refresh_langmuir_selection(active, fit_range, data_p_min, data_p_max)
@@ -2611,6 +2989,7 @@ class MainWindow(QtWidgets.QMainWindow):
             data_p_max=data_p_max,
             thickness_params=self.t_plot_thickness_params,
             thickness_method=self.t_plot_thickness_method,
+            color=self._analysis_sample_color(self.active_index),
         )
 
     def _remove_t_plot_region(self) -> None:
@@ -2658,6 +3037,8 @@ class MainWindow(QtWidgets.QMainWindow):
             data_p_min=p_min, data_p_max=p_max,
             thickness_params=self.t_plot_thickness_params,
             thickness_method=self.t_plot_thickness_method,
+            color=self._analysis_sample_color(self.active_index),
+            width=ACTIVE_LINE_WIDTH,
         )
         self._refresh_t_plot_selection(active, fit_range, p_min, p_max)
         self._refresh_sample_t_plot_cell(self.active_index)
@@ -2674,6 +3055,27 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # ── reset all fit regions ─────────────────────────────────────────────────
 
+    def _remove_bjh_selection(self) -> None:
+        for item in self._bjh_selection_items:
+            try:
+                self.pore_plot.removeItem(item)
+            except RuntimeError:
+                pass
+        self._bjh_selection_items = []
+
+    def _refresh_bjh_selection(self, diameter_range=None) -> None:
+        self._remove_bjh_selection()
+        diameter_range = diameter_range or self._current_bjh_diameter_range()
+        if diameter_range is None or not self._bjh_distribution_rows_by_key:
+            return
+        self._bjh_selection_items = plot_bjh_selection(
+            self.pore_plot,
+            self._bjh_distribution_rows_by_key,
+            self.sample_colors,
+            diameter_range,
+            active_index=self.active_index,
+        )
+
     def _remove_bjh_region(self) -> None:
         if self.bjh_region is None:
             return
@@ -2688,7 +3090,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.bjh_region = None
 
     def _add_bjh_region(self, values: list[float], bounds: list[float]) -> None:
-        region = self._make_selection_region(values, bounds=bounds, movable=True)
+        region = self._make_selection_region(
+            values,
+            bounds=bounds,
+            movable=True,
+            line_color=BJH_REGION_LINE_COLOR,
+            hover_line_color=BJH_REGION_LINE_HOVER_COLOR,
+            fill_color=BJH_REGION_FILL_COLOR,
+            hover_fill_color=BJH_REGION_FILL_HOVER_COLOR,
+        )
         region.sigRegionChanged.connect(self.on_bjh_region_changed)
         self.pore_plot.addItem(region, ignoreBounds=True)
         self.bjh_region = region
@@ -2698,45 +3108,29 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         if not self._bjh_region_pending:
             self._bjh_region_pending = True
-            QtCore.QTimer.singleShot(25, self._update_pressure_from_bjh_region)
+            QtCore.QTimer.singleShot(25, self._update_bjh_pore_volume_from_region)
 
-    def _update_pressure_from_bjh_region(self) -> None:
+    def _update_bjh_pore_volume_from_region(self) -> None:
         self._bjh_region_pending = False
-        pressure_range = self._pressure_range_from_bjh_region()
-        if pressure_range is None:
-            return
-        pressure = self._all_pressure_values()
-        if pressure.size:
-            pressure_range = tuple(self._clamp_pressure_region(pressure_range, pressure))
-        if self.region is None:
-            if pressure.size:
-                self._add_region(list(pressure_range), pressure)
-        else:
-            self._syncing_region_changes = True
-            self._setting_isotherm_region = True
-            try:
-                self.region.setRegion(list(pressure_range))
-            finally:
-                self._setting_isotherm_region = False
-                self._syncing_region_changes = False
-        self._isotherm_region_custom = True
-        self._refresh_isotherm_selection(pressure_range)
-        self.refresh_metrics()
-
-    def _sync_bjh_region_from_pressure_region(self, pressure_range: tuple[float, float] | None = None) -> None:
-        if self._setting_bjh_region or self._bjh_diameter_log_bounds is None:
-            return
-        diameter_range = (
-            self._bjh_diameter_range_for_pressure_range(pressure_range)
-            if pressure_range is not None
-            else self._bjh_diameter_range_from_log_bounds()
-        )
+        diameter_range = self._current_bjh_diameter_range()
         if diameter_range is None:
+            return
+        self.bjh_pore_volume_range = diameter_range
+        self._refresh_bjh_selection(diameter_range)
+        self._refresh_all_sample_bjh_pore_cells()
+
+    def _sync_bjh_region_to_diameter_range(self, diameter_range: tuple[float, float]) -> None:
+        if self._setting_bjh_region or self._bjh_diameter_log_bounds is None:
             return
         values = self._diameter_range_to_log_region(diameter_range)
         if values is None:
             return
         bounds = list(self._bjh_diameter_log_bounds)
+        values = [max(bounds[0], min(value, bounds[1])) for value in values]
+        if values[0] >= values[1]:
+            values = list(bounds)
+        if values[0] >= values[1]:
+            return
         self._setting_bjh_region = True
         try:
             if self.bjh_region is None:
@@ -2769,70 +3163,49 @@ class MainWindow(QtWidgets.QMainWindow):
         lo, hi = sorted((float(log_lo), float(log_hi)))
         return (10.0**lo, 10.0**hi)
 
-    def _pressure_range_from_bjh_region(self) -> tuple[float, float] | None:
-        diameter_range = self._current_bjh_diameter_range()
-        if diameter_range is None:
+    def _pressure_for_bjh_diameter(self, diameter_nm: float) -> float | None:
+        try:
+            target = float(diameter_nm)
+        except (TypeError, ValueError):
             return None
-        rows = self._active_bjh_rows()
-        if not rows:
+        if not np.isfinite(target) or target <= 0.0:
             return None
-        d_min, d_max = sorted((float(diameter_range[0]), float(diameter_range[1])))
-        selected = [
-            row
-            for row in rows
-            if d_min <= float(row["pore_diameter_nm"]) <= d_max
-        ]
-        if not selected:
-            center = math.sqrt(d_min * d_max) if d_min > 0.0 and d_max > 0.0 else (d_min + d_max) / 2.0
-            selected = [min(rows, key=lambda row: abs(float(row["pore_diameter_nm"]) - center))]
-        pressures = []
-        for row in selected:
-            pressures.append(float(row["relative_pressure_low"]))
-            pressures.append(float(row["relative_pressure_high"]))
-        if not pressures:
-            return None
-        return (min(pressures), max(pressures))
-
-    def _bjh_diameter_range_for_pressure_range(self, pressure_range: tuple[float, float] | None) -> tuple[float, float] | None:
-        if pressure_range is None:
-            return self._bjh_diameter_range_from_log_bounds()
-        rows = self._active_bjh_rows()
-        if not rows:
-            return self._bjh_diameter_range_from_log_bounds()
-        p_min, p_max = sorted((float(pressure_range[0]), float(pressure_range[1])))
-        selected = []
+        rows = self._active_bjh_distribution_rows()
+        candidates: list[tuple[float, float]] = []
         for row in rows:
-            interval_min = min(float(row["relative_pressure_low"]), float(row["relative_pressure_high"]))
-            interval_max = max(float(row["relative_pressure_low"]), float(row["relative_pressure_high"]))
-            if interval_max >= p_min and interval_min <= p_max:
-                selected.append(row)
-        if not selected:
+            try:
+                diameter = float(row["pore_diameter_nm"])
+                p_low = float(row["relative_pressure_low"])
+                p_high = float(row["relative_pressure_high"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not (np.isfinite(diameter) and diameter > 0.0 and np.isfinite(p_low) and np.isfinite(p_high)):
+                continue
+            distance = abs(math.log(diameter / target))
+            candidates.append((distance, max(p_low, p_high)))
+        if not candidates:
             return None
-        diameters = [float(row["pore_diameter_nm"]) for row in selected if float(row["pore_diameter_nm"]) > 0.0]
-        if not diameters:
-            return None
-        return (min(diameters), max(diameters))
+        candidates.sort(key=lambda item: item[0])
+        return candidates[0][1]
 
-    def _active_bjh_rows(self) -> list[dict[str, float]]:
-        if not (0 <= self.active_index < len(self.results)):
+    def _active_bjh_distribution_rows(self) -> list[dict[str, float]]:
+        active = self.active_result()
+        if active is None:
             return []
-        active = self.results[self.active_index]
         settings = self._bjh_settings_for_result(active)
-        phases = []
-        if bool(settings["show_adsorption"]):
-            phases.append("adsorption")
-        if bool(settings["show_desorption"]):
-            phases.append("desorption")
-        for phase in phases:
-            rows = self._bjh_distribution_rows_by_key.get((self.active_index, phase), [])
-            if rows:
-                return rows
-        return []
-
-    def _bjh_diameter_range_from_log_bounds(self) -> tuple[float, float] | None:
-        if self._bjh_diameter_log_bounds is None:
-            return None
-        return (10.0**self._bjh_diameter_log_bounds[0], 10.0**self._bjh_diameter_log_bounds[1])
+        phase = self._bjh_pore_volume_phase(settings)
+        if phase is None:
+            return []
+        distribution = bjh_pore_distribution(
+            active,
+            phase=phase,
+            thickness_method=str(settings["thickness_method"]),
+            thickness_params=dict(settings["thickness_params"]),
+            correction=str(settings["correction"]),
+            open_pore_fraction=float(settings["open_pore_fraction"]),
+            smooth=bool(settings["smooth_derivative"]),
+        )
+        return list(distribution.rows)
 
     @staticmethod
     def _bjh_log_bounds_from_rows(rows_by_key: dict[tuple[int, str], list[dict[str, float]]]) -> tuple[float, float] | None:
@@ -2862,6 +3235,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._remove_t_plot_region()
         self._remove_t_plot_selection()
         self._remove_bjh_region()
+        self._remove_bjh_selection()
         self._bet_fit_line = None
         self._bet_x_range = None
         self._bet_plot_p_range = None
@@ -3032,6 +3406,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._remove_t_plot_region()
         self._remove_t_plot_selection()
         self._remove_bjh_region()
+        self._remove_bjh_selection()
         self._bet_plot_p_range = None
         self._langmuir_plot_p_range = None
         self._t_plot_p_range = None
@@ -3069,6 +3444,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _default_isotherm_region(self, pressure: np.ndarray) -> list[float]:
         if self._is_bjh_tab_active():
+            bjh_pressure_range = self._default_bjh_pressure_range()
+            if bjh_pressure_range is not None:
+                return self._clamp_pressure_region(bjh_pressure_range, pressure)
             return self._full_pressure_region(pressure)
         return self._default_pressure_region(pressure)
 
@@ -3093,20 +3471,30 @@ class MainWindow(QtWidgets.QMainWindow):
             return [region_min, region_max]
         return self._default_pressure_region(pressure)
 
-    def _make_selection_region(self, values, bounds=None, movable: bool = True):
+    def _make_selection_region(
+        self,
+        values,
+        bounds=None,
+        movable: bool = True,
+        *,
+        line_color: str = REGION_LINE_COLOR,
+        hover_line_color: str = REGION_LINE_HOVER_COLOR,
+        fill_color: tuple[int, int, int, int] = REGION_FILL_COLOR,
+        hover_fill_color: tuple[int, int, int, int] = REGION_FILL_HOVER_COLOR,
+    ):
         region = pg.LinearRegionItem(
             values,
             bounds=bounds,
             movable=movable,
-            brush=pg.mkBrush(*REGION_FILL_COLOR),
-            hoverBrush=pg.mkBrush(*REGION_FILL_HOVER_COLOR),
-            pen=_region_pen(REGION_LINE_COLOR),
-            hoverPen=_region_pen(REGION_LINE_HOVER_COLOR),
+            brush=pg.mkBrush(*fill_color),
+            hoverBrush=pg.mkBrush(*hover_fill_color),
+            pen=_region_pen(line_color),
+            hoverPen=_region_pen(hover_line_color),
             swapMode="block",
         )
         for line in getattr(region, "lines", []):
-            line.setPen(_region_pen(REGION_LINE_COLOR))
-            line.setHoverPen(_region_pen(REGION_LINE_HOVER_COLOR))
+            line.setPen(_region_pen(line_color))
+            line.setHoverPen(_region_pen(hover_line_color))
             line.setCursor(QtCore.Qt.SizeHorCursor)
         return region
 
@@ -3169,14 +3557,30 @@ class MainWindow(QtWidgets.QMainWindow):
             pass
         self.region = None
 
+    def _set_default_isotherm_region(self, pressure_range: tuple[float, float]) -> None:
+        pressure = self._all_pressure_values()
+        if pressure.size == 0:
+            return
+        region = self._clamp_pressure_region(pressure_range, pressure)
+        self._syncing_region_changes = True
+        self._setting_isotherm_region = True
+        try:
+            if self.region is None:
+                self._add_region(region, pressure)
+            else:
+                self.region.setRegion(region)
+        finally:
+            self._setting_isotherm_region = False
+            self._syncing_region_changes = False
+        self._isotherm_region_custom = False
+        self._refresh_isotherm_selection(tuple(region))
+
     def on_region_changed(self) -> None:
         if self._syncing_region_changes:
             return
         self._mark_isotherm_region_custom()
         pressure_range = self._current_pressure_region()
         self._refresh_isotherm_selection(pressure_range)
-        if self._is_bjh_tab_active():
-            self._sync_bjh_region_from_pressure_region(pressure_range)
         self.queue_metrics_update()
 
     def on_region_change_finished(self) -> None:
@@ -3185,8 +3589,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._mark_isotherm_region_custom()
         pressure_range = self._current_pressure_region()
         self._refresh_isotherm_selection(pressure_range)
-        if self._is_bjh_tab_active():
-            self._sync_bjh_region_from_pressure_region(pressure_range)
         self.queue_metrics_update()
 
     def _mark_isotherm_region_custom(self) -> None:
@@ -3202,7 +3604,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def update_metrics_from_region(self) -> None:
         self._metrics_pending = False
         if self._is_bjh_tab_active():
-            self._sync_bjh_region_from_pressure_region(self._current_pressure_region())
+            self.refresh_bjh_plot()
+            self._refresh_all_sample_bjh_pore_cells()
             self.refresh_metrics()
             return
         self.refresh_sample_table()
@@ -3367,21 +3770,33 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception:
             return 0.0
 
-    def _bjh_pore_volume_for_result(self, result) -> float | None:
+    def _bjh_pore_volume_for_result(
+        self,
+        result,
+        diameter_range: tuple[float, float] | None = None,
+    ) -> float | None:
         settings = self._bjh_settings_for_result(result)
         phase = self._bjh_pore_volume_phase(settings)
         if phase is None:
             return None
+        diameter_range = diameter_range or self._selected_bjh_pore_volume_range()
+        d_min, d_max = sorted((float(diameter_range[0]), float(diameter_range[1])))
         return bjh_pore_volume_cm3_g(
             result,
-            2.0,
-            10.0,
+            d_min,
+            d_max,
             phase=phase,
             thickness_method=str(settings["thickness_method"]),
             thickness_params=dict(settings["thickness_params"]),
             correction=str(settings["correction"]),
             open_pore_fraction=float(settings["open_pore_fraction"]),
         )
+
+    def _selected_bjh_pore_volume_range(self) -> tuple[float, float]:
+        current = self._current_bjh_diameter_range()
+        if current is not None:
+            return current
+        return self.bjh_pore_volume_range
 
     def _has_custom_bjh_settings(self, result) -> bool:
         settings = self._bjh_settings_for_result(result)
@@ -3530,6 +3945,8 @@ def active_metric_rows(
         ("文件名", _display_file_name(result)),
         ("样品名称", result.sample_name),
         ("测试时间", result.test_started_time),
+        ("测试结束时间", result.test_completed_time),
+        ("测试耗时", result.test_duration_time),
         ("样品保存时间", result.sample_saved_time),
         ("设备厂家", _instrument_manufacturer(result)),
         ("设备型号", _instrument_model(result)),
@@ -3595,6 +4012,9 @@ def condition_rows(result) -> list[tuple[str, str]]:
     props = result.adsorptive_properties
     rows = [
         ("文件路径", result.header.file_path),
+        ("测试时间", result.test_started_time),
+        ("测试结束时间", result.test_completed_time),
+        ("测试耗时", result.test_duration_time),
         ("文件创建时间", result.header.created_time),
         ("文件修改时间", result.header.modified_time),
         ("样品保存时间", result.sample_saved_time),
@@ -3770,6 +4190,9 @@ def export_results_xlsx(results, path: str | Path) -> None:
             [
                 "文件",
                 "样品",
+                "测试时间",
+                "测试结束时间",
+                "测试耗时",
                 "质量(g)",
                 "点数",
                 "BET状态",
@@ -3794,6 +4217,9 @@ def export_results_xlsx(results, path: str | Path) -> None:
             [
                 result.file_name,
                 result.sample_name,
+                result.test_started_time,
+                result.test_completed_time,
+                result.test_duration_time,
                 result.sample.sample_mass_g,
                 result.point_count,
                 status_text(bet.status),
