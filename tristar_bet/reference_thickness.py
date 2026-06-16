@@ -4,7 +4,12 @@ from functools import lru_cache
 from pathlib import Path
 
 
-DEFAULT_REFERENCE_DIR = Path(r"C:\Users\Public\Documents\Micromeritics\TriStar II Plus\referenc")
+# Reference thickness curves bundled with the app so it works without the
+# Micromeritics TriStar II Plus software installed. Falls back to the vendor's
+# system folder when the bundled copy is unavailable.
+_BUNDLED_REFERENCE_DIR = Path(__file__).resolve().parent / "reference_data"
+_SYSTEM_REFERENCE_DIR = Path(r"C:\Users\Public\Documents\Micromeritics\TriStar II Plus\referenc")
+DEFAULT_REFERENCE_DIR = _BUNDLED_REFERENCE_DIR if _BUNDLED_REFERENCE_DIR.is_dir() else _SYSTEM_REFERENCE_DIR
 DEFAULT_REFERENCE_FILE = DEFAULT_REFERENCE_DIR / "ref.thk"
 ANGSTROM_REFERENCE_FILES = {
     "sio2oh.thk",
