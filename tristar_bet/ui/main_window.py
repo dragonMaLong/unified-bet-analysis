@@ -57,6 +57,7 @@ from tristar_bet.ui.plots import (
 
 
 APP_NAME = "Micromeritics BET 综合分析"
+APP_ICON_PATH = Path(__file__).resolve().parent.parent / "assets" / "BET-logo.png"
 Signal = getattr(QtCore, "Signal", None) or getattr(QtCore, "pyqtSignal")
 
 
@@ -934,6 +935,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.import_directory = Path.cwd()
 
         self.setWindowTitle(APP_NAME)
+        if APP_ICON_PATH.exists():
+            self.setWindowIcon(QtGui.QIcon(str(APP_ICON_PATH)))
         self.resize(1280, 780)
 
         open_button = QtWidgets.QPushButton("导入文件")
@@ -4793,6 +4796,8 @@ def run(argv: list[str] | None = None) -> int:
     app = QtWidgets.QApplication(argv or sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationDisplayName(APP_NAME)
+    if APP_ICON_PATH.exists():
+        app.setWindowIcon(QtGui.QIcon(str(APP_ICON_PATH)))
     app.setFont(QtGui.QFont("Microsoft YaHei UI", 9))
     window = MainWindow()
     window.show()
