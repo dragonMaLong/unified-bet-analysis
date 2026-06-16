@@ -1,6 +1,6 @@
 # 统一 BET 分析平台
 
-这是一个面向 BET 比表面积与孔结构数据处理的中文分析工具。项目当前以 Micromeritics TriStar II 3020 2.0 `SMP` 文件为起点，提供 SMP 解析、多样品对比、BET / Langmuir / t-Plot 拟合、BJH 孔径分布、图形化选区调整和 Excel 导出。
+这是一个面向 BET 比表面积与孔结构数据处理的中文分析工具。项目当前以 Micromeritics `SMP` 文件为起点，并逐步兼容 BELMaster `DAT`、Quantachrome Autosorb iQ `QPS` 等格式，提供多样品对比、BET / Langmuir / t-Plot 拟合、BJH 孔径分布、图形化选区调整和 Excel 导出。
 
 ## 项目目标
 
@@ -17,7 +17,7 @@
 
 ## 当前功能
 
-- 读取 TriStar II 3020 2.0 `SMP` 文件。
+- 读取 Micromeritics TriStar / ASAP 系列 `SMP`、MicrotracBEL BELMaster `DAT`、Quantachrome Autosorb iQ `QPS` 文件。
 - 多样品导入、显示、隐藏、排序、删除和拖拽调整顺序。
 - 样品列表冻结前两列，便于横向滚动时查看样品名称。
 - 吸附 / 脱附等温线多样品叠加显示。
@@ -34,7 +34,7 @@
 - BJH 支持吸附 / 脱附分支同时显示，并复用厚度曲线公式参数界面。
 - 结果参数、样品条件、实际等温线、目标压力表、报告模块和日志信息查看。
 - 选中样品导出为 XLSX。
-- 命令行解析 SMP 并导出 CSV。
+- 命令行解析 SMP / DAT / QPS 并导出 CSV。
 
 ## 安装依赖
 
@@ -44,7 +44,7 @@
 python -m pip install -r requirements.txt
 ```
 
-如果不使用图形界面，只做命令行 SMP 解析，核心解析逻辑对 GUI 依赖较少；完整界面需要安装 `PyQt5`、`pyqtgraph`、`numpy` 和 `openpyxl`。
+如果不使用图形界面，只做命令行数据解析，核心解析逻辑对 GUI 依赖较少；完整界面需要安装 `PyQt5`、`pyqtgraph`、`numpy` 和 `openpyxl`。
 
 ## 启动图形界面
 
@@ -62,16 +62,16 @@ python app.py --ui
 
 ## 命令行解析
 
-解析单个 SMP 文件：
+解析单个数据文件：
 
 ```powershell
 python app.py path\to\sample.SMP
 ```
 
-解析一个目录中的 SMP 文件并导出 CSV：
+解析一个目录中的支持文件并导出 CSV：
 
 ```powershell
-python app.py path\to\smp_folder --out-dir path\to\output
+python app.py path\to\data_folder --out-dir path\to\output
 ```
 
 仅打印摘要，不导出 CSV：
@@ -86,6 +86,8 @@ python app.py path\to\sample.SMP --no-export
 app.py                         启动入口，支持 GUI 和命令行解析
 tristar_bet/models.py          数据模型
 tristar_bet/smp.py             SMP 文件解析与 CSV 导出
+tristar_bet/belmaster.py       BELMaster DAT 文件解析
+tristar_bet/quantachrome.py    Quantachrome Autosorb iQ QPS 文件解析
 tristar_bet/analysis.py        BET、Langmuir、t-Plot、BJH 等分析计算
 tristar_bet/ui/main_window.py  中文图形界面主窗口
 tristar_bet/ui/plots.py        图表绘制
@@ -94,7 +96,7 @@ validate_against_xls.py        与 XLS 导出结果对照验证的辅助脚本
 
 ## 当前状态
 
-项目仍在持续开发中。当前重点是 TriStar II 3020 2.0 `SMP` 文件解析和 BET / Langmuir / t-Plot / BJH 的统一分析体验。
+项目仍在持续开发中。当前重点是多厂商 BET 数据格式兼容，以及 BET / Langmuir / t-Plot / BJH 的统一分析体验。
 
 后续计划包括：
 

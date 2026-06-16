@@ -473,6 +473,22 @@ def replace_langmuir_fit_line(
     return item, analysis
 
 
+def _t_plot_y_values(rows) -> np.ndarray:
+    return np.asarray(
+        [row.get("t_plot_y_value", row["liquid_volume_cm3_g"]) for row in rows],
+        dtype=float,
+    )
+
+
+def _t_plot_y_axis_label(rows) -> str:
+    units = {str(row.get("t_plot_y_unit", "cm3/g liquid")) for row in rows}
+    if units == {"cm3/g STP"}:
+        return "吸附量 (cm3/g STP)"
+    if units == {"cm3/g liquid"}:
+        return "液体体积 (cm3/g)"
+    return "t-Plot Y"
+
+
 def plot_t_plot_points(
     plot: pg.PlotWidget,
     result,
@@ -488,7 +504,7 @@ def plot_t_plot_points(
 
     plot.clear()
     plot.setTitle("t-Plot")
-    plot.setLabel("left", "液体体积 (cm3/g)")
+    plot.setLabel("left", _t_plot_y_axis_label(analysis.rows))
     plot.setLabel("bottom", "统计膜厚 t (nm)")
     plot.setLogMode(x=False, y=False)
 
@@ -497,7 +513,7 @@ def plot_t_plot_points(
         return np.array([])
 
     x = np.asarray([row["thickness_nm"] for row in analysis.rows], dtype=float)
-    y = np.asarray([row["liquid_volume_cm3_g"] for row in analysis.rows], dtype=float)
+    y = _t_plot_y_values(analysis.rows)
     plot.plot(
         x, y,
         pen=None, symbol="o", symbolSize=ACTIVE_SYMBOL_SIZE,
@@ -527,13 +543,14 @@ def plot_t_plot_points_multi(
     plot.clear()
     _clear_manual_legend_entries(plot)
     plot.setTitle("t-Plot")
-    plot.setLabel("left", "液体体积 (cm3/g)")
+    plot.setLabel("left", "t-Plot Y")
     plot.setLabel("bottom", "统计膜厚 t (nm)")
     plot.setLogMode(x=False, y=False)
 
     x_by_index: dict[int, np.ndarray] = {}
     all_x = []
     all_y = []
+    plotted_rows = []
     for index in _analysis_draw_order(results, visible, active_index):
         thickness_params = None
         if thickness_params_by_index is not None:
@@ -545,7 +562,7 @@ def plot_t_plot_points_multi(
         if not analysis.rows:
             continue
         x = np.asarray([row["thickness_nm"] for row in analysis.rows], dtype=float)
-        y = np.asarray([row["liquid_volume_cm3_g"] for row in analysis.rows], dtype=float)
+        y = _t_plot_y_values(analysis.rows)
         mask = np.isfinite(x) & np.isfinite(y)
         if not np.any(mask):
             continue
@@ -557,8 +574,10 @@ def plot_t_plot_points_multi(
         x_by_index[index] = x
         all_x.extend(x.tolist())
         all_y.extend(y.tolist())
+        plotted_rows.extend(analysis.rows)
 
     if all_x:
+        plot.setLabel("left", _t_plot_y_axis_label(plotted_rows))
         _fit_range(plot, all_x, all_y)
     else:
         _plot_message(plot, f"t-Plot 当前区间 {_plain_number(data_min)}-{_plain_number(data_max)} 内有效点不足")
@@ -589,7 +608,7 @@ def plot_t_plot_selection(
         return None
 
     x = np.asarray([row["thickness_nm"] for row in analysis.rows], dtype=float)
-    y = np.asarray([row["liquid_volume_cm3_g"] for row in analysis.rows], dtype=float)
+    y = _t_plot_y_values(analysis.rows)
     mask = np.isfinite(x) & np.isfinite(y)
     if not np.any(mask):
         return None
@@ -673,14 +692,14 @@ def plot_t_plot(plot: pg.PlotWidget, result, p_min: float | None = None, p_max: 
     analysis = t_plot_analysis(result) if p_min is None or p_max is None else t_plot_analysis(result, p_min, p_max)
     plot.clear()
     plot.setTitle("t-Plot")
-    plot.setLabel("left", "液体体积 (cm3/g)")
+    plot.setLabel("left", _t_plot_y_axis_label(analysis.rows))
     plot.setLabel("bottom", "统计膜厚 t (nm)")
     plot.setLogMode(x=False, y=False)
     if not analysis.rows:
         _plot_message(plot, f"t-Plot {_range_text(analysis, '默认区间 0.20-0.50')} 内有效点不足")
         return
     x = np.asarray([row["thickness_nm"] for row in analysis.rows], dtype=float)
-    y = np.asarray([row["liquid_volume_cm3_g"] for row in analysis.rows], dtype=float)
+    y = _t_plot_y_values(analysis.rows)
     plot.plot(
         x,
         y,

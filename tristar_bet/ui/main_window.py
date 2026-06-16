@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import math
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
@@ -12,12 +13,14 @@ import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
-from tristar_bet import BELMasterParseError, TriStarParseError, load_file
+from tristar_bet import BELMasterParseError, ExcelParseError, TriStarParseError, load_file
 from tristar_bet.analysis import (
     DEFAULT_THICKNESS_METHOD,
     THICKNESS_METHOD_DEFAULT_PARAMS,
     analysis_bundle,
     automatic_bet_range,
+    automatic_langmuir_range,
+    automatic_t_plot_pressure_range,
     bet_analysis,
     bjh_pore_distribution,
     bjh_pore_volume_cm3_g,
@@ -391,7 +394,7 @@ class SampleTableWidget(QtWidgets.QTableWidget):
             if not url.isLocalFile():
                 continue
             path = Path(url.toLocalFile())
-            if path.is_file() and path.suffix.lower() in (".smp", ".dat"):
+            if path.is_file() and path.suffix.lower() in (".smp", ".dat", ".qps", ".xls", ".xlsx", ".xlsm"):
                 paths.append(str(path))
         return paths
 
@@ -421,6 +424,7 @@ BET_COLUMN = 3
 LANGMUIR_COLUMN = 4
 T_PLOT_COLUMN = 5
 BJH_PORE_VOLUME_COLUMN = 6
+SUPPORTED_DATA_SUFFIXES = (".smp", ".dat", ".qps", ".xls", ".xlsx", ".xlsm")
 BET_DEFAULT_RANGE = (0.05, 0.30)
 BET_PLOT_RANGE = (0.0, 1.0)
 LANGMUIR_DEFAULT_RANGE = (0.05, 0.30)
@@ -447,6 +451,8 @@ DEFAULT_T_PLOT_THICKNESS_PARAMS = dict(T_PLOT_THICKNESS_PARAM_DEFAULTS[DEFAULT_T
 DEFAULT_T_PLOT_SURFACE_AREA_MODE = "BET"
 DEFAULT_T_PLOT_SURFACE_AREA_INPUT = 1.0
 DEFAULT_T_PLOT_SURFACE_AREA_CORRECTION = 1.0
+DEFAULT_BJH_THICKNESS_METHOD = "reference"
+DEFAULT_BJH_REFERENCE_FILE = DEFAULT_REFERENCE_DIR / "sio2oh.thk"
 DEFAULT_BJH_CORRECTION = "standard"
 DEFAULT_BJH_OPEN_PORE_FRACTION = 0.0
 DEFAULT_BJH_SMOOTH_DERIVATIVE = True
@@ -479,6 +485,27 @@ def _default_t_plot_thickness_params_by_method() -> dict[str, dict[str, float]]:
     return {method: dict(params) for method, params in T_PLOT_THICKNESS_PARAM_DEFAULTS.items()}
 
 
+def _default_bjh_reference_params() -> dict[str, object]:
+    try:
+        points = read_reference_points(DEFAULT_BJH_REFERENCE_FILE)
+    except OSError:
+        points = []
+    return {
+        "reference_name": DEFAULT_BJH_REFERENCE_FILE.name,
+        "reference_path": str(DEFAULT_BJH_REFERENCE_FILE),
+        "reference_points": points,
+    }
+
+
+def _default_bjh_thickness_params_by_method() -> dict[str, dict[str, object]]:
+    params_by_method = {
+        method: dict(params)
+        for method, params in T_PLOT_THICKNESS_PARAM_DEFAULTS.items()
+    }
+    params_by_method["reference"] = _default_bjh_reference_params()
+    return params_by_method
+
+
 def _t_plot_thickness_label(method: str) -> str:
     return T_PLOT_THICKNESS_METHOD_LABELS.get(method, T_PLOT_THICKNESS_METHOD_LABELS[DEFAULT_T_PLOT_THICKNESS_METHOD])
 
@@ -488,6 +515,343 @@ def _float_equal(left: object, right: object, *, tol: float = 1e-9) -> bool:
         return abs(float(left) - float(right)) <= tol
     except (TypeError, ValueError):
         return False
+
+
+def _reference_points_equal(left: object, right: object) -> bool:
+    left_points = normalize_reference_points(left)
+    right_points = normalize_reference_points(right)
+    if len(left_points) != len(right_points):
+        return False
+    return all(
+        _float_equal(left_pressure, right_pressure) and _float_equal(left_thickness, right_thickness)
+        for (left_pressure, left_thickness), (right_pressure, right_thickness) in zip(left_points, right_points)
+    )
+
+
+def _thickness_params_equal(active: dict[str, object], default: dict[str, object]) -> bool:
+    for key, default_value in default.items():
+        active_value = active.get(key)
+        if key == "reference_points":
+            if not _reference_points_equal(active_value, default_value):
+                return False
+        elif isinstance(default_value, (int, float)):
+            if not _float_equal(active_value, default_value):
+                return False
+        elif active_value != default_value:
+            return False
+    return True
+
+
+class FileImportDialog(QtWidgets.QDialog):
+    def __init__(
+        self,
+        parent=None,
+        initial_dir: Path | str | None = None,
+        existing_paths: Iterable[str] | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("导入数据文件")
+        self.resize(1060, 640)
+        self.setMinimumSize(860, 520)
+        self.current_directory = Path(initial_dir or Path.cwd())
+        self._available_paths: list[Path] = []
+        self._selected_paths: list[Path] = [Path(p) for p in (existing_paths or [])]
+
+        folder_label = QtWidgets.QLabel("文件夹")
+        self.folder_edit = QtWidgets.QLineEdit(str(self.current_directory))
+        self.folder_edit.returnPressed.connect(self._set_directory_from_edit)
+        browse_button = QtWidgets.QToolButton()
+        browse_button.setText("...")
+        browse_button.setToolTip("选择文件夹")
+        browse_button.clicked.connect(self._browse_directory)
+        refresh_button = QtWidgets.QToolButton()
+        refresh_button.setText("刷新")
+        refresh_button.clicked.connect(self._scan_directory)
+
+        folder_layout = QtWidgets.QHBoxLayout()
+        folder_layout.addWidget(folder_label)
+        folder_layout.addWidget(self.folder_edit, 1)
+        folder_layout.addWidget(browse_button)
+        folder_layout.addWidget(refresh_button)
+
+        self.search_edit = QtWidgets.QLineEdit()
+        self.search_edit.setPlaceholderText("按文件名筛选")
+        self.search_edit.textChanged.connect(lambda _text: self._populate_tables())
+
+        search_layout = QtWidgets.QHBoxLayout()
+        search_layout.addWidget(QtWidgets.QLabel("筛选"))
+        search_layout.addWidget(self.search_edit, 1)
+
+        self.available_table = self._make_file_table()
+        self.selected_table = self._make_file_table()
+        self.available_table.itemDoubleClicked.connect(lambda _item: self._move_selected_to_right())
+        self.selected_table.itemDoubleClicked.connect(lambda _item: self._move_selected_to_left())
+
+        available_box = self._make_group("可导入文件", self.available_table)
+        selected_box = self._make_group("待导入文件", self.selected_table)
+
+        self.to_right_button = self._arrow_button(">", "添加选中文件")
+        self.to_left_button = self._arrow_button("<", "移回选中文件")
+        self.all_right_button = self._arrow_button(">>", "添加全部文件")
+        self.all_left_button = self._arrow_button("<<", "全部移回")
+        self.to_right_button.clicked.connect(self._move_selected_to_right)
+        self.to_left_button.clicked.connect(self._move_selected_to_left)
+        self.all_right_button.clicked.connect(self._move_all_to_right)
+        self.all_left_button.clicked.connect(self._move_all_to_left)
+
+        move_layout = QtWidgets.QVBoxLayout()
+        move_layout.addStretch(1)
+        for button in (self.to_right_button, self.to_left_button, self.all_right_button, self.all_left_button):
+            move_layout.addWidget(button)
+        move_layout.addStretch(1)
+
+        self.move_up_button = self._arrow_button("↑", "上移选中文件")
+        self.move_down_button = self._arrow_button("↓", "下移选中文件")
+        self.move_up_button.clicked.connect(lambda: self._move_selected_rows(-1))
+        self.move_down_button.clicked.connect(lambda: self._move_selected_rows(1))
+        order_layout = QtWidgets.QHBoxLayout()
+        order_layout.addStretch(1)
+        order_layout.addWidget(self.move_up_button)
+        order_layout.addWidget(self.move_down_button)
+
+        selected_panel = QtWidgets.QWidget()
+        selected_layout = QtWidgets.QVBoxLayout(selected_panel)
+        selected_layout.setContentsMargins(0, 0, 0, 0)
+        selected_layout.addWidget(selected_box, 1)
+        selected_layout.addLayout(order_layout)
+
+        picker_layout = QtWidgets.QHBoxLayout()
+        picker_layout.addWidget(available_box, 1)
+        picker_layout.addLayout(move_layout)
+        picker_layout.addWidget(selected_panel, 1)
+
+        self.count_label = QtWidgets.QLabel("")
+        self.import_button = QtWidgets.QPushButton("导入")
+        self.import_button.clicked.connect(self.accept)
+        cancel_button = QtWidgets.QPushButton("取消")
+        cancel_button.clicked.connect(self.reject)
+
+        bottom_layout = QtWidgets.QHBoxLayout()
+        bottom_layout.addWidget(self.count_label, 1)
+        bottom_layout.addWidget(self.import_button)
+        bottom_layout.addWidget(cancel_button)
+
+        main_layout = QtWidgets.QVBoxLayout(self)
+        main_layout.setContentsMargins(12, 12, 12, 12)
+        main_layout.setSpacing(10)
+        main_layout.addLayout(folder_layout)
+        main_layout.addLayout(search_layout)
+        main_layout.addLayout(picker_layout, 1)
+        main_layout.addLayout(bottom_layout)
+
+        for table in (self.available_table, self.selected_table):
+            table.itemSelectionChanged.connect(self._update_buttons)
+        self._scan_directory()
+
+    def selected_paths(self) -> list[str]:
+        return [str(path) for path in self._selected_paths]
+
+    @staticmethod
+    def _make_group(title: str, table: QtWidgets.QTableWidget) -> QtWidgets.QGroupBox:
+        group = QtWidgets.QGroupBox(title)
+        layout = QtWidgets.QVBoxLayout(group)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.addWidget(table)
+        return group
+
+    @staticmethod
+    def _make_file_table() -> QtWidgets.QTableWidget:
+        table = QtWidgets.QTableWidget(0, 4)
+        table.setHorizontalHeaderLabels(["文件名", "格式", "修改时间", "大小"])
+        table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        table.setAlternatingRowColors(True)
+        table.setSortingEnabled(True)
+        table.verticalHeader().setVisible(False)
+        table.verticalHeader().setDefaultSectionSize(26)
+        table.horizontalHeader().setStretchLastSection(False)
+        table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
+        table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeToContents)
+        return table
+
+    @staticmethod
+    def _arrow_button(text: str, tooltip: str) -> QtWidgets.QPushButton:
+        button = QtWidgets.QPushButton(text)
+        button.setFixedSize(44, 32)
+        button.setToolTip(tooltip)
+        return button
+
+    def _browse_directory(self) -> None:
+        directory = QtWidgets.QFileDialog.getExistingDirectory(self, "选择数据文件夹", str(self.current_directory))
+        if not directory:
+            return
+        self.current_directory = Path(directory)
+        self.folder_edit.setText(str(self.current_directory))
+        self._scan_directory()
+
+    def _set_directory_from_edit(self) -> None:
+        directory = Path(self.folder_edit.text().strip())
+        if not directory.is_dir():
+            QtWidgets.QMessageBox.warning(self, "文件夹不存在", str(directory))
+            self.folder_edit.setText(str(self.current_directory))
+            return
+        self.current_directory = directory
+        self._scan_directory()
+
+    def _scan_directory(self) -> None:
+        directory = self.current_directory
+        self.folder_edit.setText(str(directory))
+        selected = {self._path_key(path) for path in self._selected_paths}
+        try:
+            files = [
+                path
+                for path in directory.iterdir()
+                if path.is_file() and path.suffix.lower() in SUPPORTED_DATA_SUFFIXES and self._path_key(path) not in selected
+            ]
+        except OSError as exc:
+            QtWidgets.QMessageBox.warning(self, "无法读取文件夹", str(exc))
+            files = []
+        self._available_paths = sorted(files, key=lambda path: path.name.lower())
+        self._populate_tables()
+
+    def _populate_tables(self) -> None:
+        query = self.search_edit.text().strip().lower()
+        available = [path for path in self._available_paths if query in path.name.lower()]
+        self._fill_table(self.available_table, available)
+        self._fill_table(self.selected_table, self._selected_paths)
+        self._update_buttons()
+
+    def _fill_table(self, table: QtWidgets.QTableWidget, paths: list[Path]) -> None:
+        header = table.horizontalHeader()
+        sort_column = header.sortIndicatorSection()
+        sort_order = header.sortIndicatorOrder()
+        table.setSortingEnabled(False)
+        table.setRowCount(0)
+        for path in paths:
+            row = table.rowCount()
+            table.insertRow(row)
+            values = [path.name, path.suffix.upper().lstrip("."), self._modified_text(path), self._size_text(path)]
+            for column, value in enumerate(values):
+                item = QtWidgets.QTableWidgetItem(value)
+                item.setData(QtCore.Qt.UserRole, str(path))
+                if column in {1, 3}:
+                    item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+                table.setItem(row, column, item)
+        table.setSortingEnabled(table is self.available_table)
+        if table is self.available_table:
+            table.sortItems(sort_column, sort_order)
+
+    @staticmethod
+    def _modified_text(path: Path) -> str:
+        try:
+            return datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+        except OSError:
+            return ""
+
+    @staticmethod
+    def _size_text(path: Path) -> str:
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return ""
+        if size >= 1024 * 1024:
+            return f"{size / (1024 * 1024):.1f} MB"
+        if size >= 1024:
+            return f"{size / 1024:.1f} KB"
+        return f"{size} B"
+
+    @staticmethod
+    def _path_key(path: Path) -> str:
+        try:
+            return str(path.resolve()).lower()
+        except OSError:
+            return str(path).lower()
+
+    def _selected_table_paths(self, table: QtWidgets.QTableWidget) -> list[Path]:
+        rows = sorted({index.row() for index in table.selectionModel().selectedRows()})
+        paths = []
+        for row in rows:
+            item = table.item(row, 0)
+            if item is not None:
+                paths.append(Path(str(item.data(QtCore.Qt.UserRole))))
+        return paths
+
+    def _move_selected_to_right(self) -> None:
+        paths = self._selected_table_paths(self.available_table)
+        self._add_to_selected(paths)
+
+    def _move_all_to_right(self) -> None:
+        self._add_to_selected(list(self._available_paths))
+
+    def _add_to_selected(self, paths: list[Path]) -> None:
+        if not paths:
+            return
+        selected_keys = {self._path_key(path) for path in self._selected_paths}
+        for path in paths:
+            key = self._path_key(path)
+            if key not in selected_keys:
+                self._selected_paths.append(path)
+                selected_keys.add(key)
+        moved = {self._path_key(path) for path in paths}
+        self._available_paths = [path for path in self._available_paths if self._path_key(path) not in moved]
+        self._populate_tables()
+
+    def _move_selected_to_left(self) -> None:
+        paths = self._selected_table_paths(self.selected_table)
+        self._remove_from_selected(paths)
+
+    def _move_all_to_left(self) -> None:
+        self._remove_from_selected(list(self._selected_paths))
+
+    def _remove_from_selected(self, paths: list[Path]) -> None:
+        if not paths:
+            return
+        removed = {self._path_key(path) for path in paths}
+        self._selected_paths = [path for path in self._selected_paths if self._path_key(path) not in removed]
+        existing = {self._path_key(path) for path in self._available_paths}
+        for path in paths:
+            if path.exists() and self._path_key(path) not in existing:
+                self._available_paths.append(path)
+                existing.add(self._path_key(path))
+        self._available_paths.sort(key=lambda path: path.name.lower())
+        self._populate_tables()
+
+    def _move_selected_rows(self, direction: int) -> None:
+        rows = sorted({index.row() for index in self.selected_table.selectionModel().selectedRows()})
+        if not rows or (direction < 0 and rows[0] == 0) or (direction > 0 and rows[-1] >= len(self._selected_paths) - 1):
+            return
+        if direction > 0:
+            rows = list(reversed(rows))
+        for row in rows:
+            target = row + direction
+            self._selected_paths[row], self._selected_paths[target] = self._selected_paths[target], self._selected_paths[row]
+        selected_after = [row + direction for row in rows]
+        self._populate_tables()
+        self.selected_table.clearSelection()
+        for row in selected_after:
+            self.selected_table.selectRow(row)
+
+    def _update_buttons(self) -> None:
+        has_available_selection = bool(self.available_table.selectionModel().selectedRows())
+        has_selected_selection = bool(self.selected_table.selectionModel().selectedRows())
+        self.to_right_button.setEnabled(has_available_selection)
+        self.to_left_button.setEnabled(has_selected_selection)
+        self.all_right_button.setEnabled(bool(self._available_paths))
+        self.all_left_button.setEnabled(bool(self._selected_paths))
+        self.move_up_button.setEnabled(has_selected_selection and min(self._selected_rows(self.selected_table), default=0) > 0)
+        self.move_down_button.setEnabled(
+            has_selected_selection
+            and max(self._selected_rows(self.selected_table), default=-1) < len(self._selected_paths) - 1
+        )
+        self.import_button.setEnabled(bool(self._selected_paths))
+        self.count_label.setText(f"可导入 {len(self._available_paths)} 个，待导入 {len(self._selected_paths)} 个")
+
+    @staticmethod
+    def _selected_rows(table: QtWidgets.QTableWidget) -> list[int]:
+        return sorted({index.row() for index in table.selectionModel().selectedRows()})
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -543,9 +907,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.t_plot_surface_area_input = DEFAULT_T_PLOT_SURFACE_AREA_INPUT
         self.t_plot_surface_area_correction = DEFAULT_T_PLOT_SURFACE_AREA_CORRECTION
         self._syncing_bjh_controls = False
-        self.bjh_thickness_method = DEFAULT_T_PLOT_THICKNESS_METHOD
-        self.bjh_thickness_params_by_method = _default_t_plot_thickness_params_by_method()
-        self.bjh_thickness_params = dict(DEFAULT_T_PLOT_THICKNESS_PARAMS)
+        self.bjh_thickness_method = DEFAULT_BJH_THICKNESS_METHOD
+        self.bjh_thickness_params_by_method = _default_bjh_thickness_params_by_method()
+        self.bjh_thickness_params = dict(self.bjh_thickness_params_by_method[DEFAULT_BJH_THICKNESS_METHOD])
         self.bjh_correction = DEFAULT_BJH_CORRECTION
         self.bjh_open_pore_fraction = DEFAULT_BJH_OPEN_PORE_FRACTION
         self.bjh_smooth_derivative = DEFAULT_BJH_SMOOTH_DERIVATIVE
@@ -567,17 +931,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self._setting_langmuir_region = False
         self._setting_t_plot_region = False
         self._setting_bjh_region = False
+        self.import_directory = Path.cwd()
 
         self.setWindowTitle(APP_NAME)
         self.resize(1280, 780)
 
         open_button = QtWidgets.QPushButton("导入文件")
         open_button.clicked.connect(self.open_files)
-        add_button = QtWidgets.QPushButton("添加文件")
-        add_button.clicked.connect(self.add_files)
-        export_button = QtWidgets.QPushButton("导出 XLSX")
+        export_button = QtWidgets.QPushButton("导出文件")
         export_button.clicked.connect(self.export_xlsx)
-        for button in (open_button, add_button, export_button):
+        for button in (open_button, export_button):
             button.setFixedHeight(32)
             button.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
             button.setFixedWidth(96)
@@ -821,7 +1184,6 @@ class MainWindow(QtWidgets.QMainWindow):
         button_row.setContentsMargins(0, 0, 0, 0)
         button_row.setSpacing(6)
         button_row.addWidget(open_button)
-        button_row.addWidget(add_button)
         button_row.addWidget(export_button)
         button_row.addStretch(1)
         side_layout.addLayout(button_row)
@@ -855,7 +1217,7 @@ class MainWindow(QtWidgets.QMainWindow):
         splitter.setSizes([390, 890])
         self.setCentralWidget(splitter)
 
-        self.statusBar().showMessage("打开或拖入 Micromeritics SMP 或 BELMaster DAT 文件")
+        self.statusBar().showMessage("打开或拖入 SMP、DAT、QPS 或官方 Excel 导出文件")
         self.refresh_all()
         self._sync_select_all_state()
         QtCore.QTimer.singleShot(0, self._position_header_controls)
@@ -1764,12 +2126,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._refresh_all_sample_bjh_pore_cells()
 
     def reset_bjh_to_default(self) -> None:
-        default_params_by_method = _default_t_plot_thickness_params_by_method()
+        default_params_by_method = _default_bjh_thickness_params_by_method()
         self._syncing_bjh_controls = True
         try:
-            self.bjh_thickness_method = DEFAULT_T_PLOT_THICKNESS_METHOD
+            self.bjh_thickness_method = DEFAULT_BJH_THICKNESS_METHOD
             self.bjh_thickness_params_by_method = default_params_by_method
-            self.bjh_thickness_params = dict(default_params_by_method[DEFAULT_T_PLOT_THICKNESS_METHOD])
+            self.bjh_thickness_params = dict(default_params_by_method[DEFAULT_BJH_THICKNESS_METHOD])
             self.bjh_correction = DEFAULT_BJH_CORRECTION
             self.bjh_open_pore_fraction = DEFAULT_BJH_OPEN_PORE_FRACTION
             self.bjh_smooth_derivative = DEFAULT_BJH_SMOOTH_DERIVATIVE
@@ -1920,11 +2282,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self._syncing_t_plot_controls = False
 
     def _default_bjh_settings(self) -> dict[str, object]:
-        params_by_method = _default_t_plot_thickness_params_by_method()
+        params_by_method = _default_bjh_thickness_params_by_method()
         return {
-            "thickness_method": DEFAULT_T_PLOT_THICKNESS_METHOD,
+            "thickness_method": DEFAULT_BJH_THICKNESS_METHOD,
             "thickness_params_by_method": params_by_method,
-            "thickness_params": dict(params_by_method[DEFAULT_T_PLOT_THICKNESS_METHOD]),
+            "thickness_params": dict(params_by_method[DEFAULT_BJH_THICKNESS_METHOD]),
             "correction": DEFAULT_BJH_CORRECTION,
             "open_pore_fraction": DEFAULT_BJH_OPEN_PORE_FRACTION,
             "smooth_derivative": DEFAULT_BJH_SMOOTH_DERIVATIVE,
@@ -1935,9 +2297,18 @@ class MainWindow(QtWidgets.QMainWindow):
     def _bjh_settings_for_result(self, result) -> dict[str, object]:
         settings = self._default_bjh_settings()
         custom = self.custom_bjh_settings.get(id(result))
+        if not custom:
+            vendor_method = result.method_options.get("bsd_bjh_thickness_method")
+            if vendor_method:
+                params_by_method = _default_bjh_thickness_params_by_method()
+                method_key = str(vendor_method)
+                if method_key in params_by_method:
+                    settings["thickness_method"] = method_key
+                    settings["thickness_params_by_method"] = params_by_method
+                    settings["thickness_params"] = dict(params_by_method[method_key])
         if custom:
             settings.update(custom)
-            params_by_method = _default_t_plot_thickness_params_by_method()
+            params_by_method = _default_bjh_thickness_params_by_method()
             if "thickness_params_by_method" in custom:
                 for method_key, params in dict(custom["thickness_params_by_method"]).items():
                     if method_key in params_by_method:
@@ -1955,7 +2326,7 @@ class MainWindow(QtWidgets.QMainWindow):
             settings["thickness_params_by_method"] = params_by_method
             method_key = str(settings["thickness_method"])
             settings["thickness_params"] = dict(
-                params_by_method.get(method_key, params_by_method[DEFAULT_T_PLOT_THICKNESS_METHOD])
+                params_by_method.get(method_key, params_by_method[DEFAULT_BJH_THICKNESS_METHOD])
             )
         return settings
 
@@ -2009,27 +2380,81 @@ class MainWindow(QtWidgets.QMainWindow):
             self._syncing_bjh_controls = False
 
     def open_files(self) -> None:
-        paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
-            self,
-            "打开数据文件",
-            str(Path.cwd()),
-            "BET 数据文件 (*.SMP *.smp *.DAT *.dat);;SMP 文件 (*.SMP *.smp);;BELMaster DAT 文件 (*.DAT *.dat)",
-        )
-        if paths:
-            self.load_files(paths, replace=True)
-
-    def add_files(self) -> None:
-        paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
-            self,
-            "添加数据文件",
-            str(Path.cwd()),
-            "BET 数据文件 (*.SMP *.smp *.DAT *.dat);;SMP 文件 (*.SMP *.smp);;BELMaster DAT 文件 (*.DAT *.dat)",
-        )
-        if paths:
-            self.load_files(paths, replace=False)
+        existing_paths = [result.header.file_path for result in self.results]
+        dialog = FileImportDialog(self, self.import_directory, existing_paths=existing_paths)
+        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+            return
+        paths = dialog.selected_paths()
+        if not paths:
+            return
+        self.import_directory = dialog.current_directory
+        self.sync_files(paths)
 
     def append_files(self, paths: list[str]) -> None:
         self.load_files(paths, replace=False)
+
+    @staticmethod
+    def _path_key(path: str) -> str:
+        try:
+            return str(Path(path).resolve()).lower()
+        except OSError:
+            return str(path).lower()
+
+    def sync_files(self, paths: list[str]) -> None:
+        """Make the sample list match ``paths``: reuse already-loaded results
+        (keeping their per-sample settings), parse newly added files, and drop
+        any sample no longer present."""
+        existing_by_key = {self._path_key(result.header.file_path): result for result in self.results}
+        new_results = []
+        errors = []
+        seen_keys: set[str] = set()
+        for path in paths:
+            key = self._path_key(path)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            existing = existing_by_key.get(key)
+            if existing is not None:
+                new_results.append(existing)
+                continue
+            try:
+                result = load_file(path)
+            except (OSError, TriStarParseError, BELMasterParseError, ExcelParseError, ValueError) as exc:
+                errors.append(f"{Path(path).name}: {exc}")
+                continue
+            if result.point_count <= 0:
+                errors.append(f"{Path(path).name}: 没有解析到实际等温线，已跳过")
+                continue
+            new_results.append(result)
+
+        if errors:
+            QtWidgets.QMessageBox.warning(self, "部分文件未加载", "\n".join(errors))
+        if not new_results:
+            return
+
+        kept_visibility = {id(result): visible for result, visible in zip(self.results, self.visible_results)}
+        active_result = self.results[self.active_index] if 0 <= self.active_index < len(self.results) else None
+
+        # Drop per-sample settings for removed samples (keyed by object id).
+        retained_ids = {id(result) for result in new_results}
+        for removed in self.results:
+            if id(removed) not in retained_ids:
+                self._discard_sample_settings(removed)
+
+        self.results = new_results
+        self.visible_results = [kept_visibility.get(id(result), True) for result in new_results]
+        if active_result in new_results:
+            self.active_index = new_results.index(active_result)
+        else:
+            self.active_index = 0
+        self.refresh_all()
+
+    def _discard_sample_settings(self, result) -> None:
+        self.custom_bet_fit_ranges.pop(id(result), None)
+        self.custom_langmuir_fit_ranges.pop(id(result), None)
+        self.custom_t_plot_fit_ranges.pop(id(result), None)
+        self.custom_t_plot_settings.pop(id(result), None)
+        self.custom_bjh_settings.pop(id(result), None)
 
     def load_files(self, paths: Iterable[str], *, replace: bool) -> None:
         parsed = []
@@ -2037,7 +2462,7 @@ class MainWindow(QtWidgets.QMainWindow):
         for path in paths:
             try:
                 result = load_file(path)
-            except (OSError, TriStarParseError, BELMasterParseError, ValueError) as exc:
+            except (OSError, TriStarParseError, BELMasterParseError, ExcelParseError, ValueError) as exc:
                 errors.append(f"{Path(path).name}: {exc}")
                 continue
             if result.point_count <= 0:
@@ -2072,13 +2497,18 @@ class MainWindow(QtWidgets.QMainWindow):
     def export_xlsx(self) -> None:
         selected = [result for result, visible in zip(self.results, self.visible_results) if visible]
         if not selected:
-            QtWidgets.QMessageBox.information(self, "导出 XLSX", "没有勾选可导出的样品。")
+            QtWidgets.QMessageBox.information(self, "导出文件", "没有勾选可导出的样品。")
             return
+
+        pore_range = self._selected_bjh_pore_volume_range()
+        d_min, d_max = sorted((float(pore_range[0]), float(pore_range[1])))
+        pore_volume_header = f"{_fmt_nm(d_min)}nm-{_fmt_nm(d_max)}nm孔容量(cm3/g)"
+        pore_volumes = [self._bjh_pore_volume_for_result(result) for result in selected]
 
         default_name = f"BET解析导出_{len(selected)}个样品.xlsx"
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
             self,
-            "导出 XLSX",
+            "导出文件",
             str(Path.cwd() / default_name),
             "Excel 工作簿 (*.xlsx)",
         )
@@ -2087,7 +2517,12 @@ class MainWindow(QtWidgets.QMainWindow):
         if not path.lower().endswith(".xlsx"):
             path += ".xlsx"
         try:
-            export_results_xlsx(selected, path)
+            export_results_xlsx(
+                selected,
+                path,
+                pore_volume_header=pore_volume_header,
+                pore_volumes=pore_volumes,
+            )
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "导出失败", str(exc))
             return
@@ -2160,11 +2595,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         deleted = self.results.pop(row)
         self.visible_results.pop(row)
-        self.custom_bet_fit_ranges.pop(id(deleted), None)
-        self.custom_langmuir_fit_ranges.pop(id(deleted), None)
-        self.custom_t_plot_fit_ranges.pop(id(deleted), None)
-        self.custom_t_plot_settings.pop(id(deleted), None)
-        self.custom_bjh_settings.pop(id(deleted), None)
+        self._discard_sample_settings(deleted)
 
         if not self.results:
             self.active_index = -1
@@ -2305,7 +2736,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.sample_table.setItem(row, FILE_COLUMN, file_item)
 
                 test_time_item = self._table_item(result.test_started_time)
-                test_time_item.setToolTip("SMP 优先来自日志 Started 时间；DAT 来自测量日期")
+                test_time_item.setToolTip("SMP 优先来自日志 Started 时间；DAT/QPS 来自测量日期")
                 self.sample_table.setItem(row, TEST_TIME_COLUMN, test_time_item)
 
                 bet_item = self._table_item(_fmt(bet.surface_area_m2_g), alignment=QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
@@ -3650,7 +4081,7 @@ class MainWindow(QtWidgets.QMainWindow):
         return bet_analysis(result, fit_range[0], fit_range[1])
 
     def _langmuir_fit_range_for_result(self, result) -> tuple[float, float]:
-        return self.custom_langmuir_fit_ranges.get(id(result), LANGMUIR_DEFAULT_RANGE)
+        return self.custom_langmuir_fit_ranges.get(id(result), automatic_langmuir_range(result))
 
     def _is_custom_langmuir_fit(self, result) -> bool:
         return id(result) in self.custom_langmuir_fit_ranges
@@ -3670,8 +4101,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self,
         thickness_method: str | None = None,
         thickness_params: dict[str, float] | None = None,
+        pressure_range: tuple[float, float] | None = None,
     ) -> tuple[float, float]:
-        p_min, p_max = T_PLOT_DEFAULT_PRESSURE_RANGE
+        p_min, p_max = pressure_range or T_PLOT_DEFAULT_PRESSURE_RANGE
         thickness_method = thickness_method or self.t_plot_thickness_method
         thickness_params = thickness_params or self.t_plot_thickness_params
         t_values = [
@@ -3693,6 +4125,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._default_t_plot_fit_range(
                 str(settings["thickness_method"]),
                 dict(settings["thickness_params"]),
+                automatic_t_plot_pressure_range(result),
             ),
         )
 
@@ -3801,16 +4234,13 @@ class MainWindow(QtWidgets.QMainWindow):
     def _has_custom_bjh_settings(self, result) -> bool:
         settings = self._bjh_settings_for_result(result)
         method = str(settings["thickness_method"])
-        if method != DEFAULT_T_PLOT_THICKNESS_METHOD:
+        if method != DEFAULT_BJH_THICKNESS_METHOD:
             return True
-        default_params = T_PLOT_THICKNESS_PARAM_DEFAULTS.get(
-            method,
-            DEFAULT_T_PLOT_THICKNESS_PARAMS,
-        )
+        default_params_by_method = _default_bjh_thickness_params_by_method()
+        default_params = default_params_by_method.get(method, default_params_by_method[DEFAULT_BJH_THICKNESS_METHOD])
         active_params = dict(settings["thickness_params"])
-        for key, default_value in default_params.items():
-            if not _float_equal(active_params.get(key), default_value):
-                return True
+        if not _thickness_params_equal(active_params, default_params):
+            return True
         if str(settings["correction"]) != DEFAULT_BJH_CORRECTION:
             return True
         if not _float_equal(settings["open_pore_fraction"], DEFAULT_BJH_OPEN_PORE_FRACTION):
@@ -4177,7 +4607,13 @@ def _t_plot_mmol_regression(t_plot) -> dict[str, float | None]:
     return result
 
 
-def export_results_xlsx(results, path: str | Path) -> None:
+def export_results_xlsx(
+    results,
+    path: str | Path,
+    *,
+    pore_volume_header: str = "选区孔容量(cm3/g)",
+    pore_volumes: list[float | None] | None = None,
+) -> None:
     from openpyxl import Workbook
     from openpyxl.styles import Font
 
@@ -4204,15 +4640,17 @@ def export_results_xlsx(results, path: str | Path) -> None:
                 "t-Plot状态",
                 "t-Plot外比表面积(m2/g)",
                 "t-Plot微孔体积(cm3/g)",
+                pore_volume_header,
             ]
         ],
         bold_first=True,
     )
-    for result in results:
+    for index, result in enumerate(results):
         analyses = analysis_bundle(result)
         bet = analyses["BET"]
         langmuir = analyses["Langmuir"]
         t_plot = analyses["t-Plot"]
+        pore_volume = pore_volumes[index] if pore_volumes is not None and index < len(pore_volumes) else None
         summary_sheet.append(
             [
                 result.file_name,
@@ -4231,6 +4669,7 @@ def export_results_xlsx(results, path: str | Path) -> None:
                 status_text(t_plot.status),
                 t_plot.external_surface_area_m2_g,
                 t_plot.micropore_volume_cm3_g,
+                pore_volume,
             ]
         )
 
@@ -4338,6 +4777,12 @@ def _fmt(value, digits: int = 6) -> str:
     if not math_isfinite(number):
         return ""
     return f"{number:.{digits}g}"
+
+
+def _fmt_nm(value: float) -> str:
+    """Format a diameter (nm) for column labels: trim trailing zeros (2.0 -> '2')."""
+    text = f"{float(value):.2f}".rstrip("0").rstrip(".")
+    return text or "0"
 
 
 def math_isfinite(value: float) -> bool:

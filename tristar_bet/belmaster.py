@@ -27,6 +27,7 @@ from .models import (
     RunConditions,
     SampleInfo,
     SmpHeader,
+    TargetPressureRow,
     TriStarResult,
 )
 
@@ -89,6 +90,7 @@ class BELMasterDatParser:
             "test_started_time": created_time,
             "test_started_raw": created_raw,
             "belmaster_quantity_source": "dat_v_ml_stp_per_g",
+            "target_pressure_table_source": "measured_isotherm_pressure_sequence",
         }
         duration_text, duration_seconds = self._parse_measurement_duration(labels)
         if duration_text:
@@ -110,7 +112,7 @@ class BELMasterDatParser:
             subsets=[],
             sample=sample,
             run_conditions=run_conditions,
-            target_pressure_table=[],
+            target_pressure_table=self._build_target_pressure_table(isotherm),
             free_space=free_space,
             po_records=[],
             isotherm=isotherm,
@@ -279,6 +281,27 @@ class BELMasterDatParser:
                     )
                 )
         return points
+
+    @staticmethod
+    def _build_target_pressure_table(isotherm: list[IsothermPoint]) -> list[TargetPressureRow]:
+        rows: list[TargetPressureRow] = []
+        previous_end = 0.0
+        for point in isotherm:
+            pressure = float(point.relative_pressure)
+            if not math.isfinite(pressure) or pressure <= 0.0:
+                continue
+            rows.append(
+                TargetPressureRow(
+                    row=len(rows) + 1,
+                    branch=point.phase,
+                    starting_pressure_p_po=previous_end,
+                    ending_pressure_p_po=pressure,
+                    pressure_increment_p_po=pressure - previous_end,
+                    ending_pressure_rel_offset=0,
+                )
+            )
+            previous_end = pressure
+        return rows
 
     # -- value helpers ------------------------------------------------------
 

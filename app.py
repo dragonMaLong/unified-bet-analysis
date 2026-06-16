@@ -11,8 +11,8 @@ DEFAULT_OUT_DIR = Path(r"D:\software\analysis\Data\BET\TriStar_II_3020_format_an
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="TriStar II 3020 SMP minimal parser")
-    parser.add_argument("input", nargs="?", help="SMP file path or directory containing SMP files")
+    parser = argparse.ArgumentParser(description="BET instrument data parser")
+    parser.add_argument("input", nargs="?", help="SMP, DAT, QPS, XLS, XLSX, or XLSM file path, or a directory containing supported files")
     parser.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR), help="CSV output directory")
     parser.add_argument("--prefix", default="tristar3020_minimal_parser", help="Output file prefix")
     parser.add_argument("--no-export", action="store_true", help="Only print a CLI summary")
@@ -25,7 +25,20 @@ def main(argv: list[str] | None = None) -> int:
     input_path = Path(args.input)
     if input_path.is_dir():
         unique: dict[Path, Path] = {}
-        for pattern in ("*.SMP", "*.smp", "*.DAT", "*.dat"):
+        for pattern in (
+            "*.SMP",
+            "*.smp",
+            "*.DAT",
+            "*.dat",
+            "*.QPS",
+            "*.qps",
+            "*.XLS",
+            "*.xls",
+            "*.XLSX",
+            "*.xlsx",
+            "*.XLSM",
+            "*.xlsm",
+        ):
             for path in input_path.glob(pattern):
                 unique.setdefault(path.resolve(), path)
         data_paths = sorted(unique.values())
@@ -50,7 +63,7 @@ def _run_ui_or_explain() -> int:
     try:
         from tristar_bet.ui.main_window import run
     except ModuleNotFoundError as exc:
-        if exc.name in {"PyQt5", "pyqtgraph", "openpyxl", "numpy"}:
+        if exc.name in {"PyQt5", "pyqtgraph", "openpyxl", "numpy", "xlrd"}:
             print("尚未安装图形界面依赖。")
             print("请运行: python -m pip install PyQt5 pyqtgraph numpy openpyxl")
             print("命令行解析仍可使用，例如: python app.py sample.SMP")

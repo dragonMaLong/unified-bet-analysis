@@ -69,12 +69,24 @@ def load_file(path: str | Path) -> TriStarResult:
     """Load any supported instrument file, dispatching on its extension.
 
     Micromeritics ``.smp`` containers go to :func:`load_smp`; MicrotracBEL
-    BELMaster ``.dat`` exports go to :func:`tristar_bet.belmaster.load_dat`.
+    BELMaster ``.dat`` exports go to :func:`tristar_bet.belmaster.load_dat`;
+    Quantachrome Autosorb iQ ``.qps`` files go to
+    :func:`tristar_bet.quantachrome.load_qps`; official Excel report
+    workbooks go to :func:`tristar_bet.excel_import.load_excel`.
     """
-    if Path(path).suffix.lower() == ".dat":
+    suffix = Path(path).suffix.lower()
+    if suffix in {".xls", ".xlsx", ".xlsm"}:
+        from .excel_import import load_excel
+
+        return load_excel(path)
+    if suffix == ".dat":
         from .belmaster import load_dat
 
         return load_dat(path)
+    if suffix == ".qps":
+        from .quantachrome import load_qps
+
+        return load_qps(path)
     return load_smp(path)
 
 
@@ -134,6 +146,12 @@ class TriStarSmpParser:
                 if sample.sample_mass_g
                 else "raw_cm3_stp_unscaled_missing_sample_mass"
             )
+        if self._target_pressure_rows_valid(target_pressure_table):
+            method_options["target_pressure_table_source"] = "method_file"
+        else:
+            target_pressure_table = self._target_pressure_table_from_isotherm(isotherm)
+            if target_pressure_table:
+                method_options["target_pressure_table_source"] = "measured_isotherm_pressure_sequence"
         log_messages = self._parse_log_messages(blocks.get(705, b""))
         sample_tube_strings = self._read_mic_strings(blocks.get(1021, b""))
         raw_strings = {
@@ -316,11 +334,105 @@ class TriStarSmpParser:
         )
 
     def _parse_target_pressure_table(self, block: bytes) -> list[TargetPressureRow]:
+        for parser in (
+            self._parse_tristar_3020_target_pressure_table,
+            self._parse_microactive_target_pressure_table,
+            self._parse_asap_target_pressure_table,
+        ):
+            rows = parser(block)
+            if self._target_pressure_rows_valid(rows):
+                return rows
+        return []
+
+    def _parse_asap_target_pressure_table(self, block: bytes) -> list[TargetPressureRow]:
+        rows = self._parse_asap_2460_target_pressure_table(block)
+        if self._target_pressure_rows_valid(rows):
+            return rows
+        rows = self._parse_asap_2020_target_pressure_table(block)
+        if self._target_pressure_rows_valid(rows):
+            return rows
+        return []
+
+    def _parse_asap_2460_target_pressure_table(self, block: bytes) -> list[TargetPressureRow]:
+        rows: list[TargetPressureRow] = []
+        previous_end = 0.0
+        for rel in range(432, len(block) - 8, 66):
+            ending = _read_double(block, rel)
+            if not _valid_target_pressure(ending):
+                if rows:
+                    break
+                continue
+            starting = _read_double(block, rel + 21)
+            increment = _read_double(block, rel + 29)
+            ending = float(ending)
+            start = float(starting) if _valid_target_pressure(starting) else previous_end
+            if increment is not None and math.isfinite(float(increment)) and abs(float(increment)) > 1e-9:
+                step = abs(float(increment)) if ending >= start else -abs(float(increment))
+            else:
+                step = ending - start
+            rows.append(
+                TargetPressureRow(
+                    row=len(rows) + 1,
+                    branch="adsorption" if ending >= start else "desorption",
+                    starting_pressure_p_po=start,
+                    ending_pressure_p_po=ending,
+                    pressure_increment_p_po=step,
+                    ending_pressure_rel_offset=rel,
+                )
+            )
+            previous_end = ending
+        return rows
+
+    def _parse_asap_2020_target_pressure_table(self, block: bytes) -> list[TargetPressureRow]:
+        if len(block) <= 1200:
+            return []
+        candidates = [
+            (rel, float(value))
+            for rel in range(350, len(block) - 8)
+            if _valid_target_pressure(value := _read_double(block, rel))
+        ]
+        if len(candidates) < 3:
+            return []
+
+        best: list[tuple[int, float]] = []
+        for start_index, (start_rel, start_value) in enumerate(candidates):
+            if start_rel > 700:
+                break
+            sequence = [(start_rel, start_value)]
+            current_rel = start_rel
+            current_value = start_value
+            search_index = start_index + 1
+            while len(sequence) < 200:
+                next_record: tuple[int, float] | None = None
+                for index in range(search_index, len(candidates)):
+                    rel, value = candidates[index]
+                    if rel <= current_rel:
+                        continue
+                    if _pressures_close(value, current_value):
+                        continue
+                    has_previous_start = any(
+                        rel < start_rel <= rel + 35 and _pressures_close(start_value, current_value)
+                        for start_rel, start_value in candidates[index + 1 :]
+                    )
+                    if has_previous_start:
+                        next_record = (rel, value)
+                        search_index = index + 1
+                        break
+                if next_record is None:
+                    break
+                sequence.append(next_record)
+                current_rel, current_value = next_record
+            if len(sequence) > len(best):
+                best = sequence
+
+        endings = [(index + 1, value, rel) for index, (rel, value) in enumerate(best)]
+        return self._target_pressure_rows_from_endings(endings)
+
+    def _parse_tristar_3020_target_pressure_table(self, block: bytes) -> list[TargetPressureRow]:
         if len(block) <= 1000:
             return []
 
-        rows: list[TargetPressureRow] = []
-        previous_end = 0.0
+        endings: list[tuple[int, float, int]] = []
         for row in range(1, 56):
             if row <= 8:
                 rel = 334 + (row - 1) * 47
@@ -334,15 +446,80 @@ class TriStarSmpParser:
             ending = _read_double(block, rel)
             if ending is None:
                 continue
-            branch = "adsorption" if row <= 28 else "desorption"
+            endings.append((row, ending, rel))
+        return self._target_pressure_rows_from_endings(endings)
+
+    def _parse_microactive_target_pressure_table(self, block: bytes) -> list[TargetPressureRow]:
+        if len(block) <= 1000:
+            return []
+        best: list[tuple[int, float, int]] = []
+        for gap in range(48, 73):
+            for start in range(400, min(540, len(block) - 8)):
+                endings: list[tuple[int, float, int]] = []
+                rel = start
+                while rel + 8 <= len(block):
+                    ending = _read_double(block, rel)
+                    if not _valid_target_pressure(ending):
+                        break
+                    endings.append((len(endings) + 1, float(ending), rel))
+                    rel += gap
+                if len(endings) > len(best):
+                    best = endings
+        if len(best) < 60 or best[0][1] >= 1e-4:
+            return []
+        return self._target_pressure_rows_from_endings(best)
+
+    @staticmethod
+    def _target_pressure_rows_from_endings(endings: Sequence[tuple[int, float, int]]) -> list[TargetPressureRow]:
+        values = [(row, float(ending), rel) for row, ending, rel in endings if _valid_target_pressure(ending)]
+        if not values:
+            return []
+        peak_position = max(range(len(values)), key=lambda pos: values[pos][1])
+        rows: list[TargetPressureRow] = []
+        previous_end = 0.0
+        for output_row, (_source_row, ending, rel) in enumerate(values, start=1):
+            branch = "adsorption" if output_row - 1 <= peak_position else "desorption"
             rows.append(
                 TargetPressureRow(
-                    row=row,
+                    row=output_row,
                     branch=branch,
                     starting_pressure_p_po=previous_end,
                     ending_pressure_p_po=ending,
                     pressure_increment_p_po=ending - previous_end,
                     ending_pressure_rel_offset=rel,
+                )
+            )
+            previous_end = ending
+        return rows
+
+    @staticmethod
+    def _target_pressure_rows_valid(rows: Sequence[TargetPressureRow]) -> bool:
+        if len(rows) < 3:
+            return False
+        endings = [float(row.ending_pressure_p_po) for row in rows]
+        if any(not _valid_target_pressure(value) for value in endings):
+            return False
+        if max(endings) - min(endings) <= 1e-8:
+            return False
+        return True
+
+    @staticmethod
+    def _target_pressure_table_from_isotherm(isotherm: Sequence[IsothermPoint]) -> list[TargetPressureRow]:
+        rows: list[TargetPressureRow] = []
+        previous_end = 0.0
+        for point in isotherm:
+            ending = point.relative_pressure
+            if not _valid_target_pressure(ending):
+                continue
+            ending = float(ending)
+            rows.append(
+                TargetPressureRow(
+                    row=len(rows) + 1,
+                    branch=point.phase,
+                    starting_pressure_p_po=previous_end,
+                    ending_pressure_p_po=ending,
+                    pressure_increment_p_po=ending - previous_end,
+                    ending_pressure_rel_offset=point.record_rel_offset,
                 )
             )
             previous_end = ending
@@ -1410,6 +1587,20 @@ def _read_double(data: bytes, rel: int) -> float | None:
         return None
     value = struct.unpack_from("<d", data, rel)[0]
     return value if math.isfinite(value) else None
+
+
+def _valid_target_pressure(value: float | None) -> bool:
+    if value is None:
+        return False
+    try:
+        pressure = float(value)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(pressure) and 1e-9 <= pressure <= 1.2
+
+
+def _pressures_close(left: float, right: float, tolerance: float = 5e-7) -> bool:
+    return abs(float(left) - float(right)) <= tolerance
 
 
 def _read_uint16(data: bytes, rel: int) -> int | None:
