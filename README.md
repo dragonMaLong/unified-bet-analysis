@@ -21,11 +21,11 @@
 
 | 厂商 / 软件 | 文件格式 | 解析模块 |
 | --- | --- | --- |
-| Micromeritics TriStar II 3020 / TriStar II Plus / ASAP 系列 | `SMP` | `smp.py` |
+| Micromeritics TriStar II 3020 / TriStar II Plus / ASAP 系列 | `SMP` `XLS` `XLSX` `XLSM`| `smp.py` |
 | Micromeritics MicroActive / 通用报表导出 | `XLS` `XLSX` `XLSM` | `excel_import.py` |
-| MicrotracBEL BELSORP（BELMaster） | `DAT` | `belmaster.py` |
+| MicrotracBEL BELSORP（BELMaster） | `DAT` `XLS` `XLSX` `XLSM`| `belmaster.py` |
 | Quantachrome Autosorb iQ | `QPS` | `quantachrome.py` |
-| BSD-660 | Excel 导入 | `excel_import.py` |
+| BSD-660 | `XLS` `XLSX` `XLSM` | `excel_import.py` |
 
 不同来源在分析时会自动匹配对应的默认算法，例如 TriStar II 3020 沿用其历史阿伏伽德罗常数、BSD t-Plot 以吸附量（STP）而非液体体积作纵轴、ASAP 2460 对存储区间下限做特定修正等。这样默认结果会贴近原软件，而统一重算时又能切换到一致规则。
 
