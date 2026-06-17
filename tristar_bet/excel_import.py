@@ -476,33 +476,38 @@ class OfficialExcelParser:
         """Parse an isotherm copied out of MicroActive's tabular report.
 
         For instruments whose native files we cannot read yet (e.g. the
-        3Flex 3500 ``.smp``), the isotherm can be copied from MicroActive into
-        a spreadsheet.  That layout stacks an adsorption table and a desorption
-        table, each preceded by a branch marker like
-        ``Sample : Sample : Adsorption`` / ``... : Desorption`` and a header row
-        with ``Relative Pressure (p/p°)`` and ``Quantity Adsorbed (mmol/g)``
-        (or ``cm³/g STP``).  Only relative pressure and quantity are needed for
-        BET / Langmuir / t-Plot / BJH, since the quantity is already per gram.
+        3Flex 3500 ``.smp``), the isotherm can be copied from MicroActive's
+        *isotherm* report into a spreadsheet.  That layout stacks an adsorption
+        table and a desorption table, each preceded by an explicit branch
+        marker like ``Sample : Sample : Adsorption`` / ``... : Desorption`` and
+        a header row with ``Relative Pressure (p/p°)`` and ``Quantity Adsorbed
+        (mmol/g)`` (or ``cm³/g STP``).  Only relative pressure and quantity are
+        needed for BET / Langmuir / t-Plot / BJH, since the quantity is already
+        per gram.
+
+        The explicit branch marker is *required*: it distinguishes the intended
+        copy-the-isotherm workflow from other report exports that merely
+        contain a ``Relative Pressure``/``Quantity Adsorbed`` table (e.g. the
+        tabular "Entered Data Table" of a full report), so those are left to
+        the dedicated parsers and not silently imported here.
         """
         for sheet in workbook.sheets:
             points: list[IsothermPoint] = []
-            branch = "adsorption"
+            branch: str | None = None
             rel_col: int | None = None
             quantity_col = 0
             quantity_in_mmol = True
             last_key: tuple[str, float, float] | None = None
             for row_index in range(sheet.nrows):
                 for column_index in range(min(sheet.ncols, 3)):
-                    marker = _text(sheet.cell(row_index, column_index)).lower()
-                    if "desorption" in marker:
-                        branch = "desorption"
-                    elif "adsorption" in marker:
-                        branch = "adsorption"
+                    detected = _copy_isotherm_branch(_text(sheet.cell(row_index, column_index)))
+                    if detected is not None:
+                        branch = detected
                 header = self._find_copy_isotherm_header(sheet, row_index)
                 if header is not None:
                     rel_col, quantity_col, quantity_in_mmol = header
                     continue
-                if rel_col is None:
+                if rel_col is None or branch is None:
                     continue
                 relative = _number(sheet.cell(row_index, rel_col))
                 quantity = _number(sheet.cell(row_index, quantity_col))
@@ -534,15 +539,19 @@ class OfficialExcelParser:
 
     @staticmethod
     def _find_copy_isotherm_header(sheet: SheetGrid, row_index: int) -> tuple[int, int, bool] | None:
+        """Locate a genuine ``Relative Pressure (p/p°) | Quantity Adsorbed (...)``
+        table header.  Both column headers must be present on the same row so
+        that label rows such as ``Relative Pressure: 0.95 p/p°`` (found in
+        report-options exports with no measured isotherm) are not mistaken for
+        a data table."""
         for column_index in range(sheet.ncols - 1):
             current = _normalize_header(sheet.cell(row_index, column_index))
             if "relative pressure" not in current:
                 continue
             for quantity_col in range(column_index + 1, sheet.ncols):
                 quantity_header = _normalize_header(sheet.cell(row_index, quantity_col))
-                if "quantity" in quantity_header:
+                if "quantity adsorbed" in quantity_header:
                     return column_index, quantity_col, "mmol" in quantity_header
-            return column_index, column_index + 1, True
         return None
 
     @staticmethod
@@ -551,8 +560,7 @@ class OfficialExcelParser:
             for row_index in range(sheet.nrows):
                 for column_index in range(min(sheet.ncols, 3)):
                     text = _text(sheet.cell(row_index, column_index))
-                    lowered = text.lower()
-                    if lowered.endswith(": adsorption") or lowered.endswith(": desorption"):
+                    if _copy_isotherm_branch(text) is not None and ":" in text:
                         first = text.split(":", 1)[0].strip()
                         if first:
                             return first
@@ -1116,6 +1124,21 @@ def _numeric_pressure_column(sheet: SheetGrid, start_row: int, column_index: int
         if values:
             break
     return values
+
+
+def _copy_isotherm_branch(value: Any) -> str | None:
+    """Return ``"adsorption"`` / ``"desorption"`` only for a MicroActive copy
+    branch marker of the form ``Sample : Sample : Adsorption``.
+
+    The colon-prefixed form is required so that neither option labels such as
+    ``BJH Cumulative Adsorption:`` nor bare section headings such as
+    ``Adsorption`` (both present in full report exports) are treated as the
+    start of a copy-paste isotherm branch."""
+    text = _as_clean_string(value).lower().rstrip(": ").strip()
+    for branch in ("adsorption", "desorption"):
+        if text.endswith(f": {branch}"):
+            return branch
+    return None
 
 
 def _is_relative_pressure_header(value: str) -> bool:
