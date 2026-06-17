@@ -7,7 +7,7 @@ from pathlib import Path
 from tristar_bet import export_results_csv, load_file, load_many
 
 
-DEFAULT_OUT_DIR = Path(r"D:\software\analysis\Data\BET\TriStar_II_3020_format_analysis")
+DEFAULT_OUT_DIR = Path.cwd() / "bet_csv_output"
 
 
 def main(argv: list[str] | None = None) -> int:

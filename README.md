@@ -17,17 +17,27 @@
 
 ## 支持的数据来源
 
-平台为每个厂商/软件单独编写解析器，并在分析阶段按来源保留各自的默认规则（区间选取、厚度方程、物理常数、t-Plot 纵轴定义等）。当前已支持：
+平台为每个厂商/软件单独编写解析器，并在分析阶段按来源保留各自的默认规则（区间选取、厚度方程、物理常数、t-Plot 纵轴定义等）。当前已支持的导入格式：
 
-| 厂商 / 软件 | 文件格式 | 解析模块 |
-| --- | --- | --- |
-| Micromeritics TriStar II 3020 / TriStar II Plus / ASAP 系列 | `SMP` `XLS` `XLSX` `XLSM`| `smp.py` |
-| Micromeritics MicroActive / 通用报表导出 | `XLS` `XLSX` `XLSM` | `excel_import.py` |
-| MicrotracBEL BELSORP（BELMaster） | `DAT` `XLS` `XLSX` `XLSM`| `belmaster.py` |
-| Quantachrome Autosorb iQ | `QPS` | `quantachrome.py` |
-| BSD-660 | `XLS` `XLSX` `XLSM` | `excel_import.py` |
+| 厂商 | 仪器型号 | 配套软件 / 报表 | 导入文件格式 | 解析模块 |
+| --- | --- | --- | --- | --- |
+| Micromeritics（麦克） | TriStar II 3020、TriStar II Plus、ASAP 2460、ASAP 2020 Plus | TriStar II 3020 软件 / MicroActive | `.smp` 原生文件 | `smp.py` |
+| Micromeritics（麦克） | 同上 | MicroActive 报表导出 | `.xls` / `.xlsx` / `.xlsm` | `excel_import.py` |
+| MicrotracBEL（麦奇克拜尔） | BELSORP 系列 | BELMaster | `.dat` 导出文件 | `belmaster.py` |
+| MicrotracBEL（麦奇克拜尔） | BELSORP 系列 | BELMaster 报表导出 | `.xls` / `.xlsx` / `.xlsm` | `excel_import.py` |
+| Quantachrome（康塔） | Autosorb iQ | ASiQwin | `.qps` 文件 | `quantachrome.py` |
+| 贝士德（BSD / Beishide） | BSD-660 等 | 仪器报表 | `.xls` / `.xlsx` / `.xlsm` | `excel_import.py` |
 
 不同来源在分析时会自动匹配对应的默认算法，例如 TriStar II 3020 沿用其历史阿伏伽德罗常数、BSD t-Plot 以吸附量（STP）而非液体体积作纵轴、ASAP 2460 对存储区间下限做特定修正等。这样默认结果会贴近原软件，而统一重算时又能切换到一致规则。
+
+> **关于 Micromeritics 3Flex 3500：** 其 `.smp` 文件目前**暂不支持**。该型号的 SMP 为不同的二进制变体（UTF-16 字符串、不同的 subset 布局、等温线编码方式与现有 SMP 不同），现阶段只能读出样品名与质量，等温线点数为 0。如需分析 3Flex 数据，请用其 MicroActive 软件导出 Excel 报表后按 Micromeritics Excel 方式导入。后续若提供可对照的官方报表，会补上原生 `.smp` 解析。
+
+## 支持的导出格式
+
+- **Excel 工作簿（`.xlsx`）** — 界面中点击「导出文件」，把当前勾选的样品导出为多工作表的 XLSX：
+  - `摘要`：每个样品一行，含测试时间、质量、点数、BET 面积 / Vm / C、Langmuir 面积、t-Plot 外比表面积 / 微孔体积，以及按当前 BJH 绿色选区命名的孔容量列（如 `2nm-10nm孔容量(cm3/g)`）。
+  - `实际等温线`、`目标压力表`、`BET`、`Langmuir`、`t-Plot`、`样品条件` 等明细工作表。
+- **CSV** — 命令行模式（见下文）对每个样品导出 CSV，便于脚本化批处理。
 
 ## 当前功能
 
@@ -48,7 +58,8 @@
 - t-Plot 总表面积可取自 BET、Langmuir 或手动输入。
 - BJH 支持吸附 / 脱附分支同时显示，并复用厚度曲线公式参数界面。
 - 结果参数、样品条件、实际等温线、目标压力表、报告模块和日志信息查看。
-- 选中样品导出为 XLSX。
+- 通过「导出文件」把勾选样品导出为多工作表 XLSX（详见上文“支持的导出格式”）。
+- 文件对话框首次默认打开桌面，并记住上次导入/导出所用目录，下次启动直接定位到该目录。
 - 命令行解析 SMP / XLS(X/M) / DAT / QPS 并导出 CSV。
 
 ## 结果验证
@@ -79,6 +90,19 @@ python app.py
 python app.py --ui
 ```
 
+## Windows 可执行文件（exe）
+
+无需安装 Python，可直接到 GitHub 的 **Releases** 页面下载打包好的单文件 `Micromeritics-BET.exe` 运行（首次启动会稍慢，因为需要解压到临时目录）。参比厚度曲线（默认 `sio2oh.thk`）已内置在程序中，运行不依赖任何仪器厂商软件。
+
+自行打包（需先安装依赖与 PyInstaller）：
+
+```
+python -m pip install -r requirements.txt pyinstaller pillow
+pyinstaller --noconfirm --clean BET.spec
+```
+
+打包配置见 [`BET.spec`](BET.spec)，会把内置参比曲线（`tristar_bet/reference_data`）和程序图标（`tristar_bet/assets`）一并收入 exe。
+
 ## 命令行解析
 
 解析单个文件（SMP / XLS / XLSX / XLSM / DAT / QPS）：
@@ -99,7 +123,7 @@ python app.py path\to\data_folder --out-dir path\to\output
 python app.py path\to\sample.SMP --no-export
 ```
 
-可用 `--prefix` 自定义导出文件名前缀。若未指定 `--out-dir`，请改用相对路径或自定义目录，避免依赖任何特定机器上的绝对路径。
+可用 `--prefix` 自定义导出文件名前缀。若未指定 `--out-dir`，默认导出到当前工作目录下的 `bet_csv_output` 文件夹（不再依赖任何特定机器上的绝对路径）。
 
 ## 项目结构
 
@@ -111,9 +135,12 @@ tristar_bet/excel_import.py         MicroActive / BSD 等 Excel 报表解析
 tristar_bet/belmaster.py            MicrotracBEL BELSORP (BELMaster) DAT 解析
 tristar_bet/quantachrome.py         Quantachrome Autosorb iQ QPS 解析
 tristar_bet/reference_thickness.py  参考厚度曲线与插值
+tristar_bet/reference_data/         内置参比厚度曲线（ref.thk / sio2oh.thk / sio2odms.thk）
+tristar_bet/assets/                 程序图标（BET-logo.png / BET-logo.ico）
 tristar_bet/analysis.py             BET、Langmuir、t-Plot、BJH 等分析计算
 tristar_bet/ui/main_window.py       中文图形界面主窗口
 tristar_bet/ui/plots.py             图表绘制
+BET.spec                            PyInstaller 打包配置（生成 Windows exe）
 validate_against_xls.py             与 XLS 导出结果对照验证的辅助脚本
 ```
 
@@ -124,7 +151,7 @@ validate_against_xls.py             与 XLS 导出结果对照验证的辅助脚
 后续计划包括：
 
 - 允许用户显式选择用哪一套厂商/软件版本的算法重算（逐样品下拉与全局统一选项），而不仅依赖文件自带的来源标识。
-- 接入更多仪器厂商和 BET 软件的数据格式。
+- 接入更多仪器厂商和 BET 软件的数据格式，包括 Micromeritics 3Flex 3500 的原生 `.smp`。
 - 补充更多孔径分布算法（如 DH）与报告参数。
 - 扩充标准样品数据集，完善与各软件结果的交叉验证文档与自动化测试。
 

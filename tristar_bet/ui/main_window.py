@@ -932,7 +932,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._setting_langmuir_region = False
         self._setting_t_plot_region = False
         self._setting_bjh_region = False
-        self.import_directory = Path.cwd()
+        self.settings = QtCore.QSettings("Micromeritics BET", "BET Analysis")
+        saved_directory = self.settings.value("data_directory", "", str)
+        self.import_directory = (
+            Path(saved_directory) if saved_directory and Path(saved_directory).is_dir() else _default_data_directory()
+        )
 
         self.setWindowTitle(APP_NAME)
         if APP_ICON_PATH.exists():
@@ -2390,11 +2394,19 @@ class MainWindow(QtWidgets.QMainWindow):
         paths = dialog.selected_paths()
         if not paths:
             return
-        self.import_directory = dialog.current_directory
+        self._remember_directory(dialog.current_directory)
         self.sync_files(paths)
 
     def append_files(self, paths: list[str]) -> None:
         self.load_files(paths, replace=False)
+
+    def _remember_directory(self, directory: Path | str) -> None:
+        """Persist the last directory the user chose so it is the default next time."""
+        directory = Path(directory)
+        if not directory.is_dir():
+            return
+        self.import_directory = directory
+        self.settings.setValue("data_directory", str(directory))
 
     @staticmethod
     def _path_key(path: str) -> str:
@@ -2512,7 +2524,7 @@ class MainWindow(QtWidgets.QMainWindow):
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
             self,
             "导出文件",
-            str(Path.cwd() / default_name),
+            str(self.import_directory / default_name),
             "Excel 工作簿 (*.xlsx)",
         )
         if not path:
@@ -2529,6 +2541,7 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "导出失败", str(exc))
             return
+        self._remember_directory(Path(path).parent)
         self.statusBar().showMessage(f"已导出: {path}", 6000)
 
     def on_sample_item_changed(self, item: QtWidgets.QTableWidgetItem) -> None:
@@ -4780,6 +4793,14 @@ def _fmt(value, digits: int = 6) -> str:
     if not math_isfinite(number):
         return ""
     return f"{number:.{digits}g}"
+
+
+def _default_data_directory() -> Path:
+    """First-run default for file dialogs: the user's Desktop, then home."""
+    desktop = Path.home() / "Desktop"
+    if desktop.is_dir():
+        return desktop
+    return Path.home()
 
 
 def _fmt_nm(value: float) -> str:
