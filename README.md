@@ -30,7 +30,7 @@
 
 不同来源在分析时会自动匹配对应的默认算法，例如 TriStar II 3020 沿用其历史阿伏伽德罗常数、BSD t-Plot 以吸附量（STP）而非液体体积作纵轴、ASAP 2460 对存储区间下限做特定修正等。这样默认结果会贴近原软件，而统一重算时又能切换到一致规则。
 
-> **关于 Micromeritics 3Flex 3500：** 其 `.smp` 文件目前**暂不支持**。该型号的 SMP 为不同的二进制变体（UTF-16 字符串、不同的 subset 布局、等温线编码方式与现有 SMP 不同），现阶段只能读出样品名与质量，等温线点数为 0。如需分析 3Flex 数据，请用其 MicroActive 软件导出 Excel 报表后按 Micromeritics Excel 方式导入。后续若提供可对照的官方报表，会补上原生 `.smp` 解析。
+> **关于 Micromeritics 3Flex 3500：** 其 `.smp` 原生文件目前**暂不支持**（SMP 为不同的二进制变体，等温线编码方式与现有 SMP 不同，直接读取得到 0 个点）。变通办法：在 MicroActive 中把等温线表格**复制粘贴到 Excel**（含 `Relative Pressure (p/p°)` 与 `Quantity Adsorbed (mmol/g)` 两列，以及 `... : Adsorption` / `... : Desorption` 分支标记），再用本工具导入即可——已验证可在 MicroActive 给定区间下精确复现其 BET 结果。后续若提供可对照的官方报表，会补上原生 `.smp` 解析。
 
 ## 支持的导出格式
 

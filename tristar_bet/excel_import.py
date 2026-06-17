@@ -91,6 +91,8 @@ class OfficialExcelParser:
             table = self._parse_belmaster_isotherm(workbook)
         if table is None:
             table = self._parse_micromeritics_isotherm(workbook, sample)
+        if table is None:
+            table = self._parse_microactive_copy_isotherm(workbook)
         if table is None or not table.points:
             raise ExcelParseError(f"No supported isotherm table found in {file_path}")
 
@@ -173,6 +175,8 @@ class OfficialExcelParser:
         sample_name = _as_clean_string(_first_label(labels, "sample", "样品名称"))
         if not sample_name and instrument.get("instrument_manufacturer") == "MicrotracBEL":
             sample_name = self._belmaster_sample_name(workbook, labels)
+        if not sample_name:
+            sample_name = self._microactive_copy_sample_name(workbook)
         if not sample_name:
             data_file = _as_clean_string(_first_label(labels, "data file", "file"))
             sample_name = Path(data_file).stem if data_file else file_path.stem
@@ -467,6 +471,92 @@ class OfficialExcelParser:
                 ):
                     return row_index, column_index
         return None
+
+    def _parse_microactive_copy_isotherm(self, workbook: ExcelWorkbook) -> IsothermTable | None:
+        """Parse an isotherm copied out of MicroActive's tabular report.
+
+        For instruments whose native files we cannot read yet (e.g. the
+        3Flex 3500 ``.smp``), the isotherm can be copied from MicroActive into
+        a spreadsheet.  That layout stacks an adsorption table and a desorption
+        table, each preceded by a branch marker like
+        ``Sample : Sample : Adsorption`` / ``... : Desorption`` and a header row
+        with ``Relative Pressure (p/p°)`` and ``Quantity Adsorbed (mmol/g)``
+        (or ``cm³/g STP``).  Only relative pressure and quantity are needed for
+        BET / Langmuir / t-Plot / BJH, since the quantity is already per gram.
+        """
+        for sheet in workbook.sheets:
+            points: list[IsothermPoint] = []
+            branch = "adsorption"
+            rel_col: int | None = None
+            quantity_col = 0
+            quantity_in_mmol = True
+            last_key: tuple[str, float, float] | None = None
+            for row_index in range(sheet.nrows):
+                for column_index in range(min(sheet.ncols, 3)):
+                    marker = _text(sheet.cell(row_index, column_index)).lower()
+                    if "desorption" in marker:
+                        branch = "desorption"
+                    elif "adsorption" in marker:
+                        branch = "adsorption"
+                header = self._find_copy_isotherm_header(sheet, row_index)
+                if header is not None:
+                    rel_col, quantity_col, quantity_in_mmol = header
+                    continue
+                if rel_col is None:
+                    continue
+                relative = _number(sheet.cell(row_index, rel_col))
+                quantity = _number(sheet.cell(row_index, quantity_col))
+                if relative is None or quantity is None or not (0.0 < relative <= 1.5):
+                    continue
+                key = (branch, float(relative), float(quantity))
+                if key == last_key:
+                    continue
+                last_key = key
+                quantity_cm3 = quantity * CM3_STP_PER_MMOL if quantity_in_mmol else quantity
+                saturation = 760.0
+                points.append(
+                    IsothermPoint(
+                        index=len(points) + 1,
+                        phase=branch,
+                        record_rel_offset=0,
+                        absolute_pressure_mmHg=relative * saturation,
+                        relative_pressure=relative,
+                        raw_internal_cm3_stp=quantity_cm3,
+                        saturation_pressure_mmHg=saturation,
+                        elapsed_seconds=None,
+                        quantity_adsorbed_cm3_g_stp=quantity_cm3,
+                        quantity_adsorbed_mmol_g=quantity_cm3 / CM3_STP_PER_MMOL,
+                    )
+                )
+            if len(points) >= 3:
+                return IsothermTable(points=points, source=f"microactive_copy:{sheet.name}")
+        return None
+
+    @staticmethod
+    def _find_copy_isotherm_header(sheet: SheetGrid, row_index: int) -> tuple[int, int, bool] | None:
+        for column_index in range(sheet.ncols - 1):
+            current = _normalize_header(sheet.cell(row_index, column_index))
+            if "relative pressure" not in current:
+                continue
+            for quantity_col in range(column_index + 1, sheet.ncols):
+                quantity_header = _normalize_header(sheet.cell(row_index, quantity_col))
+                if "quantity" in quantity_header:
+                    return column_index, quantity_col, "mmol" in quantity_header
+            return column_index, column_index + 1, True
+        return None
+
+    @staticmethod
+    def _microactive_copy_sample_name(workbook: ExcelWorkbook) -> str:
+        for sheet in workbook.sheets:
+            for row_index in range(sheet.nrows):
+                for column_index in range(min(sheet.ncols, 3)):
+                    text = _text(sheet.cell(row_index, column_index))
+                    lowered = text.lower()
+                    if lowered.endswith(": adsorption") or lowered.endswith(": desorption"):
+                        first = text.split(":", 1)[0].strip()
+                        if first:
+                            return first
+        return ""
 
     @staticmethod
     def _parse_started_time(labels: dict[str, Any]) -> tuple[int, str]:
