@@ -23,9 +23,9 @@ from tristar_bet.analysis import (
     automatic_t_plot_pressure_range,
     bet_analysis,
     bjh_pore_distribution,
-    bjh_pore_volume_cm3_g,
     density_conversion_factor,
     langmuir_analysis,
+    t_plot_analysis,
     t_plot_analysis_by_thickness,
     thickness_nm,
 )
@@ -58,6 +58,8 @@ from tristar_bet.ui.plots import (
 
 APP_NAME = "Micromeritics BET 综合分析"
 APP_ICON_PATH = Path(__file__).resolve().parent.parent / "assets" / "BET-logo.png"
+FIT_ANALYSIS_CACHE_LIMIT = 2048
+BJH_DISTRIBUTION_CACHE_LIMIT = 1024
 Signal = getattr(QtCore, "Signal", None) or getattr(QtCore, "pyqtSignal")
 
 
@@ -543,12 +545,18 @@ def _thickness_params_equal(active: dict[str, object], default: dict[str, object
     return True
 
 
+def _default_user_directory() -> Path:
+    desktop = Path.home() / "Desktop"
+    return desktop if desktop.exists() else Path.home()
+
+
 class FileImportDialog(QtWidgets.QDialog):
     def __init__(
         self,
         parent=None,
         initial_dir: Path | str | None = None,
         existing_paths: Iterable[str] | None = None,
+        available_sort: tuple[int, QtCore.Qt.SortOrder] | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("导入数据文件")
@@ -557,6 +565,8 @@ class FileImportDialog(QtWidgets.QDialog):
         self.current_directory = Path(initial_dir or Path.cwd())
         self._available_paths: list[Path] = []
         self._selected_paths: list[Path] = [Path(p) for p in (existing_paths or [])]
+        self._available_sort_column = int(available_sort[0]) if available_sort is not None else 0
+        self._available_sort_order = available_sort[1] if available_sort is not None else QtCore.Qt.AscendingOrder
 
         folder_label = QtWidgets.QLabel("文件夹")
         self.folder_edit = QtWidgets.QLineEdit(str(self.current_directory))
@@ -585,6 +595,8 @@ class FileImportDialog(QtWidgets.QDialog):
 
         self.available_table = self._make_file_table()
         self.selected_table = self._make_file_table()
+        self.available_table.setSortingEnabled(True)
+        self.available_table.horizontalHeader().sortIndicatorChanged.connect(self._on_available_sort_changed)
         self.available_table.itemDoubleClicked.connect(lambda _item: self._move_selected_to_right())
         self.selected_table.itemDoubleClicked.connect(lambda _item: self._move_selected_to_left())
 
@@ -652,6 +664,9 @@ class FileImportDialog(QtWidgets.QDialog):
     def selected_paths(self) -> list[str]:
         return [str(path) for path in self._selected_paths]
 
+    def available_sort(self) -> tuple[int, QtCore.Qt.SortOrder]:
+        return (self._available_sort_column, self._available_sort_order)
+
     @staticmethod
     def _make_group(title: str, table: QtWidgets.QTableWidget) -> QtWidgets.QGroupBox:
         group = QtWidgets.QGroupBox(title)
@@ -668,7 +683,7 @@ class FileImportDialog(QtWidgets.QDialog):
         table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         table.setAlternatingRowColors(True)
-        table.setSortingEnabled(True)
+        table.setSortingEnabled(False)
         table.verticalHeader().setVisible(False)
         table.verticalHeader().setDefaultSectionSize(26)
         table.horizontalHeader().setStretchLastSection(False)
@@ -726,9 +741,6 @@ class FileImportDialog(QtWidgets.QDialog):
         self._update_buttons()
 
     def _fill_table(self, table: QtWidgets.QTableWidget, paths: list[Path]) -> None:
-        header = table.horizontalHeader()
-        sort_column = header.sortIndicatorSection()
-        sort_order = header.sortIndicatorOrder()
         table.setSortingEnabled(False)
         table.setRowCount(0)
         for path in paths:
@@ -743,7 +755,11 @@ class FileImportDialog(QtWidgets.QDialog):
                 table.setItem(row, column, item)
         table.setSortingEnabled(table is self.available_table)
         if table is self.available_table:
-            table.sortItems(sort_column, sort_order)
+            table.sortItems(self._available_sort_column, self._available_sort_order)
+
+    def _on_available_sort_changed(self, column: int, order: QtCore.Qt.SortOrder) -> None:
+        self._available_sort_column = int(column)
+        self._available_sort_order = order
 
     @staticmethod
     def _modified_text(path: Path) -> str:
@@ -896,9 +912,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._t_plot_selection_item = None
         self._t_plot_x_range = None
         self._t_plot_p_range = None
+        self._fit_analysis_cache: dict[tuple[object, ...], object] = {}
         self.bjh_region = None
         self._bjh_selection_items = []
         self._bjh_distribution_rows_by_key: dict[tuple[int, str], list[dict[str, float]]] = {}
+        self._bjh_distribution_cache: dict[tuple[object, ...], list[dict[str, float]]] = {}
         self._bjh_diameter_log_bounds: tuple[float, float] | None = None
         self._syncing_t_plot_controls = False
         self.t_plot_thickness_method = DEFAULT_T_PLOT_THICKNESS_METHOD
@@ -932,7 +950,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self._setting_langmuir_region = False
         self._setting_t_plot_region = False
         self._setting_bjh_region = False
-        self.import_directory = Path.cwd()
+        self.settings = QtCore.QSettings("UnifiedBET", "TriStarBetAppZh")
+        self.import_directory = self._read_directory_setting("import_directory")
+        self.export_directory = self._read_directory_setting("export_directory")
+        self._import_available_sort = (
+            int(self.settings.value("import_available_sort_column", 0)),
+            QtCore.Qt.SortOrder(int(self.settings.value("import_available_sort_order", int(QtCore.Qt.AscendingOrder)))),
+        )
 
         self.setWindowTitle(APP_NAME)
         if APP_ICON_PATH.exists():
@@ -2382,15 +2406,41 @@ class MainWindow(QtWidgets.QMainWindow):
         finally:
             self._syncing_bjh_controls = False
 
+    def _read_directory_setting(self, key: str) -> Path:
+        value = self.settings.value(key, "")
+        if value:
+            path = Path(str(value))
+            if path.is_dir():
+                return path
+        return _default_user_directory()
+
+    def _write_directory_setting(self, key: str, path: Path | str) -> None:
+        directory = Path(path)
+        if directory.is_file():
+            directory = directory.parent
+        if directory.is_dir():
+            self.settings.setValue(key, str(directory))
+
     def open_files(self) -> None:
         existing_paths = [result.header.file_path for result in self.results]
-        dialog = FileImportDialog(self, self.import_directory, existing_paths=existing_paths)
+        dialog = FileImportDialog(
+            self,
+            self.import_directory,
+            existing_paths=existing_paths,
+            available_sort=self._import_available_sort,
+        )
         if dialog.exec_() != QtWidgets.QDialog.Accepted:
+            self._import_available_sort = dialog.available_sort()
             return
         paths = dialog.selected_paths()
         if not paths:
+            self._import_available_sort = dialog.available_sort()
             return
         self.import_directory = dialog.current_directory
+        self._write_directory_setting("import_directory", self.import_directory)
+        self._import_available_sort = dialog.available_sort()
+        self.settings.setValue("import_available_sort_column", self._import_available_sort[0])
+        self.settings.setValue("import_available_sort_order", int(self._import_available_sort[1]))
         self.sync_files(paths)
 
     def append_files(self, paths: list[str]) -> None:
@@ -2458,6 +2508,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.custom_t_plot_fit_ranges.pop(id(result), None)
         self.custom_t_plot_settings.pop(id(result), None)
         self.custom_bjh_settings.pop(id(result), None)
+        self._discard_fit_analysis_cache_for_result(result)
+        self._discard_bjh_distribution_cache_for_result(result)
 
     def load_files(self, paths: Iterable[str], *, replace: bool) -> None:
         parsed = []
@@ -2487,6 +2539,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.custom_t_plot_fit_ranges.clear()
             self.custom_t_plot_settings.clear()
             self.custom_bjh_settings.clear()
+            self._fit_analysis_cache.clear()
+            self._bjh_distribution_cache.clear()
             self.bjh_pore_volume_range = DEFAULT_BJH_PORE_VOLUME_RANGE
             self._remove_bjh_region()
             self._isotherm_region_custom = False
@@ -2512,13 +2566,15 @@ class MainWindow(QtWidgets.QMainWindow):
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
             self,
             "导出文件",
-            str(Path.cwd() / default_name),
+            str(self.export_directory / default_name),
             "Excel 工作簿 (*.xlsx)",
         )
         if not path:
             return
         if not path.lower().endswith(".xlsx"):
             path += ".xlsx"
+        self.export_directory = Path(path).parent
+        self._write_directory_setting("export_directory", self.export_directory)
         try:
             export_results_xlsx(
                 selected,
@@ -2925,6 +2981,7 @@ class MainWindow(QtWidgets.QMainWindow):
             smooth=self.bjh_smooth_derivative,
             pressure_range=pressure_range,
             bjh_settings_by_index=bjh_settings_by_index,
+            distribution_provider=self._cached_bjh_distribution_rows,
         )
         self._bjh_diameter_log_bounds = self._bjh_log_bounds_from_rows(self._bjh_distribution_rows_by_key)
         if self._is_bjh_default_region_active():
@@ -2994,6 +3051,7 @@ class MainWindow(QtWidgets.QMainWindow):
             active_index=self.active_index,
             p_min=data_p_min,
             p_max=data_p_max,
+            analysis_provider=self._cached_bet_analysis,
         )
         for index in self._visible_analysis_indices():
             result = self.results[index]
@@ -3022,6 +3080,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 color=self._analysis_sample_color(index),
                 name="线性拟合" if is_active else None,
                 width=ACTIVE_LINE_WIDTH if is_active else 1,
+                analysis_provider=self._cached_bet_analysis,
             )
             if not is_active:
                 continue
@@ -3072,6 +3131,7 @@ class MainWindow(QtWidgets.QMainWindow):
             active_index=self.active_index,
             p_min=data_p_min,
             p_max=data_p_max,
+            analysis_provider=self._cached_langmuir_analysis,
         )
         for index in self._visible_analysis_indices():
             result = self.results[index]
@@ -3100,6 +3160,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 color=self._analysis_sample_color(index),
                 name="线性拟合" if is_active else None,
                 width=ACTIVE_LINE_WIDTH if is_active else 1,
+                analysis_provider=self._cached_langmuir_analysis,
             )
             if not is_active:
                 continue
@@ -3160,6 +3221,7 @@ class MainWindow(QtWidgets.QMainWindow):
             p_max=data_p_max,
             thickness_params_by_index=thickness_params_by_index,
             thickness_method_by_index=thickness_method_by_index,
+            analysis_provider=self._cached_t_plot_pressure_analysis,
         )
         for index in self._visible_analysis_indices():
             result = self.results[index]
@@ -3194,6 +3256,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 color=self._analysis_sample_color(index),
                 name="线性拟合" if is_active else None,
                 width=ACTIVE_LINE_WIDTH if is_active else 1,
+                analysis_provider=self._cached_t_plot_thickness_analysis,
             )
             if not is_active:
                 continue
@@ -3278,6 +3341,7 @@ class MainWindow(QtWidgets.QMainWindow):
             line_x_min=lx_min, line_x_max=lx_max,
             color=self._analysis_sample_color(self.active_index),
             width=ACTIVE_LINE_WIDTH,
+            analysis_provider=self._cached_bet_analysis,
         )
         data_p_min, data_p_max = self._bet_plot_p_range or BET_PLOT_RANGE
         self._refresh_bet_selection(active, bet_fit_range, data_p_min, data_p_max)
@@ -3316,6 +3380,7 @@ class MainWindow(QtWidgets.QMainWindow):
             data_p_min=data_p_min,
             data_p_max=data_p_max,
             color=self._analysis_sample_color(self.active_index),
+            analysis_provider=self._cached_bet_analysis,
         )
 
     def _remove_langmuir_selection(self) -> None:
@@ -3339,6 +3404,7 @@ class MainWindow(QtWidgets.QMainWindow):
             data_p_min=data_p_min,
             data_p_max=data_p_max,
             color=self._analysis_sample_color(self.active_index),
+            analysis_provider=self._cached_langmuir_analysis,
         )
 
     def _remove_langmuir_region(self) -> None:
@@ -3384,6 +3450,7 @@ class MainWindow(QtWidgets.QMainWindow):
             line_x_min=lx_min, line_x_max=lx_max,
             color=self._analysis_sample_color(self.active_index),
             width=ACTIVE_LINE_WIDTH,
+            analysis_provider=self._cached_langmuir_analysis,
         )
         data_p_min, data_p_max = self._langmuir_plot_p_range or LANGMUIR_PLOT_RANGE
         self._refresh_langmuir_selection(active, fit_range, data_p_min, data_p_max)
@@ -3424,6 +3491,7 @@ class MainWindow(QtWidgets.QMainWindow):
             thickness_params=self.t_plot_thickness_params,
             thickness_method=self.t_plot_thickness_method,
             color=self._analysis_sample_color(self.active_index),
+            analysis_provider=self._cached_t_plot_thickness_analysis,
         )
 
     def _remove_t_plot_region(self) -> None:
@@ -3473,6 +3541,7 @@ class MainWindow(QtWidgets.QMainWindow):
             thickness_method=self.t_plot_thickness_method,
             color=self._analysis_sample_color(self.active_index),
             width=ACTIVE_LINE_WIDTH,
+            analysis_provider=self._cached_t_plot_thickness_analysis,
         )
         self._refresh_t_plot_selection(active, fit_range, p_min, p_max)
         self._refresh_sample_t_plot_cell(self.active_index)
@@ -3622,6 +3691,107 @@ class MainWindow(QtWidgets.QMainWindow):
         candidates.sort(key=lambda item: item[0])
         return candidates[0][1]
 
+    @staticmethod
+    def _freeze_cache_value(value):
+        if isinstance(value, dict):
+            return tuple(
+                sorted(
+                    (str(key), MainWindow._freeze_cache_value(item))
+                    for key, item in value.items()
+                )
+            )
+        if isinstance(value, (list, tuple)):
+            return tuple(MainWindow._freeze_cache_value(item) for item in value)
+        if isinstance(value, np.ndarray):
+            return MainWindow._freeze_cache_value(value.tolist())
+        if isinstance(value, np.generic):
+            return MainWindow._freeze_cache_value(value.item())
+        if isinstance(value, float):
+            if math.isnan(value):
+                return ("float", "nan")
+            if math.isinf(value):
+                return ("float", "inf" if value > 0 else "-inf")
+            return value
+        if isinstance(value, Path):
+            return str(value)
+        try:
+            hash(value)
+        except TypeError:
+            return repr(value)
+        return value
+
+    def _bjh_distribution_cache_key(
+        self,
+        result,
+        *,
+        phase: str,
+        thickness_method: str,
+        thickness_params: dict[str, object] | None,
+        correction: str,
+        open_pore_fraction: float,
+        smooth: bool,
+    ) -> tuple[object, ...]:
+        return (
+            id(result),
+            str(getattr(getattr(result, "header", None), "file_path", "")),
+            int(getattr(result, "point_count", 0)),
+            "adsorption" if phase == "adsorption" else "desorption",
+            str(thickness_method),
+            self._freeze_cache_value(thickness_params or {}),
+            str(correction),
+            float(open_pore_fraction),
+            bool(smooth),
+        )
+
+    def _discard_bjh_distribution_cache_for_result(self, result) -> None:
+        result_id = id(result)
+        self._bjh_distribution_cache = {
+            key: rows
+            for key, rows in self._bjh_distribution_cache.items()
+            if key[0] != result_id
+        }
+
+    def _store_bjh_distribution_cache(self, cache_key: tuple[object, ...], rows: list[dict[str, float]]) -> None:
+        self._bjh_distribution_cache[cache_key] = rows
+        while len(self._bjh_distribution_cache) > BJH_DISTRIBUTION_CACHE_LIMIT:
+            self._bjh_distribution_cache.pop(next(iter(self._bjh_distribution_cache)))
+
+    def _cached_bjh_distribution_rows(
+        self,
+        result,
+        *,
+        phase: str,
+        thickness_method: str,
+        thickness_params: dict[str, object] | None,
+        correction: str,
+        open_pore_fraction: float,
+        smooth: bool,
+    ) -> list[dict[str, float]]:
+        cache_key = self._bjh_distribution_cache_key(
+            result,
+            phase=phase,
+            thickness_method=thickness_method,
+            thickness_params=thickness_params,
+            correction=correction,
+            open_pore_fraction=open_pore_fraction,
+            smooth=smooth,
+        )
+        cached = self._bjh_distribution_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        distribution = bjh_pore_distribution(
+            result,
+            phase=phase,
+            thickness_method=thickness_method,
+            thickness_params=thickness_params,
+            correction=correction,
+            open_pore_fraction=open_pore_fraction,
+            smooth=smooth,
+        )
+        rows = list(distribution.rows)
+        self._store_bjh_distribution_cache(cache_key, rows)
+        return rows
+
     def _active_bjh_distribution_rows(self) -> list[dict[str, float]]:
         active = self.active_result()
         if active is None:
@@ -3630,16 +3800,17 @@ class MainWindow(QtWidgets.QMainWindow):
         phase = self._bjh_pore_volume_phase(settings)
         if phase is None:
             return []
-        distribution = bjh_pore_distribution(
-            active,
-            phase=phase,
-            thickness_method=str(settings["thickness_method"]),
-            thickness_params=dict(settings["thickness_params"]),
-            correction=str(settings["correction"]),
-            open_pore_fraction=float(settings["open_pore_fraction"]),
-            smooth=bool(settings["smooth_derivative"]),
+        return list(
+            self._cached_bjh_distribution_rows(
+                active,
+                phase=phase,
+                thickness_method=str(settings["thickness_method"]),
+                thickness_params=dict(settings["thickness_params"]),
+                correction=str(settings["correction"]),
+                open_pore_fraction=float(settings["open_pore_fraction"]),
+                smooth=bool(settings["smooth_derivative"]),
+            )
         )
-        return list(distribution.rows)
 
     @staticmethod
     def _bjh_log_bounds_from_rows(rows_by_key: dict[tuple[int, str], list[dict[str, float]]]) -> tuple[float, float] | None:
@@ -3690,9 +3861,30 @@ class MainWindow(QtWidgets.QMainWindow):
         bet_fit_range = self._current_bet_fit_range() or self._bet_fit_range_for_result(active)
         langmuir_fit_range = self._current_langmuir_fit_range() or self._langmuir_fit_range_for_result(active)
         t_plot_fit_range = self._current_t_plot_fit_range() or self._t_plot_fit_range_for_result(active)
+        pressure_range = self._current_pressure_region()
+        bet = self._cached_bet_analysis(active, bet_fit_range[0], bet_fit_range[1])
+        langmuir = self._cached_langmuir_analysis(active, langmuir_fit_range[0], langmuir_fit_range[1])
+        if pressure_range is None:
+            t_plot = self._cached_t_plot_thickness_analysis(
+                active,
+                t_plot_fit_range[0],
+                t_plot_fit_range[1],
+                thickness_params=self.t_plot_thickness_params,
+                thickness_method=self.t_plot_thickness_method,
+            )
+        else:
+            t_plot = self._cached_t_plot_thickness_analysis(
+                active,
+                t_plot_fit_range[0],
+                t_plot_fit_range[1],
+                pressure_range[0],
+                pressure_range[1],
+                self.t_plot_thickness_params,
+                self.t_plot_thickness_method,
+            )
         rows = active_metric_rows(
             active,
-            self._current_pressure_region(),
+            pressure_range,
             bet_fit_range,
             langmuir_fit_range,
             t_plot_fit_range,
@@ -3701,6 +3893,9 @@ class MainWindow(QtWidgets.QMainWindow):
             t_plot_surface_area_mode=self.t_plot_surface_area_mode,
             t_plot_input_surface_area=self.t_plot_surface_area_input,
             t_plot_surface_area_correction=self.t_plot_surface_area_correction,
+            bet_analysis_result=bet,
+            langmuir_analysis_result=langmuir,
+            t_plot_analysis_result=t_plot,
         )
         self._fill_two_column_table(self.metrics_table, rows)
 
@@ -4061,6 +4256,109 @@ class MainWindow(QtWidgets.QMainWindow):
             return analysis_bundle(result)
         return analysis_bundle(result, pressure_range[0], pressure_range[1])
 
+    def _analysis_cache_identity(self, result) -> tuple[object, ...]:
+        return (
+            id(result),
+            str(getattr(getattr(result, "header", None), "file_path", "")),
+            int(getattr(result, "point_count", 0)),
+        )
+
+    def _fit_analysis_cache_key(self, analysis_name: str, result, *parts) -> tuple[object, ...]:
+        return (
+            analysis_name,
+            *self._analysis_cache_identity(result),
+            self._freeze_cache_value(parts),
+        )
+
+    def _discard_fit_analysis_cache_for_result(self, result) -> None:
+        result_id = id(result)
+        self._fit_analysis_cache = {
+            key: analysis
+            for key, analysis in self._fit_analysis_cache.items()
+            if len(key) < 2 or key[1] != result_id
+        }
+
+    def _store_fit_analysis_cache(self, cache_key: tuple[object, ...], analysis) -> None:
+        self._fit_analysis_cache[cache_key] = analysis
+        while len(self._fit_analysis_cache) > FIT_ANALYSIS_CACHE_LIMIT:
+            self._fit_analysis_cache.pop(next(iter(self._fit_analysis_cache)))
+
+    def _cached_bet_analysis(self, result, p_min: float, p_max: float):
+        cache_key = self._fit_analysis_cache_key("bet", result, float(p_min), float(p_max))
+        cached = self._fit_analysis_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        analysis = bet_analysis(result, p_min, p_max)
+        self._store_fit_analysis_cache(cache_key, analysis)
+        return analysis
+
+    def _cached_langmuir_analysis(self, result, p_min: float, p_max: float):
+        cache_key = self._fit_analysis_cache_key("langmuir", result, float(p_min), float(p_max))
+        cached = self._fit_analysis_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        analysis = langmuir_analysis(result, p_min, p_max)
+        self._store_fit_analysis_cache(cache_key, analysis)
+        return analysis
+
+    def _cached_t_plot_pressure_analysis(
+        self,
+        result,
+        p_min: float,
+        p_max: float,
+        thickness_params: dict[str, object] | None = None,
+        thickness_method: str = DEFAULT_T_PLOT_THICKNESS_METHOD,
+    ):
+        cache_key = self._fit_analysis_cache_key(
+            "t_plot_pressure",
+            result,
+            float(p_min),
+            float(p_max),
+            str(thickness_method),
+            thickness_params or {},
+        )
+        cached = self._fit_analysis_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        analysis = t_plot_analysis(result, p_min, p_max, thickness_params, thickness_method)
+        self._store_fit_analysis_cache(cache_key, analysis)
+        return analysis
+
+    def _cached_t_plot_thickness_analysis(
+        self,
+        result,
+        t_min: float,
+        t_max: float,
+        p_min: float | None = None,
+        p_max: float | None = None,
+        thickness_params: dict[str, object] | None = None,
+        thickness_method: str = DEFAULT_T_PLOT_THICKNESS_METHOD,
+    ):
+        cache_key = self._fit_analysis_cache_key(
+            "t_plot_thickness",
+            result,
+            float(t_min),
+            float(t_max),
+            None if p_min is None else float(p_min),
+            None if p_max is None else float(p_max),
+            str(thickness_method),
+            thickness_params or {},
+        )
+        cached = self._fit_analysis_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        analysis = t_plot_analysis_by_thickness(
+            result,
+            t_min,
+            t_max,
+            p_min,
+            p_max,
+            thickness_params,
+            thickness_method,
+        )
+        self._store_fit_analysis_cache(cache_key, analysis)
+        return analysis
+
     def _bet_fit_range_for_result(self, result) -> tuple[float, float]:
         if id(result) in self.custom_bet_fit_ranges:
             return self.custom_bet_fit_ranges[id(result)]
@@ -4081,7 +4379,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _bet_analysis_for_result(self, result):
         fit_range = self._bet_fit_range_for_result(result)
-        return bet_analysis(result, fit_range[0], fit_range[1])
+        return self._cached_bet_analysis(result, fit_range[0], fit_range[1])
 
     def _langmuir_fit_range_for_result(self, result) -> tuple[float, float]:
         return self.custom_langmuir_fit_ranges.get(id(result), automatic_langmuir_range(result))
@@ -4098,7 +4396,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _langmuir_analysis_for_result(self, result):
         fit_range = self._langmuir_fit_range_for_result(result)
-        return langmuir_analysis(result, fit_range[0], fit_range[1])
+        return self._cached_langmuir_analysis(result, fit_range[0], fit_range[1])
 
     def _default_t_plot_fit_range(
         self,
@@ -4166,7 +4464,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _t_plot_analysis_for_result(self, result):
         settings = self._t_plot_settings_for_result(result)
         fit_range = self._t_plot_fit_range_for_result(result)
-        return t_plot_analysis_by_thickness(
+        return self._cached_t_plot_thickness_analysis(
             result,
             fit_range[0],
             fit_range[1],
@@ -4217,16 +4515,35 @@ class MainWindow(QtWidgets.QMainWindow):
             return None
         diameter_range = diameter_range or self._selected_bjh_pore_volume_range()
         d_min, d_max = sorted((float(diameter_range[0]), float(diameter_range[1])))
-        return bjh_pore_volume_cm3_g(
+        rows = self._cached_bjh_distribution_rows(
             result,
-            d_min,
-            d_max,
             phase=phase,
             thickness_method=str(settings["thickness_method"]),
             thickness_params=dict(settings["thickness_params"]),
             correction=str(settings["correction"]),
             open_pore_fraction=float(settings["open_pore_fraction"]),
+            smooth=bool(settings["smooth_derivative"]),
         )
+        return self._bjh_pore_volume_from_rows(rows, (d_min, d_max))
+
+    @staticmethod
+    def _bjh_pore_volume_from_rows(
+        rows: list[dict[str, float]],
+        diameter_range: tuple[float, float],
+    ) -> float | None:
+        if not rows:
+            return None
+        d_min, d_max = sorted((float(diameter_range[0]), float(diameter_range[1])))
+        volume = 0.0
+        for row in rows:
+            try:
+                diameter = float(row["pore_diameter_nm"])
+                increment = float(row["incremental_pore_volume_cm3_g"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if np.isfinite(diameter) and np.isfinite(increment) and d_min <= diameter <= d_max:
+                volume += increment
+        return volume
 
     def _selected_bjh_pore_volume_range(self) -> tuple[float, float]:
         current = self._current_bjh_diameter_range()
@@ -4340,19 +4657,30 @@ def active_metric_rows(
     t_plot_surface_area_mode: str = "BET",
     t_plot_input_surface_area: float | None = None,
     t_plot_surface_area_correction: float = SURFACE_AREA_CORRECTION_FACTOR,
+    bet_analysis_result=None,
+    langmuir_analysis_result=None,
+    t_plot_analysis_result=None,
 ) -> list[tuple[str, str]]:
-    analyses = analysis_bundle(result) if pressure_range is None else analysis_bundle(result, pressure_range[0], pressure_range[1])
+    analyses = None
+    if bet_analysis_result is None or langmuir_analysis_result is None or t_plot_analysis_result is None:
+        analyses = analysis_bundle(result) if pressure_range is None else analysis_bundle(result, pressure_range[0], pressure_range[1])
 
     from tristar_bet.analysis import bet_analysis as _bet_analysis
-    if bet_fit_range is not None:
+    if bet_analysis_result is not None:
+        bet = bet_analysis_result
+    elif bet_fit_range is not None:
         bet = _bet_analysis(result, bet_fit_range[0], bet_fit_range[1])
     else:
         bet = analyses["BET"]
-    if langmuir_fit_range is not None:
+    if langmuir_analysis_result is not None:
+        langmuir = langmuir_analysis_result
+    elif langmuir_fit_range is not None:
         langmuir = langmuir_analysis(result, langmuir_fit_range[0], langmuir_fit_range[1])
     else:
         langmuir = analyses["Langmuir"]
-    if t_plot_fit_range is not None:
+    if t_plot_analysis_result is not None:
+        t_plot = t_plot_analysis_result
+    elif t_plot_fit_range is not None:
         if pressure_range is None:
             t_plot = t_plot_analysis_by_thickness(
                 result,

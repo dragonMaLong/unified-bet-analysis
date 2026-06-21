@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 import pyqtgraph as pg
@@ -238,6 +239,7 @@ def plot_bet_multi(
     active_index: int = -1,
     p_min: float | None = None,
     p_max: float | None = None,
+    analysis_provider: Callable[..., object] | None = None,
 ) -> dict[int, np.ndarray]:
     """绘制所有勾选样品的 BET 散点，返回每个样品的 x 坐标数组。"""
     data_min = p_min if p_min is not None else 0.05
@@ -254,7 +256,10 @@ def plot_bet_multi(
     all_x = []
     all_y = []
     for index in _analysis_draw_order(results, visible, active_index):
-        analysis = bet_analysis(results[index], data_min, data_max)
+        if analysis_provider is None:
+            analysis = bet_analysis(results[index], data_min, data_max)
+        else:
+            analysis = analysis_provider(results[index], data_min, data_max)
         if not analysis.rows:
             continue
         x = np.asarray([row["relative_pressure"] for row in analysis.rows], dtype=float)
@@ -286,10 +291,14 @@ def plot_bet_selection(
     data_p_min: float | None = None,
     data_p_max: float | None = None,
     color: str = "#2563eb",
+    analysis_provider: Callable[..., object] | None = None,
 ):
     data_min = data_p_min if data_p_min is not None else 0.05
     data_max = data_p_max if data_p_max is not None else 0.30
-    analysis = bet_analysis(result, data_min, data_max)
+    if analysis_provider is None:
+        analysis = bet_analysis(result, data_min, data_max)
+    else:
+        analysis = analysis_provider(result, data_min, data_max)
     if not analysis.rows:
         return None
 
@@ -310,10 +319,14 @@ def plot_langmuir_selection(
     data_p_min: float | None = None,
     data_p_max: float | None = None,
     color: str = "#2563eb",
+    analysis_provider: Callable[..., object] | None = None,
 ):
     data_min = data_p_min if data_p_min is not None else 0.05
     data_max = data_p_max if data_p_max is not None else 0.30
-    analysis = langmuir_analysis(result, data_min, data_max)
+    if analysis_provider is None:
+        analysis = langmuir_analysis(result, data_min, data_max)
+    else:
+        analysis = analysis_provider(result, data_min, data_max)
     if not analysis.rows:
         return None
 
@@ -337,6 +350,7 @@ def replace_bet_fit_line(
     color: str = "#2563eb",
     name: str | None = "线性拟合",
     width: int = 2,
+    analysis_provider: Callable[..., object] | None = None,
 ):
     """移除旧拟合线 item，根据新的拟合区间重新绘制，返回 (new_item, FitResult)。
     line_x_min/line_x_max 控制线的显示范围，默认与拟合区间相同。
@@ -348,7 +362,10 @@ def replace_bet_fit_line(
         except RuntimeError:
             pass
 
-    analysis = bet_analysis(result, fit_p_min, fit_p_max)
+    if analysis_provider is None:
+        analysis = bet_analysis(result, fit_p_min, fit_p_max)
+    else:
+        analysis = analysis_provider(result, fit_p_min, fit_p_max)
     if not analysis.ok or analysis.slope is None or analysis.intercept is None:
         return None, analysis
 
@@ -402,6 +419,7 @@ def plot_langmuir_points_multi(
     active_index: int = -1,
     p_min: float | None = None,
     p_max: float | None = None,
+    analysis_provider: Callable[..., object] | None = None,
 ) -> dict[int, np.ndarray]:
     """绘制所有勾选样品的 Langmuir 散点，返回每个样品的 x 坐标数组。"""
     data_min = p_min if p_min is not None else 0.05
@@ -418,7 +436,10 @@ def plot_langmuir_points_multi(
     all_x = []
     all_y = []
     for index in _analysis_draw_order(results, visible, active_index):
-        analysis = langmuir_analysis(results[index], data_min, data_max)
+        if analysis_provider is None:
+            analysis = langmuir_analysis(results[index], data_min, data_max)
+        else:
+            analysis = analysis_provider(results[index], data_min, data_max)
         if not analysis.rows:
             continue
         x = np.asarray([row["relative_pressure"] for row in analysis.rows], dtype=float)
@@ -453,6 +474,7 @@ def replace_langmuir_fit_line(
     color: str = "#2563eb",
     name: str | None = "线性拟合",
     width: int = 2,
+    analysis_provider: Callable[..., object] | None = None,
 ):
     """移除旧 Langmuir 拟合线并重绘，返回 (new_item, FitResult)。"""
     if old_item is not None:
@@ -461,7 +483,10 @@ def replace_langmuir_fit_line(
         except RuntimeError:
             pass
 
-    analysis = langmuir_analysis(result, fit_p_min, fit_p_max)
+    if analysis_provider is None:
+        analysis = langmuir_analysis(result, fit_p_min, fit_p_max)
+    else:
+        analysis = analysis_provider(result, fit_p_min, fit_p_max)
     if not analysis.ok or analysis.slope is None or analysis.intercept is None:
         return None, analysis
 
@@ -535,6 +560,7 @@ def plot_t_plot_points_multi(
     p_max: float | None = None,
     thickness_params_by_index: dict[int, dict[str, float]] | None = None,
     thickness_method_by_index: dict[int, str] | None = None,
+    analysis_provider: Callable[..., object] | None = None,
 ) -> dict[int, np.ndarray]:
     """绘制所有勾选样品的 t-Plot 散点，返回每个样品的厚度 x 坐标数组。"""
     data_min = p_min if p_min is not None else 0.20
@@ -558,7 +584,10 @@ def plot_t_plot_points_multi(
         thickness_method = "harkins_jura"
         if thickness_method_by_index is not None:
             thickness_method = thickness_method_by_index.get(index, thickness_method)
-        analysis = t_plot_analysis(results[index], data_min, data_max, thickness_params, thickness_method)
+        if analysis_provider is None:
+            analysis = t_plot_analysis(results[index], data_min, data_max, thickness_params, thickness_method)
+        else:
+            analysis = analysis_provider(results[index], data_min, data_max, thickness_params, thickness_method)
         if not analysis.rows:
             continue
         x = np.asarray([row["thickness_nm"] for row in analysis.rows], dtype=float)
@@ -594,16 +623,28 @@ def plot_t_plot_selection(
     thickness_params: dict[str, float] | None = None,
     thickness_method: str = "harkins_jura",
     color: str = "#2563eb",
+    analysis_provider: Callable[..., object] | None = None,
 ):
-    analysis = t_plot_analysis_by_thickness(
-        result,
-        fit_t_min,
-        fit_t_max,
-        data_p_min,
-        data_p_max,
-        thickness_params,
-        thickness_method,
-    )
+    if analysis_provider is None:
+        analysis = t_plot_analysis_by_thickness(
+            result,
+            fit_t_min,
+            fit_t_max,
+            data_p_min,
+            data_p_max,
+            thickness_params,
+            thickness_method,
+        )
+    else:
+        analysis = analysis_provider(
+            result,
+            fit_t_min,
+            fit_t_max,
+            data_p_min,
+            data_p_max,
+            thickness_params,
+            thickness_method,
+        )
     if not analysis.rows:
         return None
 
@@ -630,6 +671,7 @@ def replace_t_plot_fit_line(
     color: str = "#2563eb",
     name: str | None = "线性拟合",
     width: int = 2,
+    analysis_provider: Callable[..., object] | None = None,
 ):
     """移除旧 t-Plot 拟合线并重绘（按厚度范围选点），返回 (new_item, FitResult)。"""
     if old_item is not None:
@@ -638,15 +680,26 @@ def replace_t_plot_fit_line(
         except RuntimeError:
             pass
 
-    analysis = t_plot_analysis_by_thickness(
-        result,
-        fit_t_min,
-        fit_t_max,
-        data_p_min,
-        data_p_max,
-        thickness_params,
-        thickness_method,
-    )
+    if analysis_provider is None:
+        analysis = t_plot_analysis_by_thickness(
+            result,
+            fit_t_min,
+            fit_t_max,
+            data_p_min,
+            data_p_max,
+            thickness_params,
+            thickness_method,
+        )
+    else:
+        analysis = analysis_provider(
+            result,
+            fit_t_min,
+            fit_t_max,
+            data_p_min,
+            data_p_max,
+            thickness_params,
+            thickness_method,
+        )
     if not analysis.ok or analysis.slope is None or analysis.intercept is None:
         return None, analysis
 
@@ -729,6 +782,7 @@ def plot_bjh_distribution_multi(
     smooth: bool = True,
     pressure_range: tuple[float, float] | None = None,
     bjh_settings_by_index: dict[int, dict] | None = None,
+    distribution_provider: Callable[..., list[dict[str, float]]] | None = None,
 ) -> dict[tuple[int, str], list[dict[str, float]]]:
     plot.clear()
     _clear_manual_legend_entries(plot)
@@ -764,16 +818,29 @@ def plot_bjh_distribution_multi(
         for phase, enabled, line_style in phases:
             if not enabled:
                 continue
-            distribution = bjh_pore_distribution(
-                result,
-                phase=phase,
-                thickness_method=sample_thickness_method,
-                thickness_params=sample_thickness_params,
-                correction=sample_correction,
-                open_pore_fraction=sample_open_pore_fraction,
-                smooth=sample_smooth,
-            )
-            all_rows = list(distribution.rows)
+            if distribution_provider is None:
+                distribution = bjh_pore_distribution(
+                    result,
+                    phase=phase,
+                    thickness_method=sample_thickness_method,
+                    thickness_params=sample_thickness_params,
+                    correction=sample_correction,
+                    open_pore_fraction=sample_open_pore_fraction,
+                    smooth=sample_smooth,
+                )
+                all_rows = list(distribution.rows)
+            else:
+                all_rows = list(
+                    distribution_provider(
+                        result,
+                        phase=phase,
+                        thickness_method=sample_thickness_method,
+                        thickness_params=sample_thickness_params,
+                        correction=sample_correction,
+                        open_pore_fraction=sample_open_pore_fraction,
+                        smooth=sample_smooth,
+                    )
+                )
             rows = _bjh_rows_in_pressure_range(all_rows, pressure_range)
             rows_by_key[(index, phase)] = list(rows)
             if not rows:

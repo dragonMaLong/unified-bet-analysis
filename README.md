@@ -19,19 +19,22 @@
 
 平台为每个厂商/软件单独编写解析器，并在分析阶段按来源保留各自的默认规则（区间选取、厚度方程、物理常数、t-Plot 纵轴定义等）。当前已支持：
 
-| 厂商 / 软件 | 文件格式 | 解析模块 |
-| --- | --- | --- |
-| Micromeritics TriStar II 3020 / TriStar II Plus / ASAP 系列 | `SMP` `XLS` `XLSX` `XLSM`| `smp.py` |
-| Micromeritics MicroActive / 通用报表导出 | `XLS` `XLSX` `XLSM` | `excel_import.py` |
-| MicrotracBEL BELSORP（BELMaster） | `DAT` `XLS` `XLSX` `XLSM`| `belmaster.py` |
-| Quantachrome Autosorb iQ | `QPS` | `quantachrome.py` |
-| BSD-660 | `XLS` `XLSX` `XLSM` | `excel_import.py` |
+| 厂商 / 软件 | 已验证型号 / 版本 | 支持导入格式 | 解析与算法状态 |
+| --- | --- | --- | --- |
+| Micromeritics TriStar II 3020 | TriStar II 3020 原始数据 | `SMP` | 支持等温线、BET、Langmuir、t-Plot、BJH；保留 TriStar II 3020 的默认点数与常数差异。 |
+| Micromeritics MicroActive for TriStar II Plus | MicroActive for TriStar II Plus | `SMP`、`XLS`、`XLSX`、`XLSM` | 支持原始 SMP 与官方 Excel 导出；BET 读取官方选点区间，BJH 正在按 MicroActive 标准修正继续逼近。 |
+| Micromeritics ASAP 2460 | ASAP 2460 | `SMP`、`XLS`、`XLSX`、`XLSM` | 支持 ASAP 等温线与官方 Excel 导出；BET 默认区间包含 ASAP 2460 特定修正。 |
+| Micromeritics ASAP 2020 Plus | ASAP 2020 Plus | `SMP`、`XLS`、`XLSX`、`XLSM` | 支持 ASAP 2020 Plus 原始/导出数据读取与统一分析。 |
+| MicrotracBEL BELSORP（BELMaster） | BELMaster DAT / Excel 导出 | `DAT`、`XLS`、`XLSX`、`XLSM` | 支持 BELMaster 等温线导入，并进入统一 BET / Langmuir / t-Plot / BJH 分析流程。 |
+| Quantachrome Autosorb iQ | Autosorb iQ / Quantachrome QPS | `QPS` | 支持 QPS 等温线导入，并进入统一分析流程。 |
+| 贝士德 BSD-660 | BSD-660MC，软件 `V.9.1.15.0 Date 26.04.28` 已验证 | `XLS`、`XLSX`、`XLSM` | 支持官方 Excel 导出；BET、Langmuir、t-Plot 已按 BSD 报表口径复现，BJH 默认读取官方逐点表，孔容递推仍在反推中。 |
 
 不同来源在分析时会自动匹配对应的默认算法，例如 TriStar II 3020 沿用其历史阿伏伽德罗常数、BSD t-Plot 以吸附量（STP）而非液体体积作纵轴、ASAP 2460 对存储区间下限做特定修正等。这样默认结果会贴近原软件，而统一重算时又能切换到一致规则。
 
 ## 当前功能
 
 - 读取上表所列的 SMP / XLS(X/M) / DAT / QPS 文件。
+- 通过左右双栏导入窗口批量选择文件，支持已导入文件回显、格式排序、多选移动和待导入顺序调整。
 - 多样品导入、显示、隐藏、排序、删除和拖拽调整顺序。
 - 样品列表冻结前两列，便于横向滚动时查看样品名称。
 - 吸附 / 脱附等温线多样品叠加显示。
@@ -47,9 +50,21 @@
   - 参考厚度曲线（Akima 插值）
 - t-Plot 总表面积可取自 BET、Langmuir 或手动输入。
 - BJH 支持吸附 / 脱附分支同时显示，并复用厚度曲线公式参数界面。
+- BET、Langmuir、t-Plot 和 BJH 的重复计算结果会按样品与参数组合缓存，切换样品或调整显示范围时尽量复用已有结果。
 - 结果参数、样品条件、实际等温线、目标压力表、报告模块和日志信息查看。
 - 选中样品导出为 XLSX。
 - 命令行解析 SMP / XLS(X/M) / DAT / QPS 并导出 CSV。
+
+## 性能与缓存
+
+图形界面对多样品叠加显示做了计算缓存，避免在切换样品、拖动拟合区间或调整 BJH 孔径显示范围时反复执行相同分析：
+
+- BET / Langmuir 按“样品 + 拟合压力区间”缓存。
+- t-Plot 分别按“压力区间点图”和“厚度拟合区间 + 厚度曲线参数”缓存。
+- BJH 按“样品 + 吸附/脱附分支 + 厚度曲线 + 参数 + 修正方式 + 开孔比例 + 是否平滑”缓存。
+- 等温线蓝色框或 BJH 孔径范围变化只筛选已有结果，不改变算法参数时不会重新计算分布。
+
+缓存只影响运行速度，不改变计算结果。参数变化会生成新的缓存键，不会用旧参数结果覆盖新结果。为避免长时间拖动或频繁切换参数导致内存无限增长，BET / Langmuir / t-Plot 拟合缓存最多保留 `2048` 条，BJH 分布缓存最多保留 `1024` 条；超过上限后自动丢弃最早的缓存，必要时下次重新计算。
 
 ## 结果验证
 
@@ -99,7 +114,9 @@ python app.py path\to\data_folder --out-dir path\to\output
 python app.py path\to\sample.SMP --no-export
 ```
 
-可用 `--prefix` 自定义导出文件名前缀。若未指定 `--out-dir`，请改用相对路径或自定义目录，避免依赖任何特定机器上的绝对路径。
+可用 `--prefix` 自定义导出文件名前缀。若未指定 `--out-dir`，命令行默认导出到桌面下的 `BET分析导出` 文件夹；没有桌面目录时会退回到用户主目录下的同名文件夹。
+
+图形界面首次打开导入/导出窗口时默认使用桌面路径。用户选择过数据文件夹或导出文件夹后，软件会记住上次使用的目录，下次打开时自动回到该位置。
 
 ## 项目结构
 

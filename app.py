@@ -7,13 +7,16 @@ from pathlib import Path
 from tristar_bet import export_results_csv, load_file, load_many
 
 
-DEFAULT_OUT_DIR = Path(r"D:\software\analysis\Data\BET\TriStar_II_3020_format_analysis")
+def _default_out_dir() -> Path:
+    desktop = Path.home() / "Desktop"
+    base = desktop if desktop.exists() else Path.home()
+    return base / "BET分析导出"
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="BET instrument data parser")
     parser.add_argument("input", nargs="?", help="SMP, DAT, QPS, XLS, XLSX, or XLSM file path, or a directory containing supported files")
-    parser.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR), help="CSV output directory")
+    parser.add_argument("--out-dir", default=str(_default_out_dir()), help="CSV output directory")
     parser.add_argument("--prefix", default="tristar3020_minimal_parser", help="Output file prefix")
     parser.add_argument("--no-export", action="store_true", help="Only print a CLI summary")
     parser.add_argument("--ui", action="store_true", help="Start the Chinese Qt analysis interface")
