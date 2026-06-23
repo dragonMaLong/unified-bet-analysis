@@ -5,6 +5,7 @@ import json
 import math
 import re
 import struct
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -54,6 +55,11 @@ ASAP_2460_VBATH_INTERCEPT = 2.120842412745617e-05
 ASAP_2020_PLUS_VFREE_COLD_COEFF = 0.9959455914168879
 ASAP_2020_PLUS_VFREE_WARM_COEFF = 0.004054408583112112
 ASAP_2020_PLUS_VBATH_DIFF_COEFF = 1.351469213988709
+THREE_FLEX_MANUAL_DENSITY_CONVERSION_FACTOR = 0.00155
+THREE_FLEX_MANUAL_VFREE_FACTOR_PER_AMBIENT_CM3 = 1.00536419
+THREE_FLEX_MANUAL_PRESSURE_SQUARED_GAS_COEFF = -7.11189937e-09
+THREE_FLEX_MANUAL_LIQUID_DISPLACEMENT_FACTOR = 3.70136440
+THREE_FLEX_MANUAL_VBATH_FACTOR_PER_ANALYSIS_CM3 = 0.0
 
 
 class TriStarParseError(ValueError):
@@ -117,12 +123,38 @@ class TriStarSmpParser:
         isotherm = self._parse_isotherm(blocks.get(303, b""), po_records, sample, free_space)
         used_microactive_point_table = False
         used_asap_point_table = False
+        used_3flex_manual_point_table = False
         if not isotherm:
             isotherm = self._parse_asap_isotherm(blocks.get(303, b""), self._payload_size(subsets, 303), po_records, sample, free_space)
             used_asap_point_table = bool(isotherm)
         if not isotherm:
             isotherm = self._parse_microactive_isotherm(blocks.get(303, b""), self._payload_size(subsets, 303), sample, free_space)
             used_microactive_point_table = bool(isotherm)
+        if not isotherm:
+            manual_run_conditions = self._with_3flex_manual_run_conditions(run_conditions, blocks.get(302, b""))
+            manual_adsorptive_properties = self._with_3flex_manual_adsorptive_properties(
+                self._parse_3flex_adsorptive_properties(blocks.get(320, b"")) or adsorptive_properties
+            )
+            manual_free_space = self._parse_3flex_manual_free_space(
+                blocks.get(303, b""),
+                manual_run_conditions,
+                manual_adsorptive_properties,
+            )
+            isotherm = self._parse_3flex_manual_isotherm(
+                blocks.get(303, b""),
+                sample,
+                manual_free_space,
+                manual_adsorptive_properties,
+            )
+            used_3flex_manual_point_table = bool(isotherm)
+            if used_3flex_manual_point_table:
+                run_conditions = self._with_3flex_manual_run_conditions(
+                    manual_run_conditions,
+                    blocks.get(302, b""),
+                    manual_free_space,
+                )
+                adsorptive_properties = manual_adsorptive_properties
+                free_space = manual_free_space
         method_options = self._parse_method_options(blocks.get(302, b""), blocks.get(725, b""), blocks.get(320, b""))
         method_options.update(self._parse_instrument_info(blocks))
         method_options.update(self._parse_stored_bet_range(blocks.get(311, b"")))
@@ -146,6 +178,33 @@ class TriStarSmpParser:
                 if sample.sample_mass_g
                 else "raw_cm3_stp_unscaled_missing_sample_mass"
             )
+        if used_3flex_manual_point_table:
+            method_options["instrument_manufacturer"] = "Micromeritics"
+            method_options["instrument_model"] = "3Flex 3500"
+            method_options["3flex_quantity_source"] = (
+                "manual_total_cm3_stp_free_space_corrected_and_normalized"
+                if free_space.vfree_factor_cm3 is not None
+                else "manual_total_cm3_stp_normalized_by_sample_mass"
+            )
+            method_options["3flex_point_table_source"] = "SMP subset 303 manual entered data"
+            method_options["3flex_free_space_source"] = free_space.vfree_factor_source
+            if free_space.ambient_entered_cm3 is not None:
+                method_options["3flex_ambient_free_space_entered_cm3"] = free_space.ambient_entered_cm3
+            if free_space.analysis_entered_cm3 is not None:
+                method_options["3flex_analysis_free_space_entered_cm3"] = free_space.analysis_entered_cm3
+            if free_space.vfree_factor_cm3 is not None:
+                method_options["3flex_vfree_factor_cm3"] = free_space.vfree_factor_cm3
+            if free_space.vbath_cm3 is not None:
+                method_options["3flex_vbath_cm3"] = free_space.vbath_cm3
+            if free_space.nonideality_factor is not None:
+                method_options["3flex_nonideality_factor"] = free_space.nonideality_factor
+            method_options["3flex_manual_density_conversion_factor"] = THREE_FLEX_MANUAL_DENSITY_CONVERSION_FACTOR
+            method_options["3flex_liquid_displacement_factor"] = THREE_FLEX_MANUAL_LIQUID_DISPLACEMENT_FACTOR
+            method_options["3flex_pressure_squared_gas_coeff"] = THREE_FLEX_MANUAL_PRESSURE_SQUARED_GAS_COEFF
+            method_options["vendor_bjh_thickness_method"] = "harkins_jura"
+            method_options["vendor_bjh_correction"] = "faas"
+            method_options["vendor_bjh_smooth_derivative"] = False
+            method_options["format_family"] = "3Flex manual SMP"
         if self._target_pressure_rows_valid(target_pressure_table):
             method_options["target_pressure_table_source"] = "method_file"
         else:
@@ -240,10 +299,11 @@ class TriStarSmpParser:
         sample_name = early_values[0] if early_values else ""
         operator = early_values[1] if len(early_values) > 1 else ""
         mass = _read_double(block, 19)
+        compact_mass = self._parse_compact_sample_mass(block, strings)
+        if compact_mass is not None:
+            mass = compact_mass
         if mass is not None and not (1e-8 < mass < 100.0):
             mass = None
-        if mass is None:
-            mass = self._parse_compact_sample_mass(block, strings)
         density = _read_double(block, 192)
         if density is not None and not (0.01 < density < 100.0):
             density = None
@@ -259,7 +319,7 @@ class TriStarSmpParser:
 
     def _parse_compact_sample_mass(self, block: bytes, strings: Sequence[MicString]) -> float | None:
         barcode_rel = next((item.rel_offset for item in strings if item.text == "Bar Code:"), None)
-        start = (barcode_rel + 24) if barcode_rel is not None else 180
+        start = (barcode_rel + 32) if barcode_rel is not None else 180
         end = min(len(block) - 8, start + 90)
         candidates: list[tuple[int, float]] = []
         for rel in range(max(0, start), max(0, end + 1)):
@@ -592,6 +652,95 @@ class TriStarSmpParser:
             vfree_factor_source=source,
         )
 
+    @staticmethod
+    def _free_space_unavailable_for_3flex_manual_table() -> FreeSpaceInfo:
+        return FreeSpaceInfo(
+            analysis_entered_cm3=None,
+            ambient_entered_cm3=None,
+            nonideality_factor=None,
+            cold_free_space_cm3=None,
+            warm_free_space_cm3=None,
+            stem_volume_cm3=None,
+            vbath_cm3=None,
+            vfree_factor_cm3=None,
+            vfree_factor_source="3flex_manual_table_not_used_for_quantity",
+        )
+
+    @staticmethod
+    def _with_3flex_manual_adsorptive_properties(
+        adsorptive_properties: AdsorptiveProperties | None,
+    ) -> AdsorptiveProperties | None:
+        if adsorptive_properties is None:
+            return None
+        if (adsorptive_properties.mnemonic or adsorptive_properties.adsorptive).upper() != "N2":
+            return adsorptive_properties
+        return replace(
+            adsorptive_properties,
+            density_conversion_factor=THREE_FLEX_MANUAL_DENSITY_CONVERSION_FACTOR,
+        )
+
+    def _parse_3flex_manual_free_space(
+        self,
+        block: bytes,
+        run: RunConditions,
+        adsorptive_properties: AdsorptiveProperties | None,
+    ) -> FreeSpaceInfo:
+        sample_tube_rel = next((item.rel_offset for item in self._read_mic_strings(block) if item.text == "Sample Tube"), None)
+        if sample_tube_rel is None:
+            return self._free_space_unavailable_for_3flex_manual_table()
+
+        ambient = self._first_valid_volume(
+            _read_double(block, sample_tube_rel - 24),
+            _read_double(block, sample_tube_rel - 48),
+        )
+        analysis = self._first_valid_volume(
+            _read_double(block, sample_tube_rel - 16),
+            _read_double(block, sample_tube_rel - 40),
+        )
+        if ambient is None or analysis is None:
+            return self._free_space_unavailable_for_3flex_manual_table()
+
+        nonideality = self._first_valid_nonideality(
+            _read_double(block, sample_tube_rel - 32),
+            _read_double(block, sample_tube_rel + 163),
+            adsorptive_properties.nonideality_factor if adsorptive_properties is not None else None,
+        )
+        if nonideality is None:
+            nonideality = 0.0
+
+        ambient_temperature = _read_double(block, sample_tube_rel - 77)
+        if ambient_temperature is None or not (250.0 <= ambient_temperature <= 330.0):
+            ambient_temperature = ASSUMED_AMBIENT_TEMPERATURE_K
+
+        vfree = THREE_FLEX_MANUAL_VFREE_FACTOR_PER_AMBIENT_CM3 * ambient
+        vbath = THREE_FLEX_MANUAL_VBATH_FACTOR_PER_ANALYSIS_CM3 * analysis
+        return FreeSpaceInfo(
+            analysis_entered_cm3=analysis,
+            ambient_entered_cm3=ambient,
+            nonideality_factor=nonideality,
+            cold_free_space_cm3=analysis,
+            warm_free_space_cm3=ambient,
+            stem_volume_cm3=0.0,
+            vbath_cm3=vbath,
+            vfree_factor_cm3=vfree,
+            vfree_factor_source="3flex_flex_6_03_manual_ambient_plus_liquid_displacement",
+            ambient_temperature_K_assumed=ambient_temperature,
+        )
+
+    @staticmethod
+    def _first_valid_volume(*values: float | None) -> float | None:
+        for value in values:
+            if value is not None and 0.0 < value < 300.0:
+                return float(value)
+        return None
+
+    @staticmethod
+    def _first_valid_nonideality(*values: float | None) -> float | None:
+        for value in values:
+            if value is not None and math.isfinite(float(value)) and abs(float(value)) < 0.01:
+                return float(value)
+        return None
+
     def _parse_asap_free_space(
         self,
         block: bytes,
@@ -825,7 +974,12 @@ class TriStarSmpParser:
         if len(rows) < 3:
             return []
 
-        max_index = max(range(len(rows)), key=lambda idx: rows[idx][2])
+        max_relative = max(row[2] for row in rows)
+        max_index = max(
+            idx
+            for idx, row in enumerate(rows)
+            if math.isclose(row[2], max_relative, rel_tol=0.0, abs_tol=1e-12)
+        )
         points: list[IsothermPoint] = []
         sample_mass = float(sample.sample_mass_g) if sample.sample_mass_g and sample.sample_mass_g > 0.0 else None
         for idx, (rel, absolute, relative, quantity) in enumerate(rows, start=1):
@@ -852,6 +1006,128 @@ class TriStarSmpParser:
                 )
             )
         return points
+
+    def _parse_3flex_manual_isotherm(
+        self,
+        block: bytes,
+        sample: SampleInfo,
+        free_space: FreeSpaceInfo,
+        adsorptive_properties: AdsorptiveProperties | None,
+    ) -> list[IsothermPoint]:
+        if len(block) < 240:
+            return []
+        point_count = _read_uint32(block, 128)
+        if point_count is None or not (3 <= point_count <= 1000):
+            return []
+        record_start = 209
+        record_stride = 66
+        if record_start + record_stride * (point_count - 1) + 24 > len(block):
+            return []
+
+        rows: list[tuple[int, float, float, float]] = []
+        for index in range(point_count):
+            rel_offset = record_start + record_stride * index
+            absolute = _read_double(block, rel_offset)
+            relative = _read_double(block, rel_offset + 8)
+            total_volume = _read_double(block, rel_offset + 16)
+            if (
+                absolute is None
+                or relative is None
+                or total_volume is None
+                or not (0.0 < absolute <= 900.0)
+                or not (1e-10 <= relative <= 1.1)
+                or not (0.0 <= total_volume <= 10000.0)
+            ):
+                return []
+            rows.append((rel_offset, absolute, relative, total_volume))
+
+        max_relative = max(row[2] for row in rows)
+        max_index = max(
+            idx
+            for idx, row in enumerate(rows)
+            if math.isclose(row[2], max_relative, rel_tol=0.0, abs_tol=1e-12)
+        )
+        sample_mass = float(sample.sample_mass_g) if sample.sample_mass_g and sample.sample_mass_g > 0.0 else None
+        points: list[IsothermPoint] = []
+        for idx, (rel_offset, absolute, relative, total_volume) in enumerate(rows, start=1):
+            phase = "adsorption" if idx - 1 <= max_index else "desorption"
+            corrected_quantity = self._calculate_3flex_manual_quantity(
+                absolute,
+                total_volume,
+                sample,
+                free_space,
+                adsorptive_properties,
+            )
+            quantity_per_g = corrected_quantity if corrected_quantity is not None else (total_volume / sample_mass if sample_mass else total_volume)
+            saturation_pressure = absolute / relative if relative else None
+            points.append(
+                IsothermPoint(
+                    index=idx,
+                    phase=phase,
+                    record_rel_offset=rel_offset,
+                    absolute_pressure_mmHg=absolute,
+                    relative_pressure=relative,
+                    raw_internal_cm3_stp=total_volume,
+                    saturation_pressure_mmHg=saturation_pressure,
+                    elapsed_seconds=None,
+                    quantity_adsorbed_cm3_g_stp=quantity_per_g,
+                    quantity_adsorbed_mmol_g=quantity_per_g / CM3_STP_PER_MMOL,
+                )
+            )
+        return points
+
+    @staticmethod
+    def _with_3flex_manual_run_conditions(
+        run_conditions: RunConditions,
+        method_block: bytes,
+        free_space: FreeSpaceInfo | None = None,
+    ) -> RunConditions:
+        bath_temperature = _read_double(method_block, 653)
+        if bath_temperature is None or not (50.0 < bath_temperature < 150.0):
+            bath_temperature = 77.3
+        return replace(
+            run_conditions,
+            bath_temperature_K=bath_temperature,
+            adsorptive_short="N2",
+            adsorptive_name="Nitrogen",
+            ambient_free_space_entered_cm3=(
+                free_space.ambient_entered_cm3
+                if free_space is not None and free_space.ambient_entered_cm3 is not None
+                else run_conditions.ambient_free_space_entered_cm3
+            ),
+            analysis_free_space_entered_cm3=(
+                free_space.analysis_entered_cm3
+                if free_space is not None and free_space.analysis_entered_cm3 is not None
+                else run_conditions.analysis_free_space_entered_cm3
+            ),
+        )
+
+    @staticmethod
+    def _parse_3flex_adsorptive_properties(adsorptive_block: bytes) -> AdsorptiveProperties | None:
+        if not adsorptive_block:
+            return None
+        density_factor = _read_double(adsorptive_block, 77)
+        hard_sphere_A = _read_double(adsorptive_block, 85)
+        cross_section = _read_double(adsorptive_block, 93)
+        molecular_weight = _read_double(adsorptive_block, 448)
+        nonideality = _read_double(adsorptive_block, 69)
+        if nonideality is not None and not (0.0 <= abs(nonideality) < 0.01):
+            nonideality = None
+        if density_factor is None or not (0.0 < density_factor < 0.01):
+            return None
+        return AdsorptiveProperties(
+            adsorptive="Nitrogen",
+            mnemonic="N2",
+            max_manifold_pressure_mmHg=None,
+            max_manifold_pressure_kPa=None,
+            nonideality_factor=nonideality,
+            density_conversion_factor=density_factor,
+            thermal_transpiration_hard_sphere_A=hard_sphere_A,
+            thermal_transpiration_hard_sphere_nm=hard_sphere_A / 10.0 if hard_sphere_A is not None else None,
+            molecular_cross_sectional_area_nm2=cross_section,
+            ui_field_rel101=molecular_weight,
+            psat_table=[],
+        )
 
     def _parse_asap_isotherm(
         self,
@@ -995,6 +1271,33 @@ class TriStarSmpParser:
         if not (1.0 < absolute < 1200.0 and 0.001 < relative < 1.2 and -10000.0 < raw_internal < 10000.0):
             return False
         return abs(absolute / saturation_pressure - relative) < 2e-5
+
+    def _calculate_3flex_manual_quantity(
+        self,
+        absolute_pressure: float,
+        raw_internal: float,
+        sample: SampleInfo,
+        free_space: FreeSpaceInfo,
+        adsorptive_properties: AdsorptiveProperties | None,
+    ) -> float | None:
+        if sample.sample_mass_g is None or free_space.vfree_factor_cm3 is None:
+            return None
+        sample_mass = float(sample.sample_mass_g)
+        if sample_mass <= 0.0:
+            return None
+        density_factor = THREE_FLEX_MANUAL_DENSITY_CONVERSION_FACTOR
+        if adsorptive_properties and adsorptive_properties.density_conversion_factor:
+            density_factor = float(adsorptive_properties.density_conversion_factor)
+        pressure_atm = float(absolute_pressure) / 760.0
+        gas_without_liquid = (
+            pressure_atm * float(free_space.vfree_factor_cm3)
+            + float(absolute_pressure) * float(absolute_pressure) * THREE_FLEX_MANUAL_PRESSURE_SQUARED_GAS_COEFF
+        )
+        liquid_displacement = pressure_atm * THREE_FLEX_MANUAL_LIQUID_DISPLACEMENT_FACTOR * density_factor
+        denominator = sample_mass * (1.0 - liquid_displacement)
+        if abs(denominator) < 1e-15:
+            return None
+        return (float(raw_internal) - gas_without_liquid) / denominator
 
     def _calculate_quantity(
         self,
@@ -1169,7 +1472,7 @@ class TriStarSmpParser:
 
     def _parse_instrument_info(self, blocks: dict[int, bytes]) -> dict[str, object]:
         texts: list[str] = []
-        for subset_id in (303, 705, 302, 304, 320, 322, 330):
+        for subset_id in (100, 303, 705, 302, 304, 320, 322, 330):
             texts.extend(item.text for item in self._read_mic_strings(blocks.get(subset_id, b"")) if item.text)
         joined = "\n".join(texts)
 
@@ -1195,6 +1498,11 @@ class TriStarSmpParser:
             model = "ASAP 2460"
         elif "ASAP 2020 Plus" in joined:
             model = "ASAP 2020 Plus"
+        elif "3500" in texts or "3Flex" in joined:
+            manufacturer = "Micromeritics"
+            model = "3Flex 3500"
+            if not software:
+                software = next((text for text in texts if re.fullmatch(r"V\d+(?:\.\d+)+", text)), "")
 
         options: dict[str, object] = {}
         if manufacturer:

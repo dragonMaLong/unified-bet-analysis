@@ -942,6 +942,9 @@ def _bjh_rows_in_pressure_range(rows, pressure_range: tuple[float, float] | None
     pressure_min, pressure_max = sorted((float(pressure_range[0]), float(pressure_range[1])))
     filtered = []
     for row in rows:
+        if "relative_pressure_low" not in row or "relative_pressure_high" not in row:
+            filtered.append(row)
+            continue
         interval_min = min(float(row["relative_pressure_low"]), float(row["relative_pressure_high"]))
         interval_max = max(float(row["relative_pressure_low"]), float(row["relative_pressure_high"]))
         if interval_max >= pressure_min and interval_min <= pressure_max:

@@ -23,10 +23,11 @@
 | --- | --- | --- | --- |
 | Micromeritics TriStar II 3020 | TriStar II 3020 原始数据 | `SMP` | 支持等温线、BET、Langmuir、t-Plot、BJH；保留 TriStar II 3020 的默认点数与常数差异。 |
 | Micromeritics MicroActive for TriStar II Plus | MicroActive for TriStar II Plus | `SMP`、`XLS`、`XLSX`、`XLSM` | 支持原始 SMP 与官方 Excel 导出；BET 读取官方选点区间，BJH 正在按 MicroActive 标准修正继续逼近。 |
+| Micromeritics 3Flex 3500 | 3Flex 3500 / Flex `6.03` 官方报表、MicroActive 可打开的手动点表 SMP 已验证 | `SMP`、`XLS` | 支持 SMP 内部手动等温线点表，并按 Flex `6.03` 官方 XLS 反推路径做自由空间修正与 BJH adsorption/desorption 标准修正；支持正式 Flex XLS 报表，临时导出的 `Entered Data Table` 不作为正式兼容格式。 |
 | Micromeritics ASAP 2460 | ASAP 2460 | `SMP`、`XLS`、`XLSX`、`XLSM` | 支持 ASAP 等温线与官方 Excel 导出；BET 默认区间包含 ASAP 2460 特定修正。 |
 | Micromeritics ASAP 2020 Plus | ASAP 2020 Plus | `SMP`、`XLS`、`XLSX`、`XLSM` | 支持 ASAP 2020 Plus 原始/导出数据读取与统一分析。 |
 | MicrotracBEL BELSORP（BELMaster） | BELMaster DAT / Excel 导出 | `DAT`、`XLS`、`XLSX`、`XLSM` | 支持 BELMaster 等温线导入，并进入统一 BET / Langmuir / t-Plot / BJH 分析流程。 |
-| Quantachrome Autosorb iQ | Autosorb iQ / Quantachrome QPS | `QPS` | 支持 QPS 等温线导入，并进入统一分析流程。 |
+| Quantachrome Autosorb iQ | Autosorb iQ / QuadraSorb；QPS、NovaWin `version 11.02` 文本型 Excel 报告已验证 | `QPS`、`XLSX` | 支持 QPS 原始等温线导入；支持 NovaWin 文本型 Excel 报告读取等温线，并在 Broekhoff-De Boer 厚度 + 标准修正下直接采用官方 BJH adsorption/desorption 表。 |
 | 贝士德 BSD-660 | BSD-660MC，软件 `V.9.1.15.0 Date 26.04.28` 已验证 | `XLS`、`XLSX`、`XLSM` | 支持官方 Excel 导出；BET、Langmuir、t-Plot 已按 BSD 报表口径复现，BJH 默认读取官方逐点表，孔容递推仍在反推中。 |
 
 不同来源在分析时会自动匹配对应的默认算法，例如 TriStar II 3020 沿用其历史阿伏伽德罗常数、BSD t-Plot 以吸附量（STP）而非液体体积作纵轴、ASAP 2460 对存储区间下限做特定修正等。这样默认结果会贴近原软件，而统一重算时又能切换到一致规则。

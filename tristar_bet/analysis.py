@@ -16,6 +16,13 @@ DEFAULT_N2_SURFACE_TENSION_N_M = 8.85e-3
 DEFAULT_N2_LIQUID_MOLAR_VOLUME_M3_MOL = 34.68e-6
 DEFAULT_N2_ADSORBATE_PROPERTY_FACTOR_NM = 0.953
 BSD_BJH_ADSORBATE_PROPERTY_FACTOR_NM = 0.954853
+QUANTACHROME_BJH_ADSORBATE_PROPERTY_FACTOR_NM = 0.9575
+QUANTACHROME_BJH_LIQUID_VOLUME_SCALE = 0.994
+MICROMERITICS_FLEX_BJH_EFFECTIVE_ADSORBATE_PROPERTY_FACTOR_NM = 0.9514684743
+MICROMERITICS_FLEX_BJH_ADSORPTION_WALL_CORRECTION_FACTOR = 1.03998522
+MICROMERITICS_FLEX_BJH_DESORPTION_WALL_CORRECTION_FACTOR = 1.02645361
+MICROMERITICS_FLEX_BJH_WALL_CORRECTION_FACTOR = MICROMERITICS_FLEX_BJH_ADSORPTION_WALL_CORRECTION_FACTOR
+MICROMERITICS_FLEX_T_PLOT_THICKNESS_RANGE_NM = (0.35, 0.50)
 GAS_CONSTANT_J_MOL_K = 8.314462618
 BET_AUTO_FALLBACK_RANGE = (0.05, 0.30)
 BET_AUTO_SEARCH_MAX = 0.35
@@ -143,6 +150,35 @@ def desorption_points(result: TriStarResult) -> list[IsothermPoint]:
     return sorted(points, key=lambda point: point.relative_pressure)
 
 
+def _bjh_branch_points(result: TriStarResult, phase: str) -> list[IsothermPoint]:
+    if phase == "adsorption":
+        return adsorption_points(result)
+    points = desorption_points(result)
+    if not (
+        _uses_micromeritics_flex_bjh_recalculation_defaults(result)
+        or _uses_quantachrome_defaults(result)
+    ):
+        return points
+
+    anchors = [
+        point
+        for point in result.isotherm
+        if point.phase == "adsorption"
+        and _valid_number(point.relative_pressure)
+        and _valid_number(point.quantity_adsorbed_cm3_g_stp)
+        and 0.0 < float(point.relative_pressure) < 1.0
+        and float(point.quantity_adsorbed_cm3_g_stp or 0.0) > 0.0
+    ]
+    if not anchors:
+        return points
+    max_pressure = max(float(point.relative_pressure) for point in anchors)
+    anchor = max(
+        (point for point in anchors if math.isclose(float(point.relative_pressure), max_pressure, rel_tol=0.0, abs_tol=1e-12)),
+        key=lambda point: point.index,
+    )
+    return points + [anchor]
+
+
 def bet_analysis(
     result: TriStarResult,
     p_min: float | None = None,
@@ -157,6 +193,11 @@ def automatic_langmuir_range(result: TriStarResult) -> tuple[float, float]:
     stored_range = _stored_langmuir_range(result)
     if stored_range is not None:
         return stored_range
+    if _uses_micromeritics_3flex_manual_smp_defaults(result):
+        points = adsorption_points(result)
+        if len(points) >= 3:
+            pressures = [float(point.relative_pressure) for point in points]
+            return min(pressures), max(pressures)
     return LANGMUIR_DEFAULT_RANGE
 
 
@@ -164,6 +205,15 @@ def automatic_t_plot_pressure_range(result: TriStarResult) -> tuple[float, float
     stored_range = _stored_t_plot_pressure_range(result)
     if stored_range is not None:
         return stored_range
+    if _uses_micromeritics_3flex_manual_smp_defaults(result):
+        pressures = []
+        t_min, t_max = MICROMERITICS_FLEX_T_PLOT_THICKNESS_RANGE_NM
+        for point in adsorption_points(result):
+            thickness = thickness_nm(float(point.relative_pressure), "harkins_jura", None)
+            if thickness is not None and t_min <= thickness <= t_max:
+                pressures.append(float(point.relative_pressure))
+        if len(pressures) >= 3:
+            return min(pressures), max(pressures)
     return T_PLOT_DEFAULT_PRESSURE_RANGE
 
 
@@ -182,6 +232,10 @@ def automatic_bet_range(result: TriStarResult) -> tuple[float, float]:
         if stored_range is not None:
             return stored_range
     if _uses_bsd_defaults(result):
+        stored_range = _stored_bet_range(result)
+        if stored_range is not None:
+            return stored_range
+    if _uses_micromeritics_flex_defaults(result):
         stored_range = _stored_bet_range(result)
         if stored_range is not None:
             return stored_range
@@ -512,7 +566,10 @@ def _t_plot_fit_from_points(
         micropore_volume = max(0.0, intercept * density_factor) if _valid_number(intercept) else None
     else:
         external_surface_area = slope * 1000.0 if slope > 0 else None
-        micropore_volume = max(0.0, intercept) if _valid_number(intercept) else None
+        if _uses_micromeritics_flex_defaults(result):
+            micropore_volume = intercept if _valid_number(intercept) else None
+        else:
+            micropore_volume = max(0.0, intercept) if _valid_number(intercept) else None
     return FitResult(
         "t-Plot", "ok", len(x_values), range_min, range_max,
         slope=slope, intercept=intercept, r_squared=r_squared,
@@ -575,6 +632,28 @@ def _uses_tristar_ii_plus_defaults(result: TriStarResult) -> bool:
     return "TriStar II Plus" in model or "MicroActive for TriStar II Plus" in software
 
 
+def _uses_micromeritics_flex_defaults(result: TriStarResult) -> bool:
+    model = str(result.method_options.get("instrument_model", ""))
+    software = str(result.method_options.get("instrument_software", ""))
+    return bool(result.method_options.get("micromeritics_flex_excel_import")) or "3Flex 3500" in model or "Flex " in software
+
+
+def _uses_micromeritics_3flex_manual_smp_defaults(result: TriStarResult) -> bool:
+    return str(result.method_options.get("format_family", "")) == "3Flex manual SMP"
+
+
+def _uses_micromeritics_flex_bjh_recalculation_defaults(result: TriStarResult) -> bool:
+    return _uses_micromeritics_3flex_manual_smp_defaults(result) or bool(
+        result.method_options.get("micromeritics_flex_excel_import")
+    )
+
+
+def _uses_quantachrome_defaults(result: TriStarResult) -> bool:
+    manufacturer = str(result.method_options.get("instrument_manufacturer", ""))
+    model = str(result.method_options.get("instrument_model", ""))
+    return "Quantachrome" in manufacturer or "Autosorb" in model or "QuadraSorb" in model
+
+
 def _uses_bsd_defaults(result: TriStarResult) -> bool:
     manufacturer = str(result.method_options.get("instrument_manufacturer", ""))
     model = str(result.method_options.get("instrument_model", ""))
@@ -605,6 +684,8 @@ def _bjh_kelvin_factor_nm(result: TriStarResult) -> float:
         return float(value)
     if _uses_bsd_defaults(result):
         return BSD_BJH_ADSORBATE_PROPERTY_FACTOR_NM
+    if _uses_quantachrome_defaults(result):
+        return QUANTACHROME_BJH_ADSORBATE_PROPERTY_FACTOR_NM
     return DEFAULT_N2_ADSORBATE_PROPERTY_FACTOR_NM
 
 
@@ -621,6 +702,14 @@ def _stored_bet_range(result: TriStarResult) -> tuple[float, float] | None:
 
 
 def _stored_langmuir_range(result: TriStarResult) -> tuple[float, float] | None:
+    generic_min = result.method_options.get("stored_langmuir_pressure_min")
+    generic_max = result.method_options.get("stored_langmuir_pressure_max")
+    if _valid_number(generic_min) and _valid_number(generic_max):
+        p_min = float(generic_min)
+        p_max = float(generic_max)
+        if 0.0 <= p_min < p_max <= 1.1:
+            return (p_min, min(p_max, 1.0))
+
     p_min_kpa = result.method_options.get("bsd_langmuir_pressure_min_kpa")
     p_max_kpa = result.method_options.get("bsd_langmuir_pressure_max_kpa")
     if not (_valid_number(p_min_kpa) and _valid_number(p_max_kpa)):
@@ -658,6 +747,14 @@ def _stored_langmuir_range(result: TriStarResult) -> tuple[float, float] | None:
 
 
 def _stored_t_plot_pressure_range(result: TriStarResult) -> tuple[float, float] | None:
+    generic_min = result.method_options.get("stored_t_plot_pressure_min")
+    generic_max = result.method_options.get("stored_t_plot_pressure_max")
+    if _valid_number(generic_min) and _valid_number(generic_max):
+        p_min = float(generic_min)
+        p_max = float(generic_max)
+        if 0.0 <= p_min < p_max <= 1.0:
+            return (p_min, p_max)
+
     p_min = result.method_options.get("bsd_t_plot_pressure_min")
     p_max = result.method_options.get("bsd_t_plot_pressure_max")
     if not (_valid_number(p_min) and _valid_number(p_max)):
@@ -676,6 +773,126 @@ def _stored_t_plot_pressure_range(result: TriStarResult) -> tuple[float, float] 
     if len(selected) >= 3:
         return (min(selected), max(selected))
     return (p_min, p_max)
+
+
+def _micromeritics_flex_official_bjh_rows(
+    result: TriStarResult,
+    phase: str,
+    thickness_method: str,
+    correction: str,
+    open_pore_fraction: float,
+) -> list[dict[str, float]] | None:
+    if not result.method_options.get("micromeritics_flex_excel_import"):
+        return None
+    if phase not in {"adsorption", "desorption"}:
+        return None
+    if correction != "standard" or abs(float(open_pore_fraction)) > 1e-12:
+        return None
+    if thickness_method != "harkins_jura":
+        return None
+    raw_rows = result.method_options.get(f"micromeritics_flex_bjh_{phase}_rows")
+    if not isinstance(raw_rows, list) or len(raw_rows) < 2:
+        return None
+
+    rows: list[dict[str, float]] = []
+    for index, raw in enumerate(raw_rows, start=1):
+        try:
+            pore_diameter = float(raw["pore_diameter_nm"])
+            high = float(raw["pore_diameter_range_high_nm"])
+            low = float(raw["pore_diameter_range_low_nm"])
+            incremental_volume = float(raw["incremental_pore_volume_cm3_g"])
+            cumulative_volume = float(raw["cumulative_pore_volume_cm3_g"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        dlog_diameter = abs(math.log10(high) - math.log10(low)) if high > 0.0 and low > 0.0 else 0.0
+        differential = incremental_volume / dlog_diameter if dlog_diameter > 1e-12 else 0.0
+        row = {
+            "phase": phase,
+            "interval_index": float(index),
+            "pore_diameter_nm": pore_diameter,
+            "cumulative_pore_diameter_nm": low,
+            "pore_diameter_range_high_nm": high,
+            "pore_diameter_range_low_nm": low,
+            "incremental_pore_volume_cm3_g": incremental_volume,
+            "cumulative_pore_volume_cm3_g": cumulative_volume,
+            "dlog_diameter": dlog_diameter,
+            "differential_pore_volume_cm3_g": differential,
+            "raw_differential_pore_volume_cm3_g": differential,
+            "bjh_correction": "micromeritics_flex_official_excel_table",
+            "open_pore_fraction": float(open_pore_fraction),
+        }
+        incremental_area = raw.get("incremental_pore_area_m2_g") if isinstance(raw, dict) else None
+        cumulative_area = raw.get("cumulative_pore_area_m2_g") if isinstance(raw, dict) else None
+        if _valid_number(incremental_area):
+            row["incremental_pore_area_m2_g"] = float(incremental_area)
+        if _valid_number(cumulative_area):
+            row["cumulative_pore_area_m2_g"] = float(cumulative_area)
+        rows.append(row)
+    return rows
+
+
+def _quantachrome_official_bjh_rows(
+    result: TriStarResult,
+    phase: str,
+    thickness_method: str,
+    correction: str,
+    open_pore_fraction: float,
+) -> list[dict[str, float]] | None:
+    if not result.method_options.get("quantachrome_excel_import"):
+        return None
+    if correction != "standard" or abs(float(open_pore_fraction)) > 1e-12:
+        return None
+    official_method = str(result.method_options.get("quantachrome_bjh_thickness_method", "harkins_jura"))
+    if thickness_method != official_method:
+        return None
+    raw_rows = result.method_options.get(f"quantachrome_bjh_{phase}_rows")
+    if not isinstance(raw_rows, list) or len(raw_rows) < 2:
+        return None
+
+    rows: list[dict[str, float]] = []
+    previous_diameter: float | None = None
+    previous_volume: float | None = None
+    for index, raw in enumerate(raw_rows):
+        if not isinstance(raw, dict):
+            continue
+        try:
+            pore_diameter = float(raw["pore_diameter_nm"])
+            cumulative_volume = float(raw["cumulative_pore_volume_cm3_g"])
+            cumulative_area = float(raw.get("cumulative_pore_area_m2_g", 0.0))
+            differential_per_nm = float(raw.get("differential_pore_volume_per_nm_cm3_g_nm", 0.0))
+            differential_area_per_nm = float(raw.get("differential_pore_area_per_nm_m2_g_nm", 0.0))
+            differential_log = float(raw.get("differential_pore_volume_cm3_g", 0.0))
+            differential_area_log = float(raw.get("differential_pore_area_m2_g", 0.0))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if previous_volume is None or previous_diameter is None or pore_diameter <= 0.0 or previous_diameter <= 0.0:
+            incremental_volume = cumulative_volume
+            dlog_diameter = 0.0
+        else:
+            incremental_volume = max(0.0, cumulative_volume - previous_volume)
+            dlog_diameter = abs(math.log10(pore_diameter) - math.log10(previous_diameter))
+        rows.append(
+            {
+                "phase": phase,
+                "interval_index": float(index + 1),
+                "pore_diameter_nm": pore_diameter,
+                "cumulative_pore_diameter_nm": pore_diameter,
+                "incremental_pore_volume_cm3_g": incremental_volume,
+                "cumulative_pore_volume_cm3_g": cumulative_volume,
+                "cumulative_pore_area_m2_g": cumulative_area,
+                "dlog_diameter": dlog_diameter,
+                "differential_pore_volume_cm3_g": differential_log,
+                "raw_differential_pore_volume_cm3_g": differential_log,
+                "differential_pore_area_m2_g": differential_area_log,
+                "differential_pore_volume_per_nm_cm3_g_nm": differential_per_nm,
+                "differential_pore_area_per_nm_m2_g_nm": differential_area_per_nm,
+                "bjh_correction": "quantachrome_official_excel_table",
+                "open_pore_fraction": 0.0,
+            }
+        )
+        previous_diameter = pore_diameter
+        previous_volume = cumulative_volume
+    return rows if len(rows) >= 2 else None
 
 
 def _bsd_official_bjh_rows(
@@ -772,10 +989,37 @@ def bjh_pore_distribution(
     decoded.
     """
     phase = "adsorption" if phase == "adsorption" else "desorption"
+    flex_official_rows = _micromeritics_flex_official_bjh_rows(
+        result,
+        phase,
+        thickness_method,
+        correction,
+        open_pore_fraction,
+    )
+    if flex_official_rows is not None and result.method_options.get("micromeritics_flex_use_official_bjh_table"):
+        if smooth:
+            flex_official_rows = [dict(row) for row in flex_official_rows]
+            _smooth_distribution_rows(flex_official_rows)
+        return PoreDistributionResult("BJH", phase, "ok", len(flex_official_rows), rows=flex_official_rows)
+    quantachrome_official_rows = _quantachrome_official_bjh_rows(
+        result,
+        phase,
+        thickness_method,
+        correction,
+        open_pore_fraction,
+    )
+    if quantachrome_official_rows is not None:
+        return PoreDistributionResult(
+            "BJH",
+            phase,
+            "ok",
+            len(quantachrome_official_rows),
+            rows=quantachrome_official_rows,
+        )
     official_rows = _bsd_official_bjh_rows(result, phase, thickness_method, correction, open_pore_fraction)
     if official_rows is not None:
         return PoreDistributionResult("BJH", phase, "ok", len(official_rows), rows=official_rows)
-    points = adsorption_points(result) if phase == "adsorption" else desorption_points(result)
+    points = _bjh_branch_points(result, phase)
     points = sorted(points, key=lambda point: float(point.relative_pressure), reverse=True)
     if len(points) < 3:
         return PoreDistributionResult("BJH", phase, "not_enough_points", len(points))
@@ -788,7 +1032,13 @@ def bjh_pore_distribution(
     if bsd_bjh and thickness_method == "reference":
         thickness_method = "halsey"
         thickness_params = dict(THICKNESS_METHOD_DEFAULT_PARAMS["halsey"])
-    kelvin_factor_nm = _bjh_kelvin_factor_nm(result)
+    flex_bjh = _uses_micromeritics_flex_bjh_recalculation_defaults(result)
+    flex_bjh_adsorption = flex_bjh and phase == "adsorption"
+    kelvin_factor_nm = (
+        MICROMERITICS_FLEX_BJH_EFFECTIVE_ADSORBATE_PROPERTY_FACTOR_NM
+        if flex_bjh_adsorption
+        else _bjh_kelvin_factor_nm(result)
+    )
     base_rows: list[dict[str, float]] = []
     for point_index, point in enumerate(points):
         pressure = float(point.relative_pressure)
@@ -819,19 +1069,32 @@ def bjh_pore_distribution(
     if len(base_rows) < 3:
         return PoreDistributionResult("BJH", phase, "not_enough_valid_points", len(base_rows), rows=base_rows)
 
-    use_standard_correction = correction == "standard"
+    flex_faas_correction = flex_bjh and correction == "faas"
+    use_standard_correction = correction == "standard" or flex_faas_correction
     standard_increments: dict[int, float] = {}
     if use_standard_correction:
+        flex_wall_factor = None
+        if flex_bjh:
+            flex_wall_factor = (
+                MICROMERITICS_FLEX_BJH_ADSORPTION_WALL_CORRECTION_FACTOR
+                if phase == "adsorption"
+                else MICROMERITICS_FLEX_BJH_DESORPTION_WALL_CORRECTION_FACTOR
+            )
         standard_increments = _bjh_standard_increment_volumes(
             base_rows,
             thickness_method,
             thickness_params,
             temperature_k,
+            flex_standard=flex_bjh,
+            flex_wall_factor=flex_wall_factor,
         )
 
     distribution_rows: list[dict[str, float]] = []
     cumulative_volume = 0.0
-    minimum_pore_diameter = _bjh_minimum_diameter_nm(thickness_method) if use_standard_correction else DEFAULT_BJH_DIAMETER_MIN_NM
+    if use_standard_correction and _uses_micromeritics_flex_bjh_recalculation_defaults(result):
+        minimum_pore_diameter = DEFAULT_BJH_DIAMETER_MIN_NM
+    else:
+        minimum_pore_diameter = _bjh_minimum_diameter_nm(thickness_method) if use_standard_correction else DEFAULT_BJH_DIAMETER_MIN_NM
     for index in range(len(base_rows) - 1):
         high = base_rows[index]
         low = base_rows[index + 1]
@@ -839,7 +1102,11 @@ def bjh_pore_distribution(
         low_diameter = float(low["pore_diameter_nm"])
         if high_diameter <= 0.0 or low_diameter <= 0.0:
             continue
-        dlog_diameter = abs(math.log10(high_diameter) - math.log10(low_diameter))
+        range_high_diameter, range_low_diameter, dlog_diameter = _bjh_interval_report_range_nm(
+            high_diameter,
+            low_diameter,
+            flex_bjh=flex_bjh,
+        )
         if dlog_diameter <= 1e-12:
             continue
         if use_standard_correction:
@@ -850,7 +1117,7 @@ def bjh_pore_distribution(
             incremental_volume = abs(float(high["liquid_volume_cm3_g"]) - float(low["liquid_volume_cm3_g"]))
         if incremental_volume <= 0.0:
             continue
-        if correction == "standard":
+        if use_standard_correction:
             pore_diameter = _bjh_interval_average_diameter_nm(high, low, bsd_bjh=bsd_bjh)
         else:
             pore_diameter = math.sqrt(high_diameter * low_diameter)
@@ -867,7 +1134,9 @@ def bjh_pore_distribution(
                 "relative_pressure_high": float(high["relative_pressure"]),
                 "relative_pressure_low": float(low["relative_pressure"]),
                 "pore_diameter_nm": pore_diameter,
-                "cumulative_pore_diameter_nm": low_diameter,
+                "cumulative_pore_diameter_nm": range_low_diameter,
+                "pore_diameter_range_high_nm": range_high_diameter,
+                "pore_diameter_range_low_nm": range_low_diameter,
                 "incremental_pore_volume_cm3_g": incremental_volume,
                 "cumulative_pore_volume_cm3_g": cumulative_volume,
                 "dlog_diameter": dlog_diameter,
@@ -931,6 +1200,22 @@ def _kelvin_radius_nm(
     factor = factor_nm * (77.350 / float(temperature_k))
     radius_nm = -factor / math.log(relative_pressure)
     return radius_nm if _valid_number(radius_nm) and radius_nm > 0.0 else None
+
+
+def _bjh_interval_report_range_nm(
+    high_diameter_nm: float,
+    low_diameter_nm: float,
+    *,
+    flex_bjh: bool = False,
+) -> tuple[float, float, float]:
+    high = float(high_diameter_nm)
+    low = float(low_diameter_nm)
+    # Flex/MicroActive prints one-decimal pore ranges in distribution reports,
+    # but copied dV/dlog(w) graph data is based on the exact cumulative pore
+    # width boundaries. Keep the calculation boundary exact and leave display
+    # rounding to the UI/reporting layer.
+    dlog = abs(math.log10(high) - math.log10(low))
+    return high, low, dlog
 
 
 def _smooth_distribution_rows(rows: list[dict[str, float]]) -> None:
@@ -1096,7 +1381,8 @@ def _anchored_linear_derivative(y_values: np.ndarray, center_index: int, start: 
 
 
 def _bjh_liquid_volume_cm3_g(result: TriStarResult, point: IsothermPoint, density_factor: float) -> float:
-    return float(point.quantity_adsorbed_cm3_g_stp or 0.0) * density_factor
+    scale = QUANTACHROME_BJH_LIQUID_VOLUME_SCALE if _uses_quantachrome_defaults(result) else 1.0
+    return float(point.quantity_adsorbed_cm3_g_stp or 0.0) * density_factor * scale
 
 
 def _bjh_interval_average_diameter_nm(
@@ -1132,6 +1418,9 @@ def _bjh_standard_increment_volumes(
     thickness_method: str,
     thickness_params: dict[str, float] | None,
     temperature_k: float = 77.350,
+    *,
+    flex_standard: bool = False,
+    flex_wall_factor: float | None = None,
 ) -> dict[int, float]:
     """Micromeritics-style BJH wall correction for MicroActive collected data."""
     if len(base_rows) < 3:
@@ -1149,11 +1438,23 @@ def _bjh_standard_increment_volumes(
         low_wall_thickness = _bjh_wall_correction_thickness_nm(low, thickness_method, thickness_params)
         wall_volume = 0.0
         for pore in pores:
-            radius = float(pore["pore_radius_nm"])
+            radius = float(pore["wall_radius_nm"])
+            denominator_radius = float(pore["wall_denominator_radius_nm"])
             pore_volume = float(pore["pore_volume_cm3_g"])
             high_core = max(0.0, radius - high_wall_thickness)
             low_core = max(0.0, radius - low_wall_thickness)
-            wall_volume += max(0.0, pore_volume * (low_core * low_core - high_core * high_core) / (radius * radius))
+            if denominator_radius <= 0.0:
+                continue
+            wall_volume += max(
+                0.0,
+                pore_volume * (low_core * low_core - high_core * high_core) / (denominator_radius * denominator_radius),
+            )
+        if flex_standard:
+            wall_volume *= (
+                float(flex_wall_factor)
+                if flex_wall_factor is not None
+                else MICROMERITICS_FLEX_BJH_WALL_CORRECTION_FACTOR
+            )
         core_volume = volume_step - wall_volume
         if core_volume <= 0.0:
             continue
@@ -1165,8 +1466,20 @@ def _bjh_standard_increment_volumes(
         if high_pore_radius <= 0.0 or low_pore_radius <= 0.0 or high_kelvin_radius <= 0.0 or low_kelvin_radius <= 0.0:
             continue
 
-        pore_radius = math.sqrt(high_pore_radius * low_pore_radius)
-        empty_radius = math.sqrt(high_kelvin_radius * low_kelvin_radius)
+        if flex_standard:
+            # 3Flex BJH follows the same desorption-model recurrence, but its
+            # collected-data report is closer when the newly opened pore length
+            # is carried on the report average diameter rather than on the
+            # earlier harmonic-radius 3Flex approximation.
+            pore_radius = math.sqrt(high_pore_radius * low_pore_radius)
+            empty_radius = math.sqrt(high_kelvin_radius * low_kelvin_radius)
+            wall_radius = _bjh_interval_average_diameter_nm(high, low) / 2.0
+            wall_denominator_radius = wall_radius
+        else:
+            pore_radius = math.sqrt(high_pore_radius * low_pore_radius)
+            empty_radius = math.sqrt(high_kelvin_radius * low_kelvin_radius)
+            wall_radius = pore_radius
+            wall_denominator_radius = pore_radius
         incremental_volume = core_volume * (pore_radius / empty_radius) ** 2
         if incremental_volume <= 0.0:
             continue
@@ -1175,10 +1488,19 @@ def _bjh_standard_increment_volumes(
         pores.append(
             {
                 "pore_radius_nm": pore_radius,
+                "wall_radius_nm": wall_radius,
+                "wall_denominator_radius_nm": wall_denominator_radius,
                 "pore_volume_cm3_g": incremental_volume,
             }
         )
     return increments
+
+
+def _harmonic_mean(left: float, right: float) -> float:
+    denominator = left + right
+    if denominator <= 0.0:
+        return math.sqrt(left * right)
+    return 2.0 * left * right / denominator
 
 
 def _bjh_wall_correction_thickness_nm(
@@ -1341,7 +1663,8 @@ def _carbon_black_stsa_thickness_nm(relative_pressure: float, params: dict[str, 
 
 def _points_in_range(points: Sequence[IsothermPoint], p_min: float, p_max: float) -> list[IsothermPoint]:
     lo, hi = sorted((float(p_min), float(p_max)))
-    return [point for point in points if lo <= float(point.relative_pressure) <= hi]
+    tolerance = max(1e-12, max(abs(lo), abs(hi), 1.0) * 1e-9)
+    return [point for point in points if lo - tolerance <= float(point.relative_pressure) <= hi + tolerance]
 
 
 def _linear_fit(x_values: Sequence[float], y_values: Sequence[float]) -> tuple[float, float, float]:

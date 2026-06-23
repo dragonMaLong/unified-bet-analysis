@@ -80,6 +80,7 @@ class OfficialExcelParser:
         file_path = Path(path)
         workbook = _read_workbook(file_path)
         labels = _collect_labels(workbook.sheets)
+        _add_quantachrome_text_labels(workbook, labels)
         instrument = _detect_instrument(workbook)
         sample = self._build_sample(file_path, labels, workbook, instrument)
         run_conditions = self._build_run_conditions(labels)
@@ -89,6 +90,10 @@ class OfficialExcelParser:
         table = self._parse_bsd_isotherm(workbook)
         if table is None:
             table = self._parse_belmaster_isotherm(workbook)
+        if table is None:
+            table = self._parse_quantachrome_text_isotherm(workbook, sample)
+        if table is None:
+            table = self._parse_micromeritics_flex_report_isotherm(workbook, sample)
         if table is None:
             table = self._parse_micromeritics_isotherm(workbook, sample)
         if table is None or not table.points:
@@ -145,6 +150,8 @@ class OfficialExcelParser:
             method_options["test_duration_source"] = "Excel Started/Completed fields"
         self._add_report_values(labels, method_options)
         self._add_bsd_report_values(workbook, method_options)
+        self._add_quantachrome_text_report_values(workbook, method_options)
+        self._add_micromeritics_flex_report_values(workbook, method_options)
         self._add_bet_fit_range(workbook, method_options)
 
         return TriStarResult(
@@ -207,7 +214,7 @@ class OfficialExcelParser:
         raw_adsorptive = _as_clean_string(_first_label(labels, "analysis adsorptive", "adsorptive", "吸附质"))
         adsorptive = _adsorptive_short(raw_adsorptive)
         bath_temperature = _temperature_k(
-            _first_label(labels, "analysis bath temp.", "analysis bath temp", "adsorption temperature")
+            _first_label(labels, "analysis bath temp.", "analysis bath temp", "adsorption temperature", "temperature")
         )
         if bath_temperature is None:
             bath_temperature = _adsorptive_temperature_k(raw_adsorptive)
@@ -250,8 +257,9 @@ class OfficialExcelParser:
     @staticmethod
     def _build_adsorptive_properties(labels: dict[str, Any], run_conditions: RunConditions) -> AdsorptiveProperties | None:
         cross_section = _number(_first_label(labels, "molecular cross-sectional area"))
+        density_factor = _number(_first_label(labels, "density conversion factor"))
         psat_kpa = _number(_first_label(labels, "saturation vapor pressure"))
-        if not run_conditions.adsorptive_short and cross_section is None and psat_kpa is None:
+        if not run_conditions.adsorptive_short and cross_section is None and density_factor is None and psat_kpa is None:
             return None
         psat_table = []
         if psat_kpa is not None:
@@ -262,7 +270,7 @@ class OfficialExcelParser:
             max_manifold_pressure_mmHg=None,
             max_manifold_pressure_kPa=None,
             nonideality_factor=None,
-            density_conversion_factor=None,
+            density_conversion_factor=density_factor,
             thermal_transpiration_hard_sphere_A=None,
             thermal_transpiration_hard_sphere_nm=None,
             molecular_cross_sectional_area_nm2=cross_section,
@@ -316,6 +324,44 @@ class OfficialExcelParser:
             )
             point_index += 1
         return IsothermTable(points=points, source=f"belmaster:{sheet.name}") if points else None
+
+    def _parse_quantachrome_text_isotherm(
+        self,
+        workbook: ExcelWorkbook,
+        sample: SampleInfo,
+    ) -> IsothermTable | None:
+        if not _is_quantachrome_text_workbook(workbook):
+            return None
+        sheet = next((item for item in workbook.sheets if item.name.lower() == "isotherm"), None)
+        if sheet is None:
+            return None
+        raw_rows = _quantachrome_text_numeric_rows_after_units(sheet, expected_columns=2)
+        if len(raw_rows) < 3:
+            return None
+
+        max_position = max(range(len(raw_rows)), key=lambda index: raw_rows[index][0])
+        points: list[IsothermPoint] = []
+        for index, row in enumerate(raw_rows, start=1):
+            relative = float(row[0])
+            quantity = float(row[1])
+            if not (0.0 < relative < 1.1) or quantity < 0.0:
+                continue
+            phase = "adsorption" if index - 1 <= max_position else "desorption"
+            points.append(
+                IsothermPoint(
+                    index=index,
+                    phase=phase,
+                    record_rel_offset=0,
+                    absolute_pressure_mmHg=relative * 760.0,
+                    relative_pressure=relative,
+                    raw_internal_cm3_stp=quantity * sample.sample_mass_g if sample.sample_mass_g else quantity,
+                    saturation_pressure_mmHg=760.0,
+                    elapsed_seconds=None,
+                    quantity_adsorbed_cm3_g_stp=quantity,
+                    quantity_adsorbed_mmol_g=quantity / CM3_STP_PER_MMOL,
+                )
+            )
+        return IsothermTable(points=points, source=f"quantachrome_text:{sheet.name}") if points else None
 
     def _parse_bsd_isotherm(self, workbook: ExcelWorkbook) -> IsothermTable | None:
         if not _is_bsd_workbook(workbook):
@@ -397,6 +443,101 @@ class OfficialExcelParser:
                     columns["elapsed"] = column_index
             required = {"serial", "pressure_pa", "p0_pa", "relative_pressure", "quantity"}
             if required.issubset(columns):
+                return row_index, columns
+        return None
+
+    def _parse_micromeritics_flex_report_isotherm(
+        self,
+        workbook: ExcelWorkbook,
+        sample: SampleInfo,
+    ) -> IsothermTable | None:
+        if not _is_micromeritics_flex_workbook(workbook):
+            return None
+        sheet = next((item for item in workbook.sheets if item.name == "Isotherm Tabular Report"), None)
+        if sheet is None:
+            return None
+        table_position = self._find_micromeritics_flex_isotherm_table(sheet)
+        if table_position is None:
+            return None
+        header_row, columns = table_position
+        saturation_kpa = None
+        saturation_col = columns.get("saturation")
+        if saturation_col is not None:
+            for row_index in range(header_row + 1, min(sheet.nrows, header_row + 8)):
+                saturation_kpa = _number(sheet.cell(row_index, saturation_col))
+                if saturation_kpa is not None:
+                    break
+
+        raw_rows: list[dict[str, float]] = []
+        invalid_streak = 0
+        for row_index in range(header_row + 1, sheet.nrows):
+            relative = _number(sheet.cell(row_index, columns["relative_pressure"]))
+            quantity = _number(sheet.cell(row_index, columns["quantity"]))
+            row_saturation = _number(sheet.cell(row_index, saturation_col)) if saturation_col is not None else None
+            if row_saturation is not None:
+                saturation_kpa = row_saturation
+            if relative is None or quantity is None:
+                if raw_rows:
+                    invalid_streak += 1
+                    if invalid_streak >= 4:
+                        break
+                continue
+            if not (0.0 < relative < 1.1):
+                if raw_rows:
+                    break
+                continue
+            invalid_streak = 0
+            absolute_mmHg = relative * saturation_kpa * KPA_TO_MMHG if saturation_kpa is not None else relative * 760.0
+            raw_rows.append(
+                {
+                    "relative": float(relative),
+                    "quantity": float(quantity),
+                    "absolute_mmHg": float(absolute_mmHg),
+                    "saturation_mmHg": float(saturation_kpa * KPA_TO_MMHG) if saturation_kpa is not None else 760.0,
+                }
+            )
+        if not raw_rows:
+            return None
+
+        max_relative = max(row["relative"] for row in raw_rows)
+        peak_index = max(
+            index
+            for index, row in enumerate(raw_rows)
+            if math.isclose(row["relative"], max_relative, rel_tol=0.0, abs_tol=1e-12)
+        )
+        points = []
+        for index, row in enumerate(raw_rows, start=1):
+            quantity = float(row["quantity"])
+            points.append(
+                IsothermPoint(
+                    index=index,
+                    phase="adsorption" if index - 1 <= peak_index else "desorption",
+                    record_rel_offset=0,
+                    absolute_pressure_mmHg=float(row["absolute_mmHg"]),
+                    relative_pressure=float(row["relative"]),
+                    raw_internal_cm3_stp=quantity * sample.sample_mass_g if sample.sample_mass_g else quantity,
+                    saturation_pressure_mmHg=float(row["saturation_mmHg"]),
+                    elapsed_seconds=None,
+                    quantity_adsorbed_cm3_g_stp=quantity,
+                    quantity_adsorbed_mmol_g=quantity / CM3_STP_PER_MMOL,
+                )
+            )
+        return IsothermTable(points=points, source=f"micromeritics_flex_report:{sheet.name}")
+
+    @staticmethod
+    def _find_micromeritics_flex_isotherm_table(sheet: SheetGrid) -> tuple[int, dict[str, int]] | None:
+        for row_index in range(sheet.nrows):
+            headers = [_normalize_header(sheet.cell(row_index, column_index)) for column_index in range(sheet.ncols)]
+            columns: dict[str, int] = {}
+            for column_index, header in enumerate(headers):
+                compact = header.replace(" ", "")
+                if _is_relative_pressure_header(header):
+                    columns["relative_pressure"] = column_index
+                elif "quantityadsorbed" in compact and "cm3/gstp" in compact:
+                    columns["quantity"] = column_index
+                elif "saturationpressure" in compact and "kpa" in compact:
+                    columns["saturation"] = column_index
+            if {"relative_pressure", "quantity"}.issubset(columns):
                 return row_index, columns
         return None
 
@@ -594,6 +735,42 @@ class OfficialExcelParser:
                 if table_rows:
                     method_options[f"{prefix}_rows"] = table_rows
 
+    @staticmethod
+    def _add_quantachrome_text_report_values(workbook: ExcelWorkbook, method_options: dict[str, Any]) -> None:
+        if not _is_quantachrome_text_workbook(workbook):
+            return
+        method_options["quantachrome_excel_import"] = True
+        method_options["vendor_bjh_thickness_method"] = "harkins_jura"
+        method_options["vendor_bjh_smooth_derivative"] = False
+        method_options["quantachrome_bjh_thickness_method"] = "harkins_jura"
+        method_options["quantachrome_bjh_table_source"] = "NovaWin text Excel BJH table"
+        for phase in ("adsorption", "desorption"):
+            rows = _quantachrome_text_bjh_distribution_rows(workbook, phase)
+            if rows:
+                method_options[f"quantachrome_bjh_{phase}_rows"] = rows
+
+    @staticmethod
+    def _add_micromeritics_flex_report_values(workbook: ExcelWorkbook, method_options: dict[str, Any]) -> None:
+        if not _is_micromeritics_flex_workbook(workbook):
+            return
+        method_options["micromeritics_flex_excel_import"] = True
+        method_options["vendor_bjh_thickness_method"] = "harkins_jura"
+        method_options["vendor_bjh_correction"] = "faas"
+        method_options["vendor_bjh_smooth_derivative"] = False
+        method_options["micromeritics_flex_bjh_source"] = "isotherm_recalculation"
+
+        langmuir_range = _micromeritics_flex_langmuir_range(workbook)
+        if langmuir_range is not None:
+            method_options["stored_langmuir_pressure_min"] = langmuir_range[0]
+            method_options["stored_langmuir_pressure_max"] = langmuir_range[1]
+            method_options["excel_langmuir_range_source"] = langmuir_range[2]
+
+        t_plot_range = _micromeritics_flex_t_plot_range(workbook)
+        if t_plot_range is not None:
+            method_options["stored_t_plot_pressure_min"] = t_plot_range[0]
+            method_options["stored_t_plot_pressure_max"] = t_plot_range[1]
+            method_options["excel_t_plot_range_source"] = t_plot_range[2]
+
 
 def _read_workbook(path: Path) -> ExcelWorkbook:
     suffix = path.suffix.lower()
@@ -684,6 +861,51 @@ def _collect_labels(sheets: list[SheetGrid]) -> dict[str, Any]:
     return labels
 
 
+def _add_quantachrome_text_labels(workbook: ExcelWorkbook, labels: dict[str, Any]) -> None:
+    if not _is_quantachrome_text_workbook(workbook):
+        return
+    for text in _quantachrome_text_lines(workbook):
+        sample = re.search(r"\bSample ID:\s*(.*?)\s+Filename:", text, re.IGNORECASE)
+        if sample:
+            labels.setdefault("sample", sample.group(1).strip())
+        filename = re.search(r"\bFilename:\s*(\S+)", text, re.IGNORECASE)
+        if filename:
+            labels.setdefault("file", filename.group(1).strip())
+        operator = re.search(r"\bOperator:\s*(\S+)", text, re.IGNORECASE)
+        if operator:
+            labels.setdefault("operator", operator.group(1).strip())
+        sample_mass = re.search(r"\bSample weight:\s*([0-9.+\-Ee]+)\s*g\b", text, re.IGNORECASE)
+        if sample_mass:
+            labels.setdefault("sample mass", sample_mass.group(1))
+        completed = re.search(r"\bEnd of run:\s*([0-9/: -]+?)\s+Instrument:", text, re.IGNORECASE)
+        if completed:
+            labels.setdefault("completed", completed.group(1).strip())
+        analysis_gas = re.search(
+            r"\bAnalysis gas:\s*(.*?)\s+Bath Temp:\s*([0-9.+\-Ee]+)\s*K\b",
+            text,
+            re.IGNORECASE,
+        )
+        if analysis_gas:
+            labels.setdefault("analysis adsorptive", analysis_gas.group(1).strip())
+            labels.setdefault("analysis bath temp", f"{analysis_gas.group(2)} K")
+        properties = re.search(
+            r"\bMolec\.\s*Wt\.:\s*([0-9.+\-Ee]+)\s+Cross Section:\s*([0-9.+\-Ee]+).*?"
+            r"Liquid Density:\s*([0-9.+\-Ee]+)\s*g/cc",
+            text,
+            re.IGNORECASE,
+        )
+        if properties:
+            molecular_weight = float(properties.group(1))
+            cross_section_angstrom2 = float(properties.group(2))
+            liquid_density = float(properties.group(3))
+            labels.setdefault("molecular cross-sectional area", cross_section_angstrom2 / 100.0)
+            if liquid_density > 0.0:
+                density_factor = (molecular_weight / liquid_density) / (CM3_STP_PER_MMOL * 1000.0)
+                labels.setdefault("density conversion factor", density_factor)
+    if "quantachrome novawin" in "\n".join(_quantachrome_text_lines(workbook)).lower():
+        labels.setdefault("adsorptive", labels.get("analysis adsorptive", "Nitrogen"))
+
+
 def _scan_label_value(row: list[Any], column_index: int) -> Any:
     for offset in range(1, 5):
         index = column_index + offset
@@ -715,6 +937,7 @@ KNOWN_LABELS = {
     "comment",
     "completed",
     "data file",
+    "density conversion factor",
     "equilibration interval",
     "file",
     "free space",
@@ -773,6 +996,13 @@ def _detect_instrument(workbook: ExcelWorkbook) -> dict[str, Any]:
             "instrument_model": "TriStar II Plus",
             "instrument_software": software,
         }
+    if re.search(r"\bflex\s+\d+(?:\.\d+)+", lower) and re.search(r"\b3500\b", lower):
+        software = first_contains(r"\bFlex\s+\d+(?:\.\d+)+")
+        return {
+            "instrument_manufacturer": "Micromeritics",
+            "instrument_model": "3Flex 3500",
+            "instrument_software": software,
+        }
     if "tristar ii 3020" in lower:
         software = first_contains(r"TriStar II 3020")
         return {
@@ -801,11 +1031,13 @@ def _detect_instrument(workbook: ExcelWorkbook) -> dict[str, Any]:
             "instrument_model": "BELMaster",
             "instrument_software": software,
         }
-    if "quantachrome" in lower or "autosorb" in lower:
-        software = first_contains(r"Quantachrome|Autosorb")
+    if "quantachrome" in lower or "autosorb" in lower or "novawin" in lower or "quadrasorb" in lower:
+        version = first_contains(r"version\s+\d+(?:\.\d+)+")
+        software = f"NovaWin {version}".strip() if version else first_contains(r"Quantachrome|Autosorb|NovaWin")
+        model = "QuadraSorb" if "quadrasorb" in lower else "Autosorb"
         return {
             "instrument_manufacturer": "Quantachrome",
-            "instrument_model": "Autosorb",
+            "instrument_model": model,
             "instrument_software": software,
         }
     return {
@@ -849,6 +1081,265 @@ def _is_bsd_workbook(workbook: ExcelWorkbook) -> bool:
         if "bsd-660" in lower or "bsd instrument" in lower or "贝士德" in text:
             return True
     return False
+
+
+def _is_quantachrome_text_workbook(workbook: ExcelWorkbook) -> bool:
+    names = {sheet.name.lower() for sheet in workbook.sheets}
+    if not {"isotherm", "bjh-adsorption", "bjh-desorption"}.issubset(names):
+        return False
+    joined = "\n".join(_quantachrome_text_lines(workbook)[:30]).lower()
+    return "quantachrome novawin" in joined or "for nova instruments" in joined
+
+
+def _quantachrome_text_lines(workbook: ExcelWorkbook) -> list[str]:
+    lines: list[str] = []
+    for sheet in workbook.sheets:
+        for row in sheet.values:
+            if not row:
+                continue
+            text = _as_clean_string(row[0])
+            if text:
+                lines.append(text)
+    return lines
+
+
+def _quantachrome_text_numeric_rows_after_units(
+    sheet: SheetGrid,
+    *,
+    expected_columns: int,
+) -> list[list[float]]:
+    start_row = None
+    for row_index in range(sheet.nrows):
+        text = _as_clean_string(sheet.cell(row_index, 0)).strip().lower()
+        if text == "cc/g" or text.startswith("nm "):
+            start_row = row_index + 1
+            break
+    if start_row is None:
+        return []
+
+    rows: list[list[float]] = []
+    for row_index in range(start_row, sheet.nrows):
+        text = _as_clean_string(sheet.cell(row_index, 0))
+        numbers = _numbers_from_text(text)
+        if len(numbers) < expected_columns:
+            continue
+        rows.append(numbers[:expected_columns])
+    return rows
+
+
+def _quantachrome_text_bjh_distribution_rows(workbook: ExcelWorkbook, phase: str) -> list[dict[str, float]]:
+    sheet_name = "BJH-adsorption" if phase == "adsorption" else "BJH-desorption"
+    sheet = next((item for item in workbook.sheets if item.name.lower() == sheet_name.lower()), None)
+    if sheet is None:
+        return []
+    table_rows = _quantachrome_text_numeric_rows_after_units(sheet, expected_columns=7)
+    rows: list[dict[str, float]] = []
+    for values in table_rows:
+        diameter, cumulative_volume, cumulative_area, dv_d, ds_d, dv_log, ds_log = values[:7]
+        if diameter <= 0.0 or cumulative_volume < 0.0:
+            continue
+        rows.append(
+            {
+                "phase": phase,
+                "pore_diameter_nm": float(diameter),
+                "cumulative_pore_volume_cm3_g": float(cumulative_volume),
+                "cumulative_pore_area_m2_g": float(cumulative_area),
+                "differential_pore_volume_per_nm_cm3_g_nm": float(dv_d),
+                "differential_pore_area_per_nm_m2_g_nm": float(ds_d),
+                "differential_pore_volume_cm3_g": float(dv_log),
+                "differential_pore_area_m2_g": float(ds_log),
+            }
+        )
+    return rows
+
+
+def _is_micromeritics_flex_workbook(workbook: ExcelWorkbook) -> bool:
+    has_flex = False
+    has_3500 = False
+    for text in workbook.text_values():
+        clean = _as_clean_string(text)
+        lower = clean.lower()
+        if re.search(r"\bflex\s+\d+(?:\.\d+)+", lower):
+            has_flex = True
+        if clean == "3500" or "3flex" in lower:
+            has_3500 = True
+        if has_flex and has_3500:
+            return True
+    return False
+
+
+def _micromeritics_flex_saturation_kpa(workbook: ExcelWorkbook) -> float | None:
+    sheet = next((item for item in workbook.sheets if item.name == "Isotherm Tabular Report"), None)
+    if sheet is None:
+        return None
+    for row_index in range(sheet.nrows):
+        for column_index in range(sheet.ncols):
+            header = _normalize_header(sheet.cell(row_index, column_index)).replace(" ", "")
+            if "saturationpressure" not in header or "kpa" not in header:
+                continue
+            for data_row in range(row_index + 1, min(sheet.nrows, row_index + 8)):
+                value = _number(sheet.cell(data_row, column_index))
+                if value is not None and value > 0.0:
+                    return float(value)
+    return None
+
+
+def _micromeritics_flex_langmuir_range(workbook: ExcelWorkbook) -> tuple[float, float, str] | None:
+    sheet = next((item for item in workbook.sheets if item.name == "Langmuir Tabular Report"), None)
+    if sheet is None:
+        return None
+    saturation_kpa = _micromeritics_flex_saturation_kpa(workbook) or 101.325
+    for row_index in range(sheet.nrows):
+        headers = [_normalize_header(sheet.cell(row_index, column_index)) for column_index in range(sheet.ncols)]
+        pressure_col = None
+        quantity_col = None
+        for column_index, header in enumerate(headers):
+            compact = header.replace(" ", "")
+            if "pressure(kpa)" in compact:
+                pressure_col = column_index
+            elif "quantityadsorbed" in compact:
+                quantity_col = column_index
+        if pressure_col is None or quantity_col is None:
+            continue
+        pressures: list[float] = []
+        blank_streak = 0
+        for data_row in range(row_index + 1, sheet.nrows):
+            pressure_kpa = _number(sheet.cell(data_row, pressure_col))
+            quantity = _number(sheet.cell(data_row, quantity_col))
+            if pressure_kpa is None or quantity is None:
+                if pressures:
+                    blank_streak += 1
+                    if blank_streak >= 2:
+                        break
+                continue
+            relative = float(pressure_kpa) / float(saturation_kpa)
+            if 0.0 < relative <= 1.1:
+                pressures.append(relative)
+                blank_streak = 0
+            elif pressures:
+                break
+        if len(pressures) >= 3:
+            return min(pressures), max(pressures), f"Micromeritics Flex Langmuir report:{sheet.name}"
+    return None
+
+
+def _micromeritics_flex_t_plot_range(workbook: ExcelWorkbook) -> tuple[float, float, str] | None:
+    sheet = next((item for item in workbook.sheets if item.name == "t-Plot Tabular Report"), None)
+    if sheet is None:
+        return None
+    for row_index in range(sheet.nrows):
+        headers = [_normalize_header(sheet.cell(row_index, column_index)) for column_index in range(sheet.ncols)]
+        rel_col = None
+        fitted_col = None
+        for column_index, header in enumerate(headers):
+            if _is_relative_pressure_header(header):
+                rel_col = column_index
+            elif header == "fitted":
+                fitted_col = column_index
+        if rel_col is None or fitted_col is None:
+            continue
+        pressures: list[float] = []
+        for data_row in range(row_index + 1, sheet.nrows):
+            pressure = _number(sheet.cell(data_row, rel_col))
+            fitted = _as_clean_string(sheet.cell(data_row, fitted_col))
+            if pressure is None:
+                if pressures:
+                    break
+                continue
+            if fitted == "*":
+                pressures.append(float(pressure))
+        if len(pressures) >= 3:
+            return min(pressures), max(pressures), f"Micromeritics Flex t-Plot fitted rows:{sheet.name}"
+    return None
+
+
+def _micromeritics_flex_bjh_distribution_rows(workbook: ExcelWorkbook, phase: str) -> list[dict[str, float]]:
+    phase_title = "adsorption" if phase == "adsorption" else "desorption"
+    for sheet in workbook.sheets:
+        title_found = False
+        for row in sheet.values:
+            for value in row:
+                text = _as_clean_string(value).lower()
+                if f"bjh {phase_title} pore distribution report" in text:
+                    title_found = True
+                    break
+            if title_found:
+                break
+        if not title_found:
+            continue
+
+        header_row = None
+        columns: dict[str, int] = {}
+        for row_index in range(sheet.nrows):
+            headers = [_normalize_header(sheet.cell(row_index, column_index)) for column_index in range(sheet.ncols)]
+            for column_index, header in enumerate(headers):
+                compact = header.replace(" ", "")
+                if "porediameterrange" in compact or "porewidthrange" in compact:
+                    columns["range"] = column_index
+                elif "averagediameter" in compact or "averagewidth" in compact:
+                    columns["average"] = column_index
+                elif "incrementalporevolume" in compact:
+                    columns["incremental_volume"] = column_index
+                elif "cumulativeporevolume" in compact:
+                    columns["cumulative_volume"] = column_index
+                elif "incrementalporearea" in compact:
+                    columns["incremental_area"] = column_index
+                elif "cumulativeporearea" in compact:
+                    columns["cumulative_area"] = column_index
+            if {"range", "average", "incremental_volume", "cumulative_volume"}.issubset(columns):
+                header_row = row_index
+                break
+        if header_row is None:
+            continue
+
+        rows: list[dict[str, float]] = []
+        blank_streak = 0
+        for row_index in range(header_row + 1, sheet.nrows):
+            average = _number(sheet.cell(row_index, columns["average"]))
+            incremental_volume = _number(sheet.cell(row_index, columns["incremental_volume"]))
+            cumulative_volume = _number(sheet.cell(row_index, columns["cumulative_volume"]))
+            diameter_range = _diameter_range_from_text(sheet.cell(row_index, columns["range"]))
+            if average is None or incremental_volume is None or cumulative_volume is None or diameter_range is None:
+                if rows:
+                    blank_streak += 1
+                    if blank_streak >= 2:
+                        break
+                continue
+            blank_streak = 0
+            high, low = diameter_range
+            row: dict[str, float] = {
+                "phase": phase,
+                "pore_diameter_range_high_nm": high,
+                "pore_diameter_range_low_nm": low,
+                "pore_diameter_nm": float(average),
+                "incremental_pore_volume_cm3_g": float(incremental_volume),
+                "cumulative_pore_volume_cm3_g": float(cumulative_volume),
+            }
+            incremental_area_col = columns.get("incremental_area")
+            cumulative_area_col = columns.get("cumulative_area")
+            incremental_area = _number(sheet.cell(row_index, incremental_area_col)) if incremental_area_col is not None else None
+            cumulative_area = _number(sheet.cell(row_index, cumulative_area_col)) if cumulative_area_col is not None else None
+            if incremental_area is not None:
+                row["incremental_pore_area_m2_g"] = float(incremental_area)
+            if cumulative_area is not None:
+                row["cumulative_pore_area_m2_g"] = float(cumulative_area)
+            rows.append(row)
+        if rows:
+            return rows
+    return []
+
+
+def _diameter_range_from_text(value: Any) -> tuple[float, float] | None:
+    text = _as_clean_string(value)
+    numbers = re.findall(r"[-+]?(?:(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d*)?|\.\d+)(?:[Ee][-+]?\d+)?", text)
+    if len(numbers) < 2:
+        return None
+    try:
+        left = float(numbers[0].replace(",", ""))
+        right = float(numbers[1].replace(",", ""))
+    except ValueError:
+        return None
+    return max(left, right), min(left, right)
 
 
 def _bsd_bet_pressure_range(workbook: ExcelWorkbook) -> tuple[float, float, str] | None:
@@ -1029,11 +1520,12 @@ def _numeric_pressure_column(sheet: SheetGrid, start_row: int, column_index: int
 
 
 def _is_relative_pressure_header(value: str) -> bool:
-    return "relative pressure" in value or value.replace(" ", "") in {"p/p0", "p/po"}
+    compact = value.replace(" ", "").replace("°", "0").replace("po", "p0")
+    return "relative pressure" in value or compact in {"p/p0"}
 
 
 def _is_bet_transform_header(value: str) -> bool:
-    compact = value.replace(" ", "").replace("po", "p0")
+    compact = value.replace(" ", "").replace("°", "0").replace("po", "p0")
     return "1/[q(p0/p-1)]" in compact or "1/[q(p0/p-1)]" in compact.replace("−", "-")
 
 
@@ -1068,26 +1560,41 @@ def _number(value: Any) -> float | None:
     text = _as_clean_string(value)
     if not text:
         return None
-    match = re.search(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][-+]?\d+)?", text)
+    match = re.search(r"[-+]?(?:(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d*)?|\.\d+)(?:[Ee][-+]?\d+)?", text)
     if not match:
         return None
     try:
-        number = float(match.group(0))
+        number = float(match.group(0).replace(",", ""))
     except ValueError:
         return None
     return number if math.isfinite(number) else None
+
+
+def _numbers_from_text(value: Any) -> list[float]:
+    text = _as_clean_string(value)
+    if not text:
+        return []
+    numbers: list[float] = []
+    for match in re.findall(r"[-+]?(?:(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d*)?|\.\d+)(?:[Ee][-+]?\d+)?", text):
+        try:
+            number = float(match.replace(",", ""))
+        except ValueError:
+            continue
+        if math.isfinite(number):
+            numbers.append(number)
+    return numbers
 
 
 def _range_from_text(value: Any) -> tuple[float, float] | None:
     text = _as_clean_string(value)
     if not text:
         return None
-    numbers = re.findall(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][-+]?\d+)?", text)
+    numbers = re.findall(r"[-+]?(?:(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d*)?|\.\d+)(?:[Ee][-+]?\d+)?", text)
     if len(numbers) < 2:
         return None
     try:
-        left = float(numbers[0])
-        right = float(numbers[1])
+        left = float(numbers[0].replace(",", ""))
+        right = float(numbers[1].replace(",", ""))
     except ValueError:
         return None
     return (min(left, right), max(left, right))

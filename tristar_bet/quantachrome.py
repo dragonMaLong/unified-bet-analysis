@@ -387,6 +387,9 @@ class QuantachromeQpsParser:
             "test_started_time": created_time,
             "test_started_raw": created_raw,
             "target_pressure_table_source": "measured_isotherm_pressure_sequence",
+            "vendor_bjh_thickness_method": "harkins_jura",
+            "vendor_bjh_smooth_derivative": False,
+            "quantachrome_bjh_thickness_method": "harkins_jura",
             "quantachrome_quantity_source": (
                 "qps_total_cm3_stp_normalized_by_sample_weight"
                 if sample.sample_mass_g

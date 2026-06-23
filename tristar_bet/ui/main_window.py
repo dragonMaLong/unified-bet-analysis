@@ -56,7 +56,7 @@ from tristar_bet.ui.plots import (
 )
 
 
-APP_NAME = "Micromeritics BET 综合分析"
+APP_NAME = "BET 综合分析-DragonScience"
 APP_ICON_PATH = Path(__file__).resolve().parent.parent / "assets" / "BET-logo.png"
 FIT_ANALYSIS_CACHE_LIMIT = 2048
 BJH_DISTRIBUTION_CACHE_LIMIT = 1024
@@ -2153,32 +2153,37 @@ class MainWindow(QtWidgets.QMainWindow):
         self._refresh_all_sample_bjh_pore_cells()
 
     def reset_bjh_to_default(self) -> None:
-        default_params_by_method = _default_bjh_thickness_params_by_method()
+        active = self.active_result()
+        if active is not None:
+            self.custom_bjh_settings.pop(id(active), None)
+        settings = self._default_bjh_settings() if active is None else self._bjh_default_settings_for_result(active)
         self._syncing_bjh_controls = True
         try:
-            self.bjh_thickness_method = DEFAULT_BJH_THICKNESS_METHOD
-            self.bjh_thickness_params_by_method = default_params_by_method
-            self.bjh_thickness_params = dict(default_params_by_method[DEFAULT_BJH_THICKNESS_METHOD])
-            self.bjh_correction = DEFAULT_BJH_CORRECTION
-            self.bjh_open_pore_fraction = DEFAULT_BJH_OPEN_PORE_FRACTION
-            self.bjh_smooth_derivative = DEFAULT_BJH_SMOOTH_DERIVATIVE
-            self.bjh_show_adsorption = DEFAULT_BJH_SHOW_ADSORPTION
-            self.bjh_show_desorption = DEFAULT_BJH_SHOW_DESORPTION
+            self.bjh_thickness_method = str(settings["thickness_method"])
+            self.bjh_thickness_params_by_method = {
+                method_key: dict(params)
+                for method_key, params in dict(settings["thickness_params_by_method"]).items()
+            }
+            self.bjh_thickness_params = dict(settings["thickness_params"])
+            self.bjh_correction = str(settings["correction"])
+            self.bjh_open_pore_fraction = float(settings["open_pore_fraction"])
+            self.bjh_smooth_derivative = bool(settings["smooth_derivative"])
+            self.bjh_show_adsorption = bool(settings["show_adsorption"])
+            self.bjh_show_desorption = bool(settings["show_desorption"])
 
             for key, radio in self.bjh_method_radios.items():
                 radio.setChecked(key == self.bjh_thickness_method)
             self._set_all_bjh_formula_spins()
-            self.bjh_standard_radio.setChecked(True)
-            self.bjh_open_fraction_spin.setValue(DEFAULT_BJH_OPEN_PORE_FRACTION)
-            self.bjh_smooth_checkbox.setChecked(DEFAULT_BJH_SMOOTH_DERIVATIVE)
-            self.bjh_adsorption_checkbox.setChecked(DEFAULT_BJH_SHOW_ADSORPTION)
-            self.bjh_desorption_checkbox.setChecked(DEFAULT_BJH_SHOW_DESORPTION)
+            self.bjh_standard_radio.setChecked(self.bjh_correction == "standard")
+            self.bjh_kjs_correction_radio.setChecked(self.bjh_correction == "kjs")
+            self.bjh_faas_correction_radio.setChecked(self.bjh_correction == "faas")
+            self.bjh_open_fraction_spin.setValue(self.bjh_open_pore_fraction)
+            self.bjh_smooth_checkbox.setChecked(self.bjh_smooth_derivative)
+            self.bjh_adsorption_checkbox.setChecked(self.bjh_show_adsorption)
+            self.bjh_desorption_checkbox.setChecked(self.bjh_show_desorption)
             self._sync_reference_table_for_context("bjh")
         finally:
             self._syncing_bjh_controls = False
-        active = self.active_result()
-        if active is not None:
-            self.custom_bjh_settings.pop(id(active), None)
         self.bjh_pore_volume_range = DEFAULT_BJH_PORE_VOLUME_RANGE
         self._remove_bjh_region()
         self.refresh_bjh_plot()
@@ -2321,21 +2326,36 @@ class MainWindow(QtWidgets.QMainWindow):
             "show_desorption": DEFAULT_BJH_SHOW_DESORPTION,
         }
 
-    def _bjh_settings_for_result(self, result) -> dict[str, object]:
+    def _bjh_default_settings_for_result(self, result) -> dict[str, object]:
         settings = self._default_bjh_settings()
+        vendor_method = (
+            result.method_options.get("vendor_bjh_thickness_method")
+            or result.method_options.get("bsd_bjh_thickness_method")
+        )
+        if vendor_method:
+            params_by_method = _default_bjh_thickness_params_by_method()
+            method_key = str(vendor_method)
+            if method_key in params_by_method:
+                settings["thickness_method"] = method_key
+                settings["thickness_params_by_method"] = params_by_method
+                settings["thickness_params"] = dict(params_by_method[method_key])
+        vendor_correction = result.method_options.get("vendor_bjh_correction")
+        if vendor_correction in {"standard", "kjs", "faas"}:
+            settings["correction"] = str(vendor_correction)
+        vendor_smooth = result.method_options.get("vendor_bjh_smooth_derivative")
+        if vendor_smooth is not None:
+            settings["smooth_derivative"] = bool(vendor_smooth)
+        return settings
+
+    def _bjh_settings_for_result(self, result) -> dict[str, object]:
+        settings = self._bjh_default_settings_for_result(result)
         custom = self.custom_bjh_settings.get(id(result))
-        if not custom:
-            vendor_method = result.method_options.get("bsd_bjh_thickness_method")
-            if vendor_method:
-                params_by_method = _default_bjh_thickness_params_by_method()
-                method_key = str(vendor_method)
-                if method_key in params_by_method:
-                    settings["thickness_method"] = method_key
-                    settings["thickness_params_by_method"] = params_by_method
-                    settings["thickness_params"] = dict(params_by_method[method_key])
         if custom:
             settings.update(custom)
-            params_by_method = _default_bjh_thickness_params_by_method()
+            params_by_method = {
+                method_key: dict(params)
+                for method_key, params in dict(settings["thickness_params_by_method"]).items()
+            }
             if "thickness_params_by_method" in custom:
                 for method_key, params in dict(custom["thickness_params_by_method"]).items():
                     if method_key in params_by_method:
@@ -4552,24 +4572,27 @@ class MainWindow(QtWidgets.QMainWindow):
         return self.bjh_pore_volume_range
 
     def _has_custom_bjh_settings(self, result) -> bool:
+        if id(result) not in self.custom_bjh_settings:
+            return False
         settings = self._bjh_settings_for_result(result)
+        defaults = self._bjh_default_settings_for_result(result)
         method = str(settings["thickness_method"])
-        if method != DEFAULT_BJH_THICKNESS_METHOD:
+        default_method = str(defaults["thickness_method"])
+        if method != default_method:
             return True
-        default_params_by_method = _default_bjh_thickness_params_by_method()
-        default_params = default_params_by_method.get(method, default_params_by_method[DEFAULT_BJH_THICKNESS_METHOD])
+        default_params = dict(defaults["thickness_params"])
         active_params = dict(settings["thickness_params"])
         if not _thickness_params_equal(active_params, default_params):
             return True
-        if str(settings["correction"]) != DEFAULT_BJH_CORRECTION:
+        if str(settings["correction"]) != str(defaults["correction"]):
             return True
-        if not _float_equal(settings["open_pore_fraction"], DEFAULT_BJH_OPEN_PORE_FRACTION):
+        if not _float_equal(settings["open_pore_fraction"], defaults["open_pore_fraction"]):
             return True
-        if bool(settings["smooth_derivative"]) != DEFAULT_BJH_SMOOTH_DERIVATIVE:
+        if bool(settings["smooth_derivative"]) != bool(defaults["smooth_derivative"]):
             return True
-        if bool(settings["show_adsorption"]) != DEFAULT_BJH_SHOW_ADSORPTION:
+        if bool(settings["show_adsorption"]) != bool(defaults["show_adsorption"]):
             return True
-        if bool(settings["show_desorption"]) != DEFAULT_BJH_SHOW_DESORPTION:
+        if bool(settings["show_desorption"]) != bool(defaults["show_desorption"]):
             return True
         return False
 
