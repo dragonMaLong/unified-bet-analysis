@@ -153,7 +153,7 @@ validate_against_xls.py             与 XLS 导出结果对照验证的辅助脚
 
 ## 软件更新发布
 
-图形界面顶部提供“软件更新”按钮。软件会先读取 Gitee 上的 `updates/latest.json` 更新清单；如果 Gitee 不可用，再读取 GitHub raw 清单；最后才兜底访问 GitHub Releases API。这样国内用户可以优先走 Gitee 下载，海外或 Gitee 未同步时仍然可以通过 GitHub 更新。软件启动后也会延迟自动检查一次，并通过本地设置记录当天是否已经自动检查，避免每次启动都重复联网。
+图形界面顶部提供“软件更新”按钮。软件会先读取 Gitee 上的 `updates/latest.json` 更新清单；如果 Gitee 不可用，再读取 GitHub raw 清单；最后才兜底访问 GitHub Releases API。发现新版后，用户点击“更新”即可在软件内下载新版 exe，绿色进度条会显示下载进度；下载完成并通过 SHA256 校验后，软件会自动关闭当前版本、替换原 exe 并启动新版。软件启动后也会延迟自动检查一次，并通过本地设置记录当天是否已经自动检查，避免每次启动都重复联网。
 
 发布新版时建议按下面流程操作：
 
@@ -163,6 +163,6 @@ validate_against_xls.py             与 XLS 导出结果对照验证的辅助脚
 4. GitHub Actions 会创建或更新同名 Release，并上传 `Micromeritics-BET.exe` 与 `SHA256SUMS.txt`。
 5. 将同一份 `Micromeritics-BET.exe` 和 `SHA256SUMS.txt` 上传或同步到 Gitee Release。
 6. 更新 `updates/latest.json` 中的 `version`、`gitee_download_url`、`github_download_url` 和 `sha256`，并推送到 GitHub 与 Gitee 的 `main` 分支。同一份清单可以同时写 Gitee 和 GitHub 两套链接，软件会根据实际读取到的清单来源选择下载地址。如果 Gitee Release 附件还没上传，先让 `gitee_download_url` 临时指向 GitHub 下载链接，避免用户点到 404。
-7. 用户点击“软件更新”后，会优先看到 Gitee 清单里的新版下载链接；如果清单不可用，会自动退回 GitHub。
+7. 用户点击“软件更新”后，会优先使用 Gitee 清单里的下载链接在软件内完成下载、校验和重启；如果清单不可用，会自动退回 GitHub。
 
 当前更新检查默认使用 GitHub 仓库 `dragonMaLong/unified-bet-analysis` 和 Gitee 仓库 `dragonMalong/unified-bet-analysis`。如果以后迁移仓库，需要同步修改 `tristar_bet/update_checker.py` 中的 `DEFAULT_UPDATE_REPOSITORY`、`DEFAULT_GITEE_MANIFEST_URL` 和 `DEFAULT_GITHUB_MANIFEST_URL`。

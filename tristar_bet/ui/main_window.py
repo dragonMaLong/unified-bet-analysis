@@ -36,6 +36,7 @@ from tristar_bet.reference_thickness import (
     write_reference_points,
 )
 from tristar_bet.update_checker import DEFAULT_UPDATE_REPOSITORY, UpdateInfo, check_for_update
+from tristar_bet.updater import UpdateDownloadError, download_update, launch_update_and_exit
 from tristar_bet.ui.plots import (
     ACTIVE_LINE_WIDTH,
     BJH_DIFFERENTIAL_LOG,
@@ -90,6 +91,27 @@ class UpdateCheckWorker(QtCore.QObject):
             self.failed.emit(str(exc), self.manual)
             return
         self.finished.emit(info, self.manual)
+
+
+class UpdateDownloadWorker(QtCore.QObject):
+    progress = Signal(int, int)
+    finished = Signal(object, str)
+    failed = Signal(str)
+
+    def __init__(self, info: UpdateInfo) -> None:
+        super().__init__()
+        self.info = info
+
+    def run(self) -> None:
+        try:
+            path = download_update(
+                self.info,
+                progress_callback=lambda downloaded, total: self.progress.emit(downloaded, total),
+            )
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            return
+        self.finished.emit(self.info, str(path))
 
 
 class SelectAllCheckBox(QtWidgets.QCheckBox):
@@ -995,6 +1017,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._checking_for_updates = False
         self._update_thread: QtCore.QThread | None = None
         self._update_worker: UpdateCheckWorker | None = None
+        self._update_download_thread: QtCore.QThread | None = None
+        self._update_download_worker: UpdateDownloadWorker | None = None
+        self._update_progress_dialog: QtWidgets.QProgressDialog | None = None
         self.settings = QtCore.QSettings("UnifiedBET", "TriStarBetAppZh")
         self.settings.remove("bjh_differential_mode")
         self.settings.remove("bjh_display_metrics")
@@ -1351,7 +1376,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
 
         title = f"发现新版本 v{info.latest_version}"
-        download_hint = f"安装包: {info.asset_name}" if info.asset_name else "Release 页面中没有找到可下载附件。"
+        download_hint = f"安装包: {info.asset_name}" if info.asset_name else "安装包: 自动选择"
         source_hint = f"更新源: {info.source_name}" if info.source_name else "更新源: 默认"
         checksum_hint = f"\nSHA256: {info.sha256}" if info.sha256 else ""
         message = (
@@ -1359,7 +1384,7 @@ class MainWindow(QtWidgets.QMainWindow):
             f"最新版本: v{info.latest_version}\n\n"
             f"{source_hint}\n"
             f"{download_hint}{checksum_hint}\n\n"
-            "是否打开下载链接？"
+            "是否现在下载并重启到新版本？"
         )
         box = QtWidgets.QMessageBox(self)
         box.setIcon(QtWidgets.QMessageBox.Information)
@@ -1368,12 +1393,12 @@ class MainWindow(QtWidgets.QMainWindow):
         box.setInformativeText(message)
         if info.release_notes:
             box.setDetailedText(info.release_notes)
-        open_button = box.addButton("打开下载页面", QtWidgets.QMessageBox.AcceptRole)
+        update_button = box.addButton("更新", QtWidgets.QMessageBox.AcceptRole)
         box.addButton("稍后", QtWidgets.QMessageBox.RejectRole)
         exec_func = getattr(box, "exec", box.exec_)
         exec_func()
-        if box.clickedButton() == open_button:
-            self._open_update_page(info)
+        if box.clickedButton() == update_button:
+            self._download_and_install_update(info)
 
     def _on_update_check_failed(self, message: str, manual: bool) -> None:
         self._finish_update_check(manual)
@@ -1393,6 +1418,112 @@ class MainWindow(QtWidgets.QMainWindow):
     def _clear_update_check_worker(self) -> None:
         self._update_thread = None
         self._update_worker = None
+
+    def _download_and_install_update(self, info: UpdateInfo) -> None:
+        if self._update_download_thread is not None:
+            self.statusBar().showMessage("正在下载软件更新...", 3000)
+            return
+        if not info.download_url:
+            self._open_update_page(info)
+            return
+
+        self._show_update_progress(info)
+        update_button = getattr(self, "update_button", None)
+        if update_button is not None:
+            update_button.setEnabled(False)
+
+        thread = QtCore.QThread(self)
+        worker = UpdateDownloadWorker(info)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._on_update_download_progress)
+        worker.finished.connect(self._on_update_download_finished)
+        worker.failed.connect(self._on_update_download_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_update_download_worker)
+        self._update_download_thread = thread
+        self._update_download_worker = worker
+        thread.start()
+
+    def _show_update_progress(self, info: UpdateInfo) -> None:
+        dialog = QtWidgets.QProgressDialog(f"正在下载 v{info.latest_version}...", None, 0, 100, self)
+        dialog.setWindowTitle("软件更新")
+        dialog.setWindowModality(QtCore.Qt.WindowModal)
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        dialog.setMinimumDuration(0)
+        dialog.setValue(0)
+        dialog.setCancelButton(None)
+        dialog.setStyleSheet(
+            """
+            QProgressBar {
+                border: 1px solid #9ca3af;
+                border-radius: 4px;
+                text-align: center;
+                background: #f3f4f6;
+            }
+            QProgressBar::chunk {
+                background: #22c55e;
+                border-radius: 3px;
+            }
+            """
+        )
+        self._update_progress_dialog = dialog
+        dialog.show()
+
+    def _on_update_download_progress(self, downloaded: int, total: int) -> None:
+        dialog = self._update_progress_dialog
+        if dialog is None:
+            return
+        if total > 0:
+            dialog.setRange(0, 100)
+            value = max(0, min(100, int(downloaded * 100 / total)))
+            dialog.setValue(value)
+            dialog.setLabelText(f"正在下载软件更新... {downloaded / 1024 / 1024:.1f} / {total / 1024 / 1024:.1f} MB")
+        else:
+            dialog.setRange(0, 0)
+            dialog.setLabelText(f"正在下载软件更新... {downloaded / 1024 / 1024:.1f} MB")
+
+    def _on_update_download_finished(self, info: UpdateInfo, path: str) -> None:
+        dialog = self._update_progress_dialog
+        if dialog is not None:
+            dialog.setRange(0, 100)
+            dialog.setValue(100)
+            dialog.setLabelText("下载完成，正在重启...")
+        self.statusBar().showMessage(f"已下载 v{info.latest_version}，正在重启...", 3000)
+        QtCore.QTimer.singleShot(800, lambda: self._launch_downloaded_update(path))
+
+    def _on_update_download_failed(self, message: str) -> None:
+        dialog = self._update_progress_dialog
+        if dialog is not None:
+            dialog.close()
+            self._update_progress_dialog = None
+        update_button = getattr(self, "update_button", None)
+        if update_button is not None:
+            update_button.setEnabled(True)
+        QtWidgets.QMessageBox.warning(self, "软件更新失败", message)
+
+    def _clear_update_download_worker(self) -> None:
+        self._update_download_thread = None
+        self._update_download_worker = None
+
+    def _launch_downloaded_update(self, path: str) -> None:
+        try:
+            launch_update_and_exit(Path(path))
+        except UpdateDownloadError as exc:
+            if self._update_progress_dialog is not None:
+                self._update_progress_dialog.close()
+                self._update_progress_dialog = None
+            QtWidgets.QMessageBox.warning(self, "软件更新失败", str(exc))
+            update_button = getattr(self, "update_button", None)
+            if update_button is not None:
+                update_button.setEnabled(True)
+            return
+        QtWidgets.QApplication.quit()
 
     def _open_update_page(self, info: UpdateInfo) -> None:
         url = info.download_url or info.release_url
