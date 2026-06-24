@@ -1015,7 +1015,7 @@ class MainWindow(QtWidgets.QMainWindow):
         export_button = QtWidgets.QPushButton("导出文件")
         export_button.clicked.connect(self.export_xlsx)
         self.update_button = QtWidgets.QPushButton("软件更新")
-        self.update_button.setToolTip("联网检查 GitHub Releases 中是否有新版")
+        self.update_button.setToolTip("联网检查 Gitee/GitHub 更新源中是否有新版")
         self.update_button.clicked.connect(self.check_for_updates)
         for button in (open_button, export_button, self.update_button):
             button.setFixedHeight(32)
@@ -1322,7 +1322,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if update_button is not None:
             update_button.setEnabled(False)
         if manual:
-            self.statusBar().showMessage("正在连接 GitHub 检查软件更新...", 3000)
+            self.statusBar().showMessage("正在连接更新源检查软件更新...", 3000)
 
         thread = QtCore.QThread(self)
         worker = UpdateCheckWorker(APP_VERSION, UPDATE_REPOSITORY, manual)
@@ -1352,11 +1352,14 @@ class MainWindow(QtWidgets.QMainWindow):
 
         title = f"发现新版本 v{info.latest_version}"
         download_hint = f"安装包: {info.asset_name}" if info.asset_name else "Release 页面中没有找到可下载附件。"
+        source_hint = f"更新源: {info.source_name}" if info.source_name else "更新源: 默认"
+        checksum_hint = f"\nSHA256: {info.sha256}" if info.sha256 else ""
         message = (
             f"当前版本: v{info.current_version}\n"
             f"最新版本: v{info.latest_version}\n\n"
-            f"{download_hint}\n\n"
-            "是否打开 GitHub Release 页面下载新版？"
+            f"{source_hint}\n"
+            f"{download_hint}{checksum_hint}\n\n"
+            "是否打开下载链接？"
         )
         box = QtWidgets.QMessageBox(self)
         box.setIcon(QtWidgets.QMessageBox.Information)
@@ -1392,7 +1395,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_worker = None
 
     def _open_update_page(self, info: UpdateInfo) -> None:
-        url = info.release_url or info.download_url
+        url = info.download_url or info.release_url
         if not url:
             QtWidgets.QMessageBox.warning(self, "软件更新", "没有可打开的下载链接。")
             return

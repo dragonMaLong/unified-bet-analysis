@@ -5,12 +5,22 @@ import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Iterable
 
 from .version import __version__
 
 
 DEFAULT_UPDATE_REPOSITORY = "dragonMaLong/unified-bet-analysis"
+DEFAULT_GITEE_MANIFEST_URL = (
+    "https://gitee.com/dragonMalong/unified-bet-analysis/raw/main/updates/latest.json"
+)
+DEFAULT_GITHUB_MANIFEST_URL = (
+    "https://raw.githubusercontent.com/dragonMaLong/unified-bet-analysis/main/updates/latest.json"
+)
+DEFAULT_UPDATE_MANIFEST_URLS = (
+    DEFAULT_GITEE_MANIFEST_URL,
+    DEFAULT_GITHUB_MANIFEST_URL,
+)
 GITHUB_LATEST_RELEASE_URL = "https://api.github.com/repos/{repo}/releases/latest"
 
 
@@ -25,6 +35,9 @@ class UpdateInfo:
     release_name: str
     release_notes: str
     published_at: str
+    source_name: str = ""
+    source_url: str = ""
+    sha256: str = ""
 
 
 class UpdateCheckError(RuntimeError):
@@ -35,9 +48,88 @@ def check_for_update(
     current_version: str = __version__,
     *,
     repository: str = DEFAULT_UPDATE_REPOSITORY,
+    manifest_urls: Iterable[str] = DEFAULT_UPDATE_MANIFEST_URLS,
     timeout: float = 8.0,
 ) -> UpdateInfo:
-    payload = _fetch_latest_release(repository, timeout=timeout)
+    errors: list[str] = []
+    for url in manifest_urls:
+        url = str(url or "").strip()
+        if not url:
+            continue
+        try:
+            payload = _fetch_json(url, timeout=timeout, api=False)
+            return _info_from_manifest(payload, current_version, url)
+        except UpdateCheckError as exc:
+            errors.append(f"{_source_name_from_url(url)}: {exc}")
+
+    try:
+        return _info_from_github_release(
+            _fetch_latest_release(repository, timeout=timeout),
+            current_version,
+            repository,
+        )
+    except UpdateCheckError as exc:
+        errors.append(f"GitHub Releases: {exc}")
+        raise UpdateCheckError("；".join(errors)) from exc
+
+
+def compare_versions(left: str, right: str) -> int:
+    left_parts = _version_parts(left)
+    right_parts = _version_parts(right)
+    max_len = max(len(left_parts), len(right_parts), 3)
+    left_parts.extend([0] * (max_len - len(left_parts)))
+    right_parts.extend([0] * (max_len - len(right_parts)))
+    if left_parts > right_parts:
+        return 1
+    if left_parts < right_parts:
+        return -1
+    return 0
+
+
+def _info_from_manifest(payload: dict[str, Any], current_version: str, source_url: str) -> UpdateInfo:
+    version = str(
+        payload.get("version")
+        or payload.get("latest_version")
+        or payload.get("tag_name")
+        or ""
+    ).strip()
+    if not version:
+        raise UpdateCheckError("更新清单缺少 version 字段。")
+
+    latest_version = _clean_version(version)
+    release_url = str(
+        payload.get("release_url")
+        or payload.get("gitee_url")
+        or payload.get("github_url")
+        or payload.get("html_url")
+        or ""
+    ).strip()
+    download_url = str(
+        payload.get("download_url")
+        or payload.get("browser_download_url")
+        or ""
+    ).strip()
+    asset_name = str(payload.get("asset_name") or "").strip()
+    if not asset_name and download_url:
+        asset_name = download_url.rstrip("/").rsplit("/", 1)[-1]
+
+    return UpdateInfo(
+        current_version=_clean_version(current_version),
+        latest_version=latest_version,
+        update_available=compare_versions(latest_version, current_version) > 0,
+        release_url=release_url,
+        download_url=download_url,
+        asset_name=asset_name,
+        release_name=str(payload.get("release_name") or payload.get("name") or f"v{latest_version}").strip(),
+        release_notes=str(payload.get("release_notes") or payload.get("notes") or payload.get("body") or "").strip(),
+        published_at=str(payload.get("published_at") or "").strip(),
+        source_name=str(payload.get("source_name") or _source_name_from_url(source_url)).strip(),
+        source_url=source_url,
+        sha256=str(payload.get("sha256") or payload.get("checksum") or "").strip(),
+    )
+
+
+def _info_from_github_release(payload: dict[str, Any], current_version: str, repository: str) -> UpdateInfo:
     tag_name = str(payload.get("tag_name") or "").strip()
     if not tag_name:
         raise UpdateCheckError("GitHub Release 没有版本标签。")
@@ -57,46 +149,42 @@ def check_for_update(
         release_name=str(payload.get("name") or tag_name).strip(),
         release_notes=str(payload.get("body") or "").strip(),
         published_at=str(payload.get("published_at") or "").strip(),
+        source_name="GitHub Releases",
+        source_url=GITHUB_LATEST_RELEASE_URL.format(repo=repository.strip()),
+        sha256="",
     )
-
-
-def compare_versions(left: str, right: str) -> int:
-    left_parts = _version_parts(left)
-    right_parts = _version_parts(right)
-    max_len = max(len(left_parts), len(right_parts), 3)
-    left_parts.extend([0] * (max_len - len(left_parts)))
-    right_parts.extend([0] * (max_len - len(right_parts)))
-    if left_parts > right_parts:
-        return 1
-    if left_parts < right_parts:
-        return -1
-    return 0
 
 
 def _fetch_latest_release(repository: str, *, timeout: float) -> dict[str, Any]:
     url = GITHUB_LATEST_RELEASE_URL.format(repo=repository.strip())
-    request = urllib.request.Request(
-        url,
-        headers={
-            "Accept": "application/vnd.github+json",
-            "User-Agent": f"Unified-BET-Analysis/{__version__}",
-            "X-GitHub-Api-Version": "2022-11-28",
-        },
-    )
+    return _fetch_json(url, timeout=timeout, api=True)
+
+
+def _fetch_json(url: str, *, timeout: float, api: bool) -> dict[str, Any]:
+    headers = {
+        "Accept": "application/vnd.github+json" if api else "application/json, text/plain, */*",
+        "User-Agent": f"Unified-BET-Analysis/{__version__}",
+    }
+    if api:
+        headers["X-GitHub-Api-Version"] = "2022-11-28"
+    request = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
+            payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
-            raise UpdateCheckError("没有找到可用的 GitHub Release。请先在仓库里发布一个 Release。") from exc
-        raise UpdateCheckError(f"GitHub 返回 HTTP {exc.code}。") from exc
+            raise UpdateCheckError("没有找到更新信息。") from exc
+        raise UpdateCheckError(f"服务器返回 HTTP {exc.code}。") from exc
     except urllib.error.URLError as exc:
         reason = getattr(exc, "reason", exc)
-        raise UpdateCheckError(f"无法连接 GitHub：{reason}") from exc
+        raise UpdateCheckError(f"无法连接：{reason}") from exc
     except TimeoutError as exc:
-        raise UpdateCheckError("连接 GitHub 超时。") from exc
-    except (OSError, json.JSONDecodeError) as exc:
+        raise UpdateCheckError("连接超时。") from exc
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise UpdateCheckError(f"无法读取更新信息：{exc}") from exc
+    if not isinstance(payload, dict):
+        raise UpdateCheckError("更新信息格式不是 JSON 对象。")
+    return payload
 
 
 def _choose_download_asset(assets: list[Any]) -> dict[str, Any] | None:
@@ -115,6 +203,15 @@ def _choose_download_asset(assets: list[Any]) -> dict[str, Any] | None:
         if asset.get("browser_download_url"):
             return asset
     return None
+
+
+def _source_name_from_url(url: str) -> str:
+    text = str(url).lower()
+    if "gitee.com" in text:
+        return "Gitee"
+    if "github.com" in text or "githubusercontent.com" in text:
+        return "GitHub"
+    return "更新源"
 
 
 def _clean_version(version: str) -> str:

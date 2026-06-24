@@ -1,0 +1,11 @@
+{
+  "version": "1.0.3",
+  "release_name": "v1.0.3",
+  "source_name": "Gitee",
+  "release_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/tag/v1.0.3",
+  "download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.0.3/Micromeritics-BET.exe",
+  "asset_name": "Micromeritics-BET.exe",
+  "sha256": "91b4c9bce81f73184ae76a4f1ed3301bf06efb19cf89a410a23bff946b6438af",
+  "published_at": "2026-06-24",
+  "release_notes": "Gitee 国内更新源清单。若 Gitee Release 尚未上传安装包，请先使用 GitHub Release 页面下载。"
+}
