@@ -165,4 +165,11 @@ validate_against_xls.py             与 XLS 导出结果对照验证的辅助脚
 6. 更新 `updates/latest.json` 中的 `version`、`gitee_download_url`、`github_download_url` 和 `sha256`，并推送到 GitHub 与 Gitee 的 `main` 分支。同一份清单可以同时写 Gitee 和 GitHub 两套链接，软件会根据实际读取到的清单来源选择下载地址。如果 Gitee Release 附件还没上传，先让 `gitee_download_url` 临时指向 GitHub 下载链接，避免用户点到 404。
 7. 用户点击“软件更新”后，会优先使用 Gitee 清单里的下载链接在软件内完成下载、校验和重启；如果清单不可用，会自动退回 GitHub。
 
+Gitee Release 附件可以用辅助脚本上传。先在本机设置具有仓库写权限的 Gitee 私人令牌：
+
+```powershell
+$env:GITEE_TOKEN = "你的 Gitee 私人令牌"
+python scripts/upload_gitee_release.py --tag v1.0.5 --file "$env:LOCALAPPDATA\UnifiedBET\updates\Micromeritics-BET-v1.0.5.exe" --file "$env:LOCALAPPDATA\UnifiedBET\updates\SHA256SUMS-v1.0.5.txt"
+```
+
 当前更新检查默认使用 GitHub 仓库 `dragonMaLong/unified-bet-analysis` 和 Gitee 仓库 `dragonMalong/unified-bet-analysis`。如果以后迁移仓库，需要同步修改 `tristar_bet/update_checker.py` 中的 `DEFAULT_UPDATE_REPOSITORY`、`DEFAULT_GITEE_MANIFEST_URL` 和 `DEFAULT_GITHUB_MANIFEST_URL`。
