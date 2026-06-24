@@ -2,13 +2,13 @@
   "version": "1.0.3",
   "release_name": "v1.0.3",
   "gitee_source_name": "Gitee",
-  "gitee_release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.0.3",
-  "gitee_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.0.3/Micromeritics-BET.exe",
+  "gitee_release_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/tag/v1.0.3",
+  "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.0.3/Micromeritics-BET.exe",
   "github_source_name": "GitHub",
   "github_release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.0.3",
   "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.0.3/Micromeritics-BET.exe",
   "asset_name": "Micromeritics-BET.exe",
   "sha256": "f0d1f1f0e92f477c029b9d4b11b01bc491e7974a21167c503f24434ea88753f4",
   "published_at": "2026-06-24",
-  "release_notes": "软件会优先读取 Gitee 清单；当前 v1.0.3 的 Gitee Release 附件尚未上传，因此下载链接临时指向 GitHub Release。"
+  "release_notes": "软件会优先读取 Gitee 清单并使用 Gitee Release 下载；如果 Gitee 不可用，会自动退回 GitHub 清单和 GitHub Release。"
 }
