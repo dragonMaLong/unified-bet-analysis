@@ -35,9 +35,14 @@ from tristar_bet.reference_thickness import (
     read_reference_points,
     write_reference_points,
 )
+from tristar_bet.update_checker import DEFAULT_UPDATE_REPOSITORY, UpdateInfo, check_for_update
 from tristar_bet.ui.plots import (
     ACTIVE_LINE_WIDTH,
+    BJH_DIFFERENTIAL_LOG,
+    BJH_DISPLAY_METRIC_ORDER,
     DEFAULT_COLORS,
+    bjh_display_axis_label,
+    bjh_display_metric_label,
     make_plot,
     plot_bet_multi,
     plot_bet_selection,
@@ -50,17 +55,41 @@ from tristar_bet.ui.plots import (
     plot_pore_distribution_placeholder,
     plot_t_plot_points_multi,
     plot_t_plot_selection,
+    normalize_bjh_display_metrics,
     replace_bet_fit_line,
     replace_langmuir_fit_line,
     replace_t_plot_fit_line,
 )
+from tristar_bet.version import __version__
 
 
 APP_NAME = "BET 综合分析-DragonScience"
+APP_VERSION = __version__
 APP_ICON_PATH = Path(__file__).resolve().parent.parent / "assets" / "BET-logo.png"
+UPDATE_REPOSITORY = DEFAULT_UPDATE_REPOSITORY
+AUTO_UPDATE_CHECK_DELAY_MS = 3000
 FIT_ANALYSIS_CACHE_LIMIT = 2048
 BJH_DISTRIBUTION_CACHE_LIMIT = 1024
 Signal = getattr(QtCore, "Signal", None) or getattr(QtCore, "pyqtSignal")
+
+
+class UpdateCheckWorker(QtCore.QObject):
+    finished = Signal(object, bool)
+    failed = Signal(str, bool)
+
+    def __init__(self, current_version: str, repository: str, manual: bool) -> None:
+        super().__init__()
+        self.current_version = current_version
+        self.repository = repository
+        self.manual = manual
+
+    def run(self) -> None:
+        try:
+            info = check_for_update(self.current_version, repository=self.repository)
+        except Exception as exc:
+            self.failed.emit(str(exc), self.manual)
+            return
+        self.finished.emit(info, self.manual)
 
 
 class SelectAllCheckBox(QtWidgets.QCheckBox):
@@ -461,6 +490,8 @@ DEFAULT_BJH_OPEN_PORE_FRACTION = 0.0
 DEFAULT_BJH_SMOOTH_DERIVATIVE = True
 DEFAULT_BJH_SHOW_ADSORPTION = True
 DEFAULT_BJH_SHOW_DESORPTION = False
+DEFAULT_BJH_DIFFERENTIAL_MODE = BJH_DIFFERENTIAL_LOG
+DEFAULT_BJH_DISPLAY_METRICS = (BJH_DIFFERENTIAL_LOG,)
 DEFAULT_BJH_PORE_VOLUME_RANGE = (2.0, 10.0)
 T_PLOT_PANEL_COLLAPSED_WIDTH = 360
 T_PLOT_PANEL_EXPANDED_WIDTH = 660
@@ -543,6 +574,15 @@ def _thickness_params_equal(active: dict[str, object], default: dict[str, object
         elif active_value != default_value:
             return False
     return True
+
+
+def _normalize_bjh_display_metrics(value: object) -> list[str]:
+    return [_normalize_bjh_display_metric(value)]
+
+
+def _normalize_bjh_display_metric(value: object) -> str:
+    metrics = normalize_bjh_display_metrics(value)
+    return metrics[0] if metrics else DEFAULT_BJH_DISPLAY_METRICS[0]
 
 
 def _default_user_directory() -> Path:
@@ -934,6 +974,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.bjh_smooth_derivative = DEFAULT_BJH_SMOOTH_DERIVATIVE
         self.bjh_show_adsorption = DEFAULT_BJH_SHOW_ADSORPTION
         self.bjh_show_desorption = DEFAULT_BJH_SHOW_DESORPTION
+        self.bjh_differential_mode = DEFAULT_BJH_DIFFERENTIAL_MODE
+        self.bjh_display_metrics = list(DEFAULT_BJH_DISPLAY_METRICS)
         self.reference_tables: dict[str, QtWidgets.QTableWidget] = {}
         self.reference_name_edits: dict[str, QtWidgets.QLineEdit] = {}
         self._syncing_reference_tables = False
@@ -950,7 +992,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._setting_langmuir_region = False
         self._setting_t_plot_region = False
         self._setting_bjh_region = False
+        self._checking_for_updates = False
+        self._update_thread: QtCore.QThread | None = None
+        self._update_worker: UpdateCheckWorker | None = None
         self.settings = QtCore.QSettings("UnifiedBET", "TriStarBetAppZh")
+        self.settings.remove("bjh_differential_mode")
+        self.settings.remove("bjh_display_metrics")
         self.import_directory = self._read_directory_setting("import_directory")
         self.export_directory = self._read_directory_setting("export_directory")
         self._import_available_sort = (
@@ -958,7 +1005,7 @@ class MainWindow(QtWidgets.QMainWindow):
             QtCore.Qt.SortOrder(int(self.settings.value("import_available_sort_order", int(QtCore.Qt.AscendingOrder)))),
         )
 
-        self.setWindowTitle(APP_NAME)
+        self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
         if APP_ICON_PATH.exists():
             self.setWindowIcon(QtGui.QIcon(str(APP_ICON_PATH)))
         self.resize(1280, 780)
@@ -967,7 +1014,10 @@ class MainWindow(QtWidgets.QMainWindow):
         open_button.clicked.connect(self.open_files)
         export_button = QtWidgets.QPushButton("导出文件")
         export_button.clicked.connect(self.export_xlsx)
-        for button in (open_button, export_button):
+        self.update_button = QtWidgets.QPushButton("软件更新")
+        self.update_button.setToolTip("联网检查 GitHub Releases 中是否有新版")
+        self.update_button.clicked.connect(self.check_for_updates)
+        for button in (open_button, export_button, self.update_button):
             button.setFixedHeight(32)
             button.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
             button.setFixedWidth(96)
@@ -1089,7 +1139,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.bet_plot = make_plot("BET 拟合", "P/[V(P0-P)]", "相对压力 (P/P0)")
         self.langmuir_plot = make_plot("Langmuir 拟合", "(P/P0) / V", "相对压力 (P/P0)")
         self.t_plot = make_plot("t-Plot", "液体体积 (cm3/g)", "统计膜厚 t (nm)")
-        self.pore_plot = make_plot("BJH 孔径分布", "dV/dlogD (cm3/g)", "孔径 (nm)")
+        self.pore_plot = make_plot(
+            "BJH 孔径分布",
+            bjh_display_axis_label(self.bjh_display_metrics),
+            "孔径 (nm)",
+        )
 
         self.bet_default_button = QtWidgets.QPushButton("默认")
         self.bet_default_button.setToolTip("按自动 BET 选点算法重新计算")
@@ -1213,6 +1267,7 @@ class MainWindow(QtWidgets.QMainWindow):
         button_row.addWidget(open_button)
         button_row.addWidget(export_button)
         button_row.addStretch(1)
+        button_row.addWidget(self.update_button)
         side_layout.addLayout(button_row)
         side_layout.addWidget(self.left_splitter, 1)
 
@@ -1248,6 +1303,100 @@ class MainWindow(QtWidgets.QMainWindow):
         self.refresh_all()
         self._sync_select_all_state()
         QtCore.QTimer.singleShot(0, self._position_header_controls)
+        QtCore.QTimer.singleShot(AUTO_UPDATE_CHECK_DELAY_MS, self._auto_check_for_updates)
+
+    def _auto_check_for_updates(self) -> None:
+        today = datetime.now().date().isoformat()
+        if str(self.settings.value("updates/last_auto_check_date", "")) == today:
+            return
+        self.check_for_updates(manual=False)
+
+    def check_for_updates(self, _checked: bool = False, *, manual: bool = True) -> None:
+        if self._checking_for_updates:
+            if manual:
+                self.statusBar().showMessage("正在检查软件更新...", 3000)
+            return
+
+        self._checking_for_updates = True
+        update_button = getattr(self, "update_button", None)
+        if update_button is not None:
+            update_button.setEnabled(False)
+        if manual:
+            self.statusBar().showMessage("正在连接 GitHub 检查软件更新...", 3000)
+
+        thread = QtCore.QThread(self)
+        worker = UpdateCheckWorker(APP_VERSION, UPDATE_REPOSITORY, manual)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_update_check_finished)
+        worker.failed.connect(self._on_update_check_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_update_check_worker)
+        self._update_thread = thread
+        self._update_worker = worker
+        thread.start()
+
+    def _on_update_check_finished(self, info: UpdateInfo, manual: bool) -> None:
+        self._finish_update_check(manual)
+        if not info.update_available:
+            message = f"当前已是最新版本 v{info.current_version}"
+            if manual:
+                QtWidgets.QMessageBox.information(self, "软件更新", message)
+            else:
+                self.statusBar().showMessage(message, 5000)
+            return
+
+        title = f"发现新版本 v{info.latest_version}"
+        download_hint = f"安装包: {info.asset_name}" if info.asset_name else "Release 页面中没有找到可下载附件。"
+        message = (
+            f"当前版本: v{info.current_version}\n"
+            f"最新版本: v{info.latest_version}\n\n"
+            f"{download_hint}\n\n"
+            "是否打开 GitHub Release 页面下载新版？"
+        )
+        box = QtWidgets.QMessageBox(self)
+        box.setIcon(QtWidgets.QMessageBox.Information)
+        box.setWindowTitle("软件更新")
+        box.setText(title)
+        box.setInformativeText(message)
+        if info.release_notes:
+            box.setDetailedText(info.release_notes)
+        open_button = box.addButton("打开下载页面", QtWidgets.QMessageBox.AcceptRole)
+        box.addButton("稍后", QtWidgets.QMessageBox.RejectRole)
+        exec_func = getattr(box, "exec", box.exec_)
+        exec_func()
+        if box.clickedButton() == open_button:
+            self._open_update_page(info)
+
+    def _on_update_check_failed(self, message: str, manual: bool) -> None:
+        self._finish_update_check(manual)
+        if manual:
+            QtWidgets.QMessageBox.warning(self, "软件更新检查失败", message)
+        else:
+            self.statusBar().showMessage(f"自动检查软件更新失败: {message}", 5000)
+
+    def _finish_update_check(self, manual: bool) -> None:
+        self._checking_for_updates = False
+        update_button = getattr(self, "update_button", None)
+        if update_button is not None:
+            update_button.setEnabled(True)
+        if not manual:
+            self.settings.setValue("updates/last_auto_check_date", datetime.now().date().isoformat())
+
+    def _clear_update_check_worker(self) -> None:
+        self._update_thread = None
+        self._update_worker = None
+
+    def _open_update_page(self, info: UpdateInfo) -> None:
+        url = info.release_url or info.download_url
+        if not url:
+            QtWidgets.QMessageBox.warning(self, "软件更新", "没有可打开的下载链接。")
+            return
+        QtGui.QDesktopServices.openUrl(QtCore.QUrl(url))
 
     def _make_t_plot_options_panel(self) -> QtWidgets.QWidget:
         panel = QtWidgets.QWidget()
@@ -1385,6 +1534,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self.bjh_adsorption_checkbox.stateChanged.connect(self._on_bjh_option_changed)
         self.bjh_desorption_checkbox.stateChanged.connect(self._on_bjh_option_changed)
 
+        display_group = QtWidgets.QGroupBox("显示模式")
+        display_layout = QtWidgets.QVBoxLayout(display_group)
+        display_layout.setContentsMargins(8, 8, 8, 8)
+        display_layout.setSpacing(4)
+        self.bjh_display_combo = QtWidgets.QComboBox()
+        for metric in BJH_DISPLAY_METRIC_ORDER:
+            self.bjh_display_combo.addItem(bjh_display_metric_label(metric), metric)
+        self.bjh_display_combo.setToolTip("切换 BJH 孔径分布图的纵轴显示方式")
+        self._set_bjh_display_combo()
+        self.bjh_display_combo.currentIndexChanged.connect(self._on_bjh_display_mode_changed)
+        display_layout.addWidget(self.bjh_display_combo)
+
         self.bjh_default_button = QtWidgets.QPushButton("默认")
         self.bjh_default_button.setToolTip("重置 BJH 厚度曲线、校正参数和显示分支")
         self.bjh_default_button.clicked.connect(self.reset_bjh_to_default)
@@ -1400,6 +1561,7 @@ class MainWindow(QtWidgets.QMainWindow):
         panel_layout.addWidget(self.bjh_smooth_checkbox)
         panel_layout.addWidget(self.bjh_adsorption_checkbox)
         panel_layout.addWidget(self.bjh_desorption_checkbox)
+        panel_layout.addWidget(display_group)
         panel_layout.addLayout(default_button_row)
         panel_layout.addStretch(1)
         self._update_bjh_options_panel_width(panel)
@@ -2152,6 +2314,32 @@ class MainWindow(QtWidgets.QMainWindow):
         self.refresh_bjh_plot()
         self._refresh_all_sample_bjh_pore_cells()
 
+    def _set_bjh_display_combo(self) -> None:
+        combo = getattr(self, "bjh_display_combo", None)
+        if combo is None:
+            return
+        target = _normalize_bjh_display_metric(self.bjh_display_metrics)
+        for index in range(combo.count()):
+            if combo.itemData(index) == target:
+                combo.setCurrentIndex(index)
+                return
+
+    def _default_bjh_display_metrics_for_result(self, result) -> list[str]:
+        if result is not None:
+            vendor_mode = result.method_options.get("vendor_bjh_differential_mode")
+            if vendor_mode is not None:
+                return _normalize_bjh_display_metrics(vendor_mode)
+        return list(DEFAULT_BJH_DISPLAY_METRICS)
+
+    def _on_bjh_display_mode_changed(self, *_args) -> None:
+        combo = getattr(self, "bjh_display_combo", None)
+        metric = combo.currentData() if combo is not None else DEFAULT_BJH_DISPLAY_METRICS[0]
+        self.bjh_display_metrics = _normalize_bjh_display_metrics(metric)
+        self.bjh_differential_mode = self.bjh_display_metrics[0]
+        if self._syncing_bjh_controls:
+            return
+        self.refresh_bjh_plot()
+
     def reset_bjh_to_default(self) -> None:
         active = self.active_result()
         if active is not None:
@@ -2170,6 +2358,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.bjh_smooth_derivative = bool(settings["smooth_derivative"])
             self.bjh_show_adsorption = bool(settings["show_adsorption"])
             self.bjh_show_desorption = bool(settings["show_desorption"])
+            self.bjh_display_metrics = self._default_bjh_display_metrics_for_result(active)
+            self.bjh_differential_mode = self.bjh_display_metrics[0]
 
             for key, radio in self.bjh_method_radios.items():
                 radio.setChecked(key == self.bjh_thickness_method)
@@ -2181,6 +2371,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.bjh_smooth_checkbox.setChecked(self.bjh_smooth_derivative)
             self.bjh_adsorption_checkbox.setChecked(self.bjh_show_adsorption)
             self.bjh_desorption_checkbox.setChecked(self.bjh_show_desorption)
+            self._set_bjh_display_combo()
             self._sync_reference_table_for_context("bjh")
         finally:
             self._syncing_bjh_controls = False
@@ -2979,7 +3170,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._bjh_distribution_rows_by_key = {}
         self._bjh_diameter_log_bounds = None
         if not self.results:
-            plot_pore_distribution_placeholder(self.pore_plot)
+            plot_pore_distribution_placeholder(
+                self.pore_plot,
+                differential_mode=self.bjh_differential_mode,
+                display_metrics=self.bjh_display_metrics,
+            )
             return
         pressure_range = self._bjh_pressure_range()
         bjh_settings_by_index = {
@@ -3002,6 +3197,8 @@ class MainWindow(QtWidgets.QMainWindow):
             pressure_range=pressure_range,
             bjh_settings_by_index=bjh_settings_by_index,
             distribution_provider=self._cached_bjh_distribution_rows,
+            differential_mode=self.bjh_differential_mode,
+            display_metrics=self.bjh_display_metrics,
         )
         self._bjh_diameter_log_bounds = self._bjh_log_bounds_from_rows(self._bjh_distribution_rows_by_key)
         if self._is_bjh_default_region_active():
@@ -3597,6 +3794,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.sample_colors,
             diameter_range,
             active_index=self.active_index,
+            differential_mode=self.bjh_differential_mode,
+            display_metrics=self.bjh_display_metrics,
         )
 
     def _remove_bjh_region(self) -> None:

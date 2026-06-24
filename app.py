@@ -4,7 +4,7 @@ import argparse
 import os
 from pathlib import Path
 
-from tristar_bet import export_results_csv, load_file, load_many
+from tristar_bet import __version__, export_results_csv, load_file, load_many
 
 
 def _default_out_dir() -> Path:
@@ -15,6 +15,7 @@ def _default_out_dir() -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="BET instrument data parser")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("input", nargs="?", help="SMP, DAT, QPS, XLS, XLSX, or XLSM file path, or a directory containing supported files")
     parser.add_argument("--out-dir", default=str(_default_out_dir()), help="CSV output directory")
     parser.add_argument("--prefix", default="tristar3020_minimal_parser", help="Output file prefix")

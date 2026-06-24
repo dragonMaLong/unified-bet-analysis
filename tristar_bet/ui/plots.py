@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Callable
 
@@ -56,6 +57,145 @@ DEFAULT_SYMBOL_SIZE = 6
 DEFAULT_SYMBOL_PEN_WIDTH = 1
 SELECTED_SYMBOL_SIZE = 11
 SELECTED_SYMBOL_PEN_WIDTH = 3
+BJH_DIFFERENTIAL_LOG = "log"
+BJH_DIFFERENTIAL_LINEAR = "linear"
+BJH_CUMULATIVE_VOLUME = "cum_volume"
+BJH_CUMULATIVE_AREA = "cum_area"
+BJH_DIFFERENTIAL_AREA_LOG = "da_log"
+BJH_DISPLAY_METRIC_ORDER = (
+    BJH_DIFFERENTIAL_LOG,
+    BJH_DIFFERENTIAL_LINEAR,
+    BJH_CUMULATIVE_VOLUME,
+    BJH_CUMULATIVE_AREA,
+    BJH_DIFFERENTIAL_AREA_LOG,
+)
+BJH_DISPLAY_METRIC_LABELS = {
+    BJH_DIFFERENTIAL_LOG: "dV/dlogD",
+    BJH_DIFFERENTIAL_LINEAR: "dV/dD",
+    BJH_CUMULATIVE_VOLUME: "Cumulative Pore Volume",
+    BJH_CUMULATIVE_AREA: "Cumulative Pore Area",
+    BJH_DIFFERENTIAL_AREA_LOG: "dA/dlogD",
+}
+BJH_DISPLAY_METRIC_AXIS_LABELS = {
+    BJH_DIFFERENTIAL_LOG: "dV/dlogD (cm3/g)",
+    BJH_DIFFERENTIAL_LINEAR: "dV/dD (cm3/g/nm)",
+    BJH_CUMULATIVE_VOLUME: "Cumulative Pore Volume (cm3/g)",
+    BJH_CUMULATIVE_AREA: "Cumulative Pore Area (m2/g)",
+    BJH_DIFFERENTIAL_AREA_LOG: "dA/dlogD (m2/g)",
+}
+BJH_DISPLAY_METRIC_SYMBOLS = {
+    BJH_DIFFERENTIAL_LOG: "o",
+    BJH_DIFFERENTIAL_LINEAR: "s",
+    BJH_CUMULATIVE_VOLUME: "t",
+    BJH_CUMULATIVE_AREA: "d",
+    BJH_DIFFERENTIAL_AREA_LOG: "+",
+}
+
+
+def bjh_differential_axis_label(mode: str) -> str:
+    return bjh_display_axis_label([mode])
+
+
+def bjh_display_metric_label(metric: str) -> str:
+    return BJH_DISPLAY_METRIC_LABELS.get(metric, BJH_DISPLAY_METRIC_LABELS[BJH_DIFFERENTIAL_LOG])
+
+
+def normalize_bjh_display_metrics(metrics) -> list[str]:
+    if metrics is None:
+        items = []
+    elif isinstance(metrics, str):
+        text = metrics.replace(";", ",")
+        items = [part.strip() for part in text.split(",")] if "," in text else [text.strip()]
+    else:
+        items = [str(item).strip() for item in metrics]
+    normalized: list[str] = []
+    for item in items:
+        if item in BJH_DISPLAY_METRIC_ORDER and item not in normalized:
+            normalized.append(item)
+            break
+    return normalized or [BJH_DIFFERENTIAL_LOG]
+
+
+def bjh_display_axis_label(metrics) -> str:
+    normalized = normalize_bjh_display_metrics(metrics)
+    if len(normalized) == 1:
+        return BJH_DISPLAY_METRIC_AXIS_LABELS.get(normalized[0], BJH_DISPLAY_METRIC_AXIS_LABELS[BJH_DIFFERENTIAL_LOG])
+    return "BJH 显示值（见图例单位）"
+
+
+def _valid_nonnegative(value: object) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if np.isfinite(number) and number >= 0.0:
+        return number
+    return None
+
+
+def _bjh_differential_value(row: dict[str, float], mode: str) -> float:
+    if mode != BJH_DIFFERENTIAL_LINEAR:
+        value = _valid_nonnegative(row.get("differential_pore_volume_cm3_g"))
+        if value is None:
+            raise ValueError("missing BJH dV/dlogD value")
+        return value
+
+    official = _valid_nonnegative(row.get("differential_pore_volume_per_nm_cm3_g_nm"))
+    if official is not None:
+        return official
+
+    log_value = _valid_nonnegative(row.get("differential_pore_volume_cm3_g"))
+    diameter = _valid_nonnegative(row.get("pore_diameter_nm"))
+    if log_value is not None and diameter is not None and diameter > 1e-12:
+        return log_value / (math.log(10.0) * diameter)
+
+    incremental = _valid_nonnegative(row.get("incremental_pore_volume_cm3_g"))
+    high = _valid_nonnegative(row.get("pore_diameter_range_high_nm"))
+    low = _valid_nonnegative(row.get("pore_diameter_range_low_nm"))
+    if incremental is not None and high is not None and low is not None:
+        width = abs(high - low)
+        if width > 1e-12:
+            return incremental / width
+    raise ValueError("missing BJH dV/dD value")
+
+
+def _bjh_metric_value(row: dict[str, float], metric: str) -> float:
+    if metric in {BJH_DIFFERENTIAL_LOG, BJH_DIFFERENTIAL_LINEAR}:
+        return _bjh_differential_value(row, metric)
+    if metric == BJH_CUMULATIVE_VOLUME:
+        value = _valid_nonnegative(row.get("cumulative_pore_volume_cm3_g"))
+        if value is None:
+            raise ValueError("missing BJH cumulative pore volume value")
+        return value
+    if metric == BJH_CUMULATIVE_AREA:
+        value = _valid_nonnegative(row.get("cumulative_pore_area_m2_g"))
+        if value is None:
+            raise ValueError("missing BJH cumulative pore area value")
+        return value
+    if metric == BJH_DIFFERENTIAL_AREA_LOG:
+        value = _valid_nonnegative(row.get("differential_pore_area_m2_g"))
+        if value is not None:
+            return value
+        volume_value = _bjh_differential_value(row, BJH_DIFFERENTIAL_LOG)
+        diameter = _valid_nonnegative(row.get("pore_diameter_nm"))
+        if diameter is not None and diameter > 1e-12:
+            return 4000.0 * volume_value / diameter
+        raise ValueError("missing BJH dA/dlogD value")
+    raise ValueError(f"unknown BJH display metric: {metric}")
+
+
+def _bjh_metric_diameter(row: dict[str, float], metric: str) -> float:
+    if metric in {BJH_CUMULATIVE_VOLUME, BJH_CUMULATIVE_AREA}:
+        value = _valid_nonnegative(row.get("cumulative_pore_diameter_nm"))
+        if value is not None and value > 0.0:
+            return value
+        value = _valid_nonnegative(row.get("pore_diameter_range_low_nm"))
+        if value is not None and value > 0.0:
+            return value
+    value = _valid_nonnegative(row.get("pore_diameter_nm"))
+    if value is None or value <= 0.0:
+        raise ValueError("missing BJH pore diameter value")
+    return value
 
 
 class PlainNumberAxis(pg.AxisItem):
@@ -783,11 +923,14 @@ def plot_bjh_distribution_multi(
     pressure_range: tuple[float, float] | None = None,
     bjh_settings_by_index: dict[int, dict] | None = None,
     distribution_provider: Callable[..., list[dict[str, float]]] | None = None,
+    differential_mode: str = BJH_DIFFERENTIAL_LOG,
+    display_metrics=None,
 ) -> dict[tuple[int, str], list[dict[str, float]]]:
+    metrics = normalize_bjh_display_metrics(display_metrics if display_metrics is not None else [differential_mode])
     plot.clear()
     _clear_manual_legend_entries(plot)
     plot.setTitle("BJH 孔径分布")
-    plot.setLabel("left", "dV/dlogD (cm3/g)")
+    plot.setLabel("left", bjh_display_axis_label(metrics))
     plot.setLabel("bottom", "孔径 (nm)")
     plot.setLogMode(x=True, y=False)
     all_x = []
@@ -845,32 +988,45 @@ def plot_bjh_distribution_multi(
             rows_by_key[(index, phase)] = list(rows)
             if not rows:
                 continue
-            x = np.asarray([row["pore_diameter_nm"] for row in rows], dtype=float)
-            y = np.asarray([row["differential_pore_volume_cm3_g"] for row in rows], dtype=float)
-            mask = np.isfinite(x) & np.isfinite(y) & (x > 0.0) & (y >= 0.0)
-            if not np.any(mask):
-                continue
-            x = x[mask]
-            y = y[mask]
-            order = np.argsort(x)
-            x = x[order]
-            y = y[order]
-            pen = pg.mkPen(color, width=width)
-            pen.setStyle(line_style)
-            phase_label = "吸附" if phase == "adsorption" else "脱附"
-            item = plot.plot(
-                x,
-                y,
-                pen=pen,
-                symbol="o",
-                symbolSize=ACTIVE_SYMBOL_SIZE if is_active else DEFAULT_SYMBOL_SIZE,
-                symbolPen=pg.mkPen(color, width=ACTIVE_SYMBOL_PEN_WIDTH if is_active else DEFAULT_SYMBOL_PEN_WIDTH),
-                symbolBrush=pg.mkBrush("#ffffff"),
-                name=None,
-            )
-            legend_entries.append((index, item, f"{_legend_name(result)} BJH{phase_label}"))
-            all_x.extend(x.tolist())
-            all_y.extend(y.tolist())
+            phase_label = "Ads" if phase == "adsorption" else "Des"
+            for metric in metrics:
+                x_values = []
+                y_values = []
+                for row in rows:
+                    try:
+                        diameter = _bjh_metric_diameter(row, metric)
+                        metric_value = _bjh_metric_value(row, metric)
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    x_values.append(diameter)
+                    y_values.append(metric_value)
+                x = np.asarray(x_values, dtype=float)
+                y = np.asarray(y_values, dtype=float)
+                mask = np.isfinite(x) & np.isfinite(y) & (x > 0.0) & (y >= 0.0)
+                if not np.any(mask):
+                    continue
+                x = x[mask]
+                y = y[mask]
+                order = np.argsort(x)
+                x = x[order]
+                y = y[order]
+                pen = pg.mkPen(color, width=width)
+                pen.setStyle(line_style)
+                item = plot.plot(
+                    x,
+                    y,
+                    pen=pen,
+                    symbol=BJH_DISPLAY_METRIC_SYMBOLS.get(metric, "o"),
+                    symbolSize=ACTIVE_SYMBOL_SIZE if is_active else DEFAULT_SYMBOL_SIZE,
+                    symbolPen=pg.mkPen(color, width=ACTIVE_SYMBOL_PEN_WIDTH if is_active else DEFAULT_SYMBOL_PEN_WIDTH),
+                    symbolBrush=pg.mkBrush("#ffffff"),
+                    name=None,
+                )
+                legend_entries.append(
+                    (index, item, f"{_legend_name(result)} BJH{phase_label} {bjh_display_metric_label(metric)}")
+                )
+                all_x.extend(x.tolist())
+                all_y.extend(y.tolist())
 
     _set_sample_legend_entries(plot, legend_entries)
     if all_x:
@@ -886,7 +1042,10 @@ def plot_bjh_selection(
     colors: list[str],
     diameter_range: tuple[float, float] | None,
     active_index: int = -1,
+    differential_mode: str = BJH_DIFFERENTIAL_LOG,
+    display_metrics=None,
 ) -> list:
+    metrics = normalize_bjh_display_metrics(display_metrics if display_metrics is not None else [differential_mode])
     if diameter_range is None:
         return []
     lo, hi = sorted((float(diameter_range[0]), float(diameter_range[1])))
@@ -896,41 +1055,47 @@ def plot_bjh_selection(
     keys = sorted(rows_by_key, key=lambda key: (key[0] == active_index, key[0], key[1]))
     for index, phase in keys:
         rows = rows_by_key.get((index, phase), [])
-        selected_x = []
-        selected_y = []
-        for row in rows:
-            try:
-                diameter = float(row["pore_diameter_nm"])
-                pore_volume = float(row["differential_pore_volume_cm3_g"])
-            except (KeyError, TypeError, ValueError):
-                continue
-            if not (np.isfinite(diameter) and np.isfinite(pore_volume)):
-                continue
-            if diameter <= 0.0 or pore_volume < 0.0 or diameter < lo or diameter > hi:
-                continue
-            selected_x.append(diameter)
-            selected_y.append(pore_volume)
-        if not selected_x:
-            continue
         color = _analysis_color(colors, index, active_index)
         is_active = index == active_index
-        items.append(
-            _plot_selected_xy(
-                plot,
-                np.asarray(selected_x, dtype=float),
-                np.asarray(selected_y, dtype=float),
-                color,
-                symbol_size=SELECTED_SYMBOL_SIZE if is_active else DEFAULT_SYMBOL_SIZE,
-                symbol_pen_width=SELECTED_SYMBOL_PEN_WIDTH if is_active else DEFAULT_SYMBOL_PEN_WIDTH,
+        for metric in metrics:
+            selected_x = []
+            selected_y = []
+            for row in rows:
+                try:
+                    diameter = _bjh_metric_diameter(row, metric)
+                    metric_value = _bjh_metric_value(row, metric)
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if not (np.isfinite(diameter) and np.isfinite(metric_value)):
+                    continue
+                if diameter <= 0.0 or metric_value < 0.0 or diameter < lo or diameter > hi:
+                    continue
+                selected_x.append(diameter)
+                selected_y.append(metric_value)
+            if not selected_x:
+                continue
+            items.append(
+                _plot_selected_xy(
+                    plot,
+                    np.asarray(selected_x, dtype=float),
+                    np.asarray(selected_y, dtype=float),
+                    color,
+                    symbol_size=SELECTED_SYMBOL_SIZE if is_active else DEFAULT_SYMBOL_SIZE,
+                    symbol_pen_width=SELECTED_SYMBOL_PEN_WIDTH if is_active else DEFAULT_SYMBOL_PEN_WIDTH,
+                )
             )
-        )
     return [item for item in items if item is not None]
 
 
-def plot_pore_distribution_placeholder(plot: pg.PlotWidget) -> None:
+def plot_pore_distribution_placeholder(
+    plot: pg.PlotWidget,
+    differential_mode: str = BJH_DIFFERENTIAL_LOG,
+    display_metrics=None,
+) -> None:
+    metrics = normalize_bjh_display_metrics(display_metrics if display_metrics is not None else [differential_mode])
     plot.clear()
     plot.setTitle("BJH 孔径分布")
-    plot.setLabel("left", "dV/dlogD (cm3/g)")
+    plot.setLabel("left", bjh_display_axis_label(metrics))
     plot.setLabel("bottom", "孔径 (nm)")
     plot.setLogMode(x=True, y=False)
     _plot_message(plot, "当前没有可显示的 BJH 孔径分布")

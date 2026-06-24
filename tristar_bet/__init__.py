@@ -24,6 +24,7 @@ from .belmaster import BELMasterParseError, load_dat
 from .excel_import import ExcelParseError, load_excel
 from .quantachrome import QuantachromeParseError, load_qps
 from .smp import TriStarParseError, export_results_csv, load_file, load_many, load_smp
+from .version import __version__
 
 __all__ = [
     "AdsorptiveProperties",
@@ -55,4 +56,5 @@ __all__ = [
     "load_qps",
     "load_smp",
     "t_plot_analysis",
+    "__version__",
 ]

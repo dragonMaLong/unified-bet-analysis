@@ -81,6 +81,7 @@ class OfficialExcelParser:
         workbook = _read_workbook(file_path)
         labels = _collect_labels(workbook.sheets)
         _add_quantachrome_text_labels(workbook, labels)
+        _add_jwgb_labels(workbook, labels)
         instrument = _detect_instrument(workbook)
         sample = self._build_sample(file_path, labels, workbook, instrument)
         run_conditions = self._build_run_conditions(labels)
@@ -88,6 +89,8 @@ class OfficialExcelParser:
         adsorptive_properties = self._build_adsorptive_properties(labels, run_conditions)
 
         table = self._parse_bsd_isotherm(workbook)
+        if table is None:
+            table = self._parse_jwgb_isotherm(workbook)
         if table is None:
             table = self._parse_belmaster_isotherm(workbook)
         if table is None:
@@ -150,6 +153,7 @@ class OfficialExcelParser:
             method_options["test_duration_source"] = "Excel Started/Completed fields"
         self._add_report_values(labels, method_options)
         self._add_bsd_report_values(workbook, method_options)
+        self._add_jwgb_report_values(workbook, method_options)
         self._add_quantachrome_text_report_values(workbook, method_options)
         self._add_micromeritics_flex_report_values(workbook, method_options)
         self._add_bet_fit_range(workbook, method_options)
@@ -277,6 +281,80 @@ class OfficialExcelParser:
             ui_field_rel101=None,
             psat_table=psat_table,
         )
+
+    def _parse_jwgb_isotherm(self, workbook: ExcelWorkbook) -> IsothermTable | None:
+        if not _is_jwgb_workbook(workbook):
+            return None
+        sheet = next((item for item in workbook.sheets if item.name.lower() == "isotherm"), None)
+        if sheet is None:
+            return None
+        table_position = self._find_jwgb_isotherm_table(sheet)
+        if table_position is None:
+            return None
+        header_row, columns = table_position
+        points: list[IsothermPoint] = []
+        phase = "adsorption"
+        point_index = 1
+        for row_index in range(header_row + 1, sheet.nrows):
+            relative = _number(sheet.cell(row_index, columns["relative_pressure"]))
+            quantity = _number(sheet.cell(row_index, columns["quantity"]))
+            if relative is None or quantity is None:
+                if points and phase == "adsorption":
+                    phase = "desorption"
+                    point_index = 1
+                continue
+            pressure_kpa = _number(sheet.cell(row_index, columns["pressure_kpa"]))
+            saturation_kpa = _number(sheet.cell(row_index, columns["saturation_kpa"]))
+            elapsed_seconds = None
+            elapsed_col = columns.get("elapsed")
+            if elapsed_col is not None:
+                elapsed_seconds = _elapsed_display_seconds(sheet.cell(row_index, elapsed_col))
+            if pressure_kpa is None:
+                pressure_kpa = float(relative) * (saturation_kpa or 101.325)
+            if saturation_kpa is None or saturation_kpa <= 0.0:
+                saturation_kpa = pressure_kpa / float(relative) if relative > 0.0 else 101.325
+            row_id = _number(sheet.cell(row_index, columns["id"]))
+            point_index_value = int(row_id) if row_id is not None else point_index
+            points.append(
+                IsothermPoint(
+                    index=point_index_value,
+                    phase=phase,
+                    record_rel_offset=0,
+                    absolute_pressure_mmHg=float(pressure_kpa) * KPA_TO_MMHG,
+                    relative_pressure=float(relative),
+                    raw_internal_cm3_stp=float(quantity),
+                    saturation_pressure_mmHg=float(saturation_kpa) * KPA_TO_MMHG,
+                    elapsed_seconds=elapsed_seconds,
+                    quantity_adsorbed_cm3_g_stp=float(quantity),
+                    quantity_adsorbed_mmol_g=float(quantity) / CM3_STP_PER_MMOL,
+                )
+            )
+            point_index += 1
+        return IsothermTable(points=points, source=f"jwgb:{sheet.name}") if points else None
+
+    @staticmethod
+    def _find_jwgb_isotherm_table(sheet: SheetGrid) -> tuple[int, dict[str, int]] | None:
+        for row_index in range(sheet.nrows):
+            headers = [_normalize_header(sheet.cell(row_index, column_index)) for column_index in range(sheet.ncols)]
+            columns: dict[str, int] = {}
+            for column_index, header in enumerate(headers):
+                compact = header.replace(" ", "").replace("po", "p0")
+                if compact == "id":
+                    columns["id"] = column_index
+                elif compact in {"p(kpa)", "pressure(kpa)"}:
+                    columns["pressure_kpa"] = column_index
+                elif compact in {"p/p0", "p/po"}:
+                    columns["relative_pressure"] = column_index
+                elif compact.startswith("v(") and "cm3/gstp" in compact:
+                    columns["quantity"] = column_index
+                elif compact in {"p0(kpa)", "po(kpa)"}:
+                    columns["saturation_kpa"] = column_index
+                elif compact == "time":
+                    columns["elapsed"] = column_index
+            required = {"id", "pressure_kpa", "relative_pressure", "quantity", "saturation_kpa"}
+            if required.issubset(columns):
+                return row_index, columns
+        return None
 
     def _parse_belmaster_isotherm(self, workbook: ExcelWorkbook) -> IsothermTable | None:
         sheet = next((item for item in workbook.sheets if item.name.lower() == "isotherm"), None)
@@ -640,15 +718,19 @@ class OfficialExcelParser:
             value = _number(_first_label(labels, label))
             if value is not None:
                 method_options[option_key] = value
+                method_options["official_fit_value_usage"] = "validation_only"
 
     @staticmethod
     def _add_bet_fit_range(workbook: ExcelWorkbook, method_options: dict[str, Any]) -> None:
+        if "stored_bet_pressure_min" in method_options and "stored_bet_pressure_max" in method_options:
+            return
         bsd_range = _bsd_bet_pressure_range(workbook)
         if bsd_range is not None:
             p_min, p_max, source = bsd_range
             method_options["stored_bet_pressure_min"] = p_min
             method_options["stored_bet_pressure_max"] = p_max
             method_options["excel_bet_range_source"] = source
+            method_options["official_fit_range_usage"] = "validation_only"
             return
         fit_range = _bet_fit_pressure_range(workbook)
         if fit_range is None:
@@ -657,6 +739,7 @@ class OfficialExcelParser:
         method_options["stored_bet_pressure_min"] = p_min
         method_options["stored_bet_pressure_max"] = p_max
         method_options["excel_bet_range_source"] = source
+        method_options["official_fit_range_usage"] = "validation_only"
 
     @staticmethod
     def _add_bsd_report_values(workbook: ExcelWorkbook, method_options: dict[str, Any]) -> None:
@@ -697,6 +780,7 @@ class OfficialExcelParser:
                 if langmuir_range is not None:
                     method_options["bsd_langmuir_pressure_min_kpa"] = langmuir_range[0]
                     method_options["bsd_langmuir_pressure_max_kpa"] = langmuir_range[1]
+                    method_options["official_fit_range_usage"] = "validation_only"
             elif "T-Plot" in title or "T-plot" in title:
                 _update_from_label_pairs(
                     sheet,
@@ -714,6 +798,7 @@ class OfficialExcelParser:
                 if t_range is not None:
                     method_options["bsd_t_plot_pressure_min"] = t_range[0]
                     method_options["bsd_t_plot_pressure_max"] = t_range[1]
+                    method_options["official_fit_range_usage"] = "validation_only"
             elif "BJH" in title:
                 phase_key = "adsorption" if "吸附" in title else "desorption" if "脱附" in title else "unknown"
                 prefix = f"bsd_bjh_{phase_key}"
@@ -733,7 +818,78 @@ class OfficialExcelParser:
                 )
                 table_rows = _bsd_bjh_table_rows(sheet, phase_key)
                 if table_rows:
+                    method_options["official_bjh_table_usage"] = "validation_only"
                     method_options[f"{prefix}_rows"] = table_rows
+        if any(
+            key in method_options
+            for key in (
+                "excel_bet_surface_area_m2_g",
+                "excel_langmuir_surface_area_m2_g",
+                "excel_t_plot_micropore_volume_cm3_g",
+                "excel_t_plot_micropore_area_m2_g",
+                "excel_t_plot_external_surface_area_m2_g",
+            )
+        ):
+            method_options["official_fit_value_usage"] = "validation_only"
+
+    @staticmethod
+    def _add_jwgb_report_values(workbook: ExcelWorkbook, method_options: dict[str, Any]) -> None:
+        if not _is_jwgb_workbook(workbook):
+            return
+        method_options["jwgb_excel_import"] = True
+        method_options["vendor_bjh_thickness_method"] = "halsey"
+        method_options["vendor_bjh_correction"] = "standard"
+        method_options["vendor_bjh_smooth_derivative"] = False
+        method_options["jwgb_t_plot_thickness_method"] = "harkins_jura"
+        method_options["jwgb_bjh_thickness_method"] = "halsey"
+        method_options["jwgb_bjh_kelvin_factor_nm"] = 0.954853
+        method_options["official_fit_value_usage"] = "validation_only"
+        method_options["official_fit_range_usage"] = "vendor_default_from_excel_fit_tables"
+        method_options["use_official_excel_fit_ranges"] = True
+
+        info = _jwgb_info_labels(workbook)
+        mapping = {
+            "单点BET比表面积在P/Po为0.20000": "jwgb_single_point_bet_surface_area_m2_g",
+            "BET Surface Area": "excel_bet_surface_area_m2_g",
+            "Langmuir比表面分析设置": "excel_langmuir_surface_area_m2_g",
+            "t-Plot Micropore Area": "excel_t_plot_micropore_area_m2_g",
+            "t-Plot External Surface Area": "excel_t_plot_external_surface_area_m2_g",
+            "BJH Adsorption Cumulative Surface Area": "jwgb_bjh_adsorption_cumulative_area_m2_g",
+            "BJH Desorption Cumulative Surface Area": "jwgb_bjh_desorption_cumulative_area_m2_g",
+            "吸附总孔体积在P/Po为0.99000": "jwgb_total_pore_volume_cm3_g",
+            "t-Plot Micropore Volume": "excel_t_plot_micropore_volume_cm3_g",
+            "BJH Adsorption Cumulative Volume": "jwgb_bjh_adsorption_cumulative_volume_cm3_g",
+            "BJH Desorption Cumulative Volume": "jwgb_bjh_desorption_cumulative_volume_cm3_g",
+            "Average Pore Diameter (4V/A)": "jwgb_average_pore_diameter_4v_a_nm",
+            "BJH Adsorption Average Pore Diameter (4V/A)": "jwgb_bjh_adsorption_average_diameter_4v_a_nm",
+            "BJH Adsorption Most Frequent Pore Diameter (dV/dD)": "jwgb_bjh_adsorption_mode_diameter_dv_dD_nm",
+            "BJH Desorption Average Pore Diameter (4V/A)": "jwgb_bjh_desorption_average_diameter_4v_a_nm",
+            "BJH Desorption Most Frequent Pore Diameter (dV/dD)": "jwgb_bjh_desorption_mode_diameter_dv_dD_nm",
+        }
+        for label, option_key in mapping.items():
+            value = _number(info.get(label))
+            if value is not None:
+                method_options[option_key] = value
+
+        for sheet_name, prefix in (
+            ("BET Surface Area", "bet"),
+            ("Langmuir Surface Area", "langmuir"),
+            ("t-Plot ", "t_plot"),
+        ):
+            fit_range = _jwgb_fit_pressure_range(workbook, sheet_name)
+            if fit_range is None:
+                continue
+            p_min, p_max, ids = fit_range
+            method_options[f"stored_{prefix}_pressure_min"] = p_min
+            method_options[f"stored_{prefix}_pressure_max"] = p_max
+            method_options[f"excel_{prefix}_range_source"] = f"JWGB {sheet_name} ID rows"
+            method_options[f"jwgb_{prefix}_fit_point_ids"] = ids
+
+        for phase in ("adsorption", "desorption"):
+            rows = _jwgb_bjh_distribution_rows(workbook, phase)
+            if rows:
+                method_options["official_bjh_table_usage"] = "validation_only"
+                method_options[f"jwgb_bjh_{phase}_rows"] = rows
 
     @staticmethod
     def _add_quantachrome_text_report_values(workbook: ExcelWorkbook, method_options: dict[str, Any]) -> None:
@@ -744,6 +900,7 @@ class OfficialExcelParser:
         method_options["vendor_bjh_smooth_derivative"] = False
         method_options["quantachrome_bjh_thickness_method"] = "harkins_jura"
         method_options["quantachrome_bjh_table_source"] = "NovaWin text Excel BJH table"
+        method_options["official_bjh_table_usage"] = "validation_only"
         for phase in ("adsorption", "desorption"):
             rows = _quantachrome_text_bjh_distribution_rows(workbook, phase)
             if rows:
@@ -758,18 +915,21 @@ class OfficialExcelParser:
         method_options["vendor_bjh_correction"] = "faas"
         method_options["vendor_bjh_smooth_derivative"] = False
         method_options["micromeritics_flex_bjh_source"] = "isotherm_recalculation"
+        method_options["official_bjh_table_usage"] = "validation_only"
 
         langmuir_range = _micromeritics_flex_langmuir_range(workbook)
         if langmuir_range is not None:
             method_options["stored_langmuir_pressure_min"] = langmuir_range[0]
             method_options["stored_langmuir_pressure_max"] = langmuir_range[1]
             method_options["excel_langmuir_range_source"] = langmuir_range[2]
+            method_options["official_fit_range_usage"] = "validation_only"
 
         t_plot_range = _micromeritics_flex_t_plot_range(workbook)
         if t_plot_range is not None:
             method_options["stored_t_plot_pressure_min"] = t_plot_range[0]
             method_options["stored_t_plot_pressure_max"] = t_plot_range[1]
             method_options["excel_t_plot_range_source"] = t_plot_range[2]
+            method_options["official_fit_range_usage"] = "validation_only"
 
 
 def _read_workbook(path: Path) -> ExcelWorkbook:
@@ -906,6 +1066,32 @@ def _add_quantachrome_text_labels(workbook: ExcelWorkbook, labels: dict[str, Any
         labels.setdefault("adsorptive", labels.get("analysis adsorptive", "Nitrogen"))
 
 
+def _add_jwgb_labels(workbook: ExcelWorkbook, labels: dict[str, Any]) -> None:
+    if not _is_jwgb_workbook(workbook):
+        return
+    info = _jwgb_info_labels(workbook)
+    label_mapping = {
+        "送样单位": "submitter",
+        "样品名称": "sample",
+        "样品编号": "bar code",
+        "吸附质": "adsorptive",
+        "质量": "sample mass",
+        "开始时间": "started",
+        "结束时间": "completed",
+        "BET Surface Area": "bet surface area",
+        "Langmuir比表面分析设置": "langmuir surface area",
+        "t-Plot Micropore Area": "t-plot micropore area",
+        "t-Plot External Surface Area": "t-plot external surface area",
+        "t-Plot Micropore Volume": "t-plot micropore volume",
+    }
+    for source, target in label_mapping.items():
+        value = info.get(source)
+        if value not in (None, ""):
+            labels.setdefault(target, value)
+    if "adsorptive" in labels and "analysis adsorptive" not in labels:
+        labels["analysis adsorptive"] = labels["adsorptive"]
+
+
 def _scan_label_value(row: list[Any], column_index: int) -> Any:
     for offset in range(1, 5):
         index = column_index + offset
@@ -988,6 +1174,12 @@ def _detect_instrument(workbook: ExcelWorkbook) -> dict[str, Any]:
             "instrument_manufacturer": "BSD",
             "instrument_model": model,
             "instrument_software": version,
+        }
+    if _is_jwgb_workbook(workbook):
+        return {
+            "instrument_manufacturer": "JWGB",
+            "instrument_model": "JWGB surface area and porosity analyzer",
+            "instrument_software": "JWGB Excel export",
         }
     if "microactive for tristar ii plus" in lower:
         software = first_contains(r"MicroActive for TriStar II Plus")
@@ -1081,6 +1273,119 @@ def _is_bsd_workbook(workbook: ExcelWorkbook) -> bool:
         if "bsd-660" in lower or "bsd instrument" in lower or "贝士德" in text:
             return True
     return False
+
+
+def _is_jwgb_workbook(workbook: ExcelWorkbook) -> bool:
+    names = {sheet.name.strip().lower() for sheet in workbook.sheets}
+    required = {
+        "info",
+        "isotherm",
+        "bet surface area",
+        "langmuir surface area",
+        "t-plot",
+        "bjh adsorption",
+        "bjh desorption",
+    }
+    if not required.issubset(names):
+        return False
+    info = _jwgb_info_labels(workbook)
+    return all(key in info for key in ("样品名称", "吸附质", "质量", "BET Surface Area"))
+
+
+def _jwgb_info_labels(workbook: ExcelWorkbook) -> dict[str, Any]:
+    sheet = next((item for item in workbook.sheets if item.name.strip().lower() == "info"), None)
+    if sheet is None:
+        return {}
+    labels: dict[str, Any] = {}
+    for row in sheet.values:
+        if not row:
+            continue
+        label = _as_clean_string(row[0])
+        if not label:
+            continue
+        labels[label] = row[1] if len(row) > 1 else None
+    return labels
+
+
+def _jwgb_adsorption_pressure_by_id(workbook: ExcelWorkbook) -> dict[int, float]:
+    sheet = next((item for item in workbook.sheets if item.name.strip().lower() == "isotherm"), None)
+    if sheet is None:
+        return {}
+    table = OfficialExcelParser._find_jwgb_isotherm_table(sheet)
+    if table is None:
+        return {}
+    header_row, columns = table
+    pressures: dict[int, float] = {}
+    phase = "adsorption"
+    for row_index in range(header_row + 1, sheet.nrows):
+        point_id = _number(sheet.cell(row_index, columns["id"]))
+        pressure = _number(sheet.cell(row_index, columns["relative_pressure"]))
+        quantity = _number(sheet.cell(row_index, columns["quantity"]))
+        if point_id is None or pressure is None or quantity is None:
+            if pressures and phase == "adsorption":
+                phase = "desorption"
+            continue
+        if phase == "adsorption" and 0.0 < float(pressure) < 1.0:
+            pressures[int(point_id)] = float(pressure)
+    return pressures
+
+
+def _jwgb_fit_pressure_range(workbook: ExcelWorkbook, sheet_name: str) -> tuple[float, float, list[int]] | None:
+    sheet = next((item for item in workbook.sheets if item.name.strip().lower() == sheet_name.strip().lower()), None)
+    if sheet is None:
+        return None
+    pressure_by_id = _jwgb_adsorption_pressure_by_id(workbook)
+    ids: list[int] = []
+    fallback_pressures: list[float] = []
+    for row_index in range(1, sheet.nrows):
+        point_id = _number(sheet.cell(row_index, 0))
+        pressure = _number(sheet.cell(row_index, 1))
+        quantity = _number(sheet.cell(row_index, 2))
+        if point_id is None or pressure is None or quantity is None:
+            continue
+        ids.append(int(point_id))
+        if 0.0 < float(pressure) < 1.0:
+            fallback_pressures.append(float(pressure))
+    pressures = [pressure_by_id[point_id] for point_id in ids if point_id in pressure_by_id]
+    if len(pressures) < 3:
+        pressures = fallback_pressures
+    if len(pressures) < 3:
+        return None
+    return min(pressures), max(pressures), ids
+
+
+def _jwgb_bjh_distribution_rows(workbook: ExcelWorkbook, phase: str) -> list[dict[str, float]]:
+    sheet_name = "BJH Adsorption" if phase == "adsorption" else "BJH Desorption"
+    sheet = next((item for item in workbook.sheets if item.name.strip().lower() == sheet_name.lower()), None)
+    if sheet is None:
+        return []
+    rows: list[dict[str, float]] = []
+    for row_index in range(1, sheet.nrows):
+        point_id = _number(sheet.cell(row_index, 0))
+        diameter = _number(sheet.cell(row_index, 2))
+        incremental_volume = _number(sheet.cell(row_index, 3))
+        cumulative_volume = _number(sheet.cell(row_index, 4))
+        differential_per_nm = _number(sheet.cell(row_index, 5))
+        differential_log = _number(sheet.cell(row_index, 6))
+        if diameter is None or incremental_volume is None or cumulative_volume is None:
+            continue
+        diameter_range = _diameter_range_from_text(sheet.cell(row_index, 1))
+        row: dict[str, float] = {
+            "phase": phase,
+            "point_id": float(point_id) if point_id is not None else float(len(rows) + 1),
+            "pore_diameter_nm": float(diameter),
+            "incremental_pore_volume_cm3_g": float(incremental_volume),
+            "cumulative_pore_volume_cm3_g": float(cumulative_volume),
+        }
+        if diameter_range is not None:
+            row["pore_diameter_range_high_nm"] = diameter_range[0]
+            row["pore_diameter_range_low_nm"] = diameter_range[1]
+        if differential_per_nm is not None:
+            row["differential_pore_volume_per_nm_cm3_g_nm"] = float(differential_per_nm)
+        if differential_log is not None:
+            row["differential_pore_volume_cm3_g"] = float(differential_log)
+        rows.append(row)
+    return rows
 
 
 def _is_quantachrome_text_workbook(workbook: ExcelWorkbook) -> bool:

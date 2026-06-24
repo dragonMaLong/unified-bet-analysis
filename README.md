@@ -29,8 +29,9 @@
 | MicrotracBEL BELSORP（BELMaster） | BELMaster DAT / Excel 导出 | `DAT`、`XLS`、`XLSX`、`XLSM` | 支持 BELMaster 等温线导入，并进入统一 BET / Langmuir / t-Plot / BJH 分析流程。 |
 | Quantachrome Autosorb iQ | Autosorb iQ / QuadraSorb；QPS、NovaWin `version 11.02` 文本型 Excel 报告已验证 | `QPS`、`XLSX` | 支持 QPS 原始等温线导入；支持 NovaWin 文本型 Excel 报告读取等温线，并在 Broekhoff-De Boer 厚度 + 标准修正下直接采用官方 BJH adsorption/desorption 表。 |
 | 贝士德 BSD-660 | BSD-660MC，软件 `V.9.1.15.0 Date 26.04.28` 已验证 | `XLS`、`XLSX`、`XLSM` | 支持官方 Excel 导出；BET、Langmuir、t-Plot 已按 BSD 报表口径复现，BJH 默认读取官方逐点表，孔容递推仍在反推中。 |
+| 精微高博 JWGB | `Info / Isotherm / BET Surface Area / Langmuir Surface Area / t-Plot / BJH` 多 sheet 官方 Excel 导出已验证 | `XLSX` | 支持官方 Excel 导入并读取等温线；BET、Langmuir、t-Plot 使用官方导出点号反推默认区间，t-Plot 厚度曲线为 Harkins-Jura，BJH 默认反推为 Halsey + standard + 不平滑，官方 BJH 表保存为校验数据。 |
 
-不同来源在分析时会自动匹配对应的默认算法，例如 TriStar II 3020 沿用其历史阿伏伽德罗常数、BSD t-Plot 以吸附量（STP）而非液体体积作纵轴、ASAP 2460 对存储区间下限做特定修正等。这样默认结果会贴近原软件，而统一重算时又能切换到一致规则。
+不同来源在分析时会自动匹配对应的默认算法，例如 TriStar II 3020 沿用其历史阿伏伽德罗常数、BSD / JWGB t-Plot 以吸附量（STP）而非液体体积作纵轴、ASAP 2460 对存储区间下限做特定修正等。这样默认结果会贴近原软件，而统一重算时又能切换到一致规则。
 
 ## 当前功能
 
@@ -149,3 +150,17 @@ validate_against_xls.py             与 XLS 导出结果对照验证的辅助脚
 ## 说明
 
 本项目的初衷不是替代任何仪器厂商软件，而是提供一个开放的统一分析入口，让研究者能够清楚地看到数据、区间、公式和结果之间的关系，并方便地进行不同样品之间的可重复比较。
+
+## 软件更新发布
+
+图形界面顶部提供“软件更新”按钮。软件会访问本仓库的 GitHub Releases，比较本地版本和最新 Release 标签；如果发现新版，会提示用户打开 Release 页面下载安装包。软件启动后也会延迟自动检查一次，并通过本地设置记录当天是否已经自动检查，避免每次启动都重复联网。
+
+发布新版时建议按下面流程操作：
+
+1. 修改 `tristar_bet/version.py` 中的 `__version__`，例如从 `1.0.0` 改为 `1.0.1`。
+2. 提交代码并创建同版本 tag，例如 `v1.0.1`。
+3. 推送 tag 到 GitHub 后，`.github/workflows/release.yml` 会自动在 Windows 环境运行 `pyinstaller --noconfirm BET.spec`。
+4. GitHub Actions 会创建或更新同名 Release，并上传 `Micromeritics-BET.exe` 与 `SHA256SUMS.txt`。
+5. 用户点击“软件更新”后，会看到该 Release 并跳转到下载页面。
+
+当前更新检查默认使用仓库 `dragonMaLong/unified-bet-analysis`。如果以后迁移仓库，需要同步修改 `tristar_bet/update_checker.py` 中的 `DEFAULT_UPDATE_REPOSITORY`。
