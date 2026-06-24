@@ -43,6 +43,7 @@ LANGMUIR_DEFAULT_RANGE = (0.05, 0.30)
 T_PLOT_DEFAULT_PRESSURE_RANGE = (0.20, 0.50)
 DEFAULT_BJH_DIAMETER_MIN_NM = 1.7
 DEFAULT_BJH_DIAMETER_MAX_NM = 300.0
+DEFAULT_DH_DIAMETER_MIN_NM = 0.75
 JWGB_BJH_MIN_DIAMETER_NM = 2.0
 MMHG_TO_KPA = 101.325 / 760.0
 MICROACTIVE_BJH_MIN_DIAMETER_BY_THICKNESS_METHOD = {
@@ -769,6 +770,13 @@ def _uses_official_bjh_table(result: TriStarResult) -> bool:
     )
 
 
+def _uses_official_dh_table(result: TriStarResult) -> bool:
+    return bool(
+        result.method_options.get("use_official_dh_table")
+        or result.method_options.get("use_official_excel_dh_table")
+    )
+
+
 def _uses_official_fit_ranges(result: TriStarResult) -> bool:
     return bool(
         result.method_options.get("use_official_fit_ranges")
@@ -1075,6 +1083,55 @@ def _bsd_official_bjh_rows(
     return rows if len(rows) >= 2 else None
 
 
+def _official_dh_rows(result: TriStarResult, phase: str) -> list[dict[str, float]] | None:
+    raw_rows = result.method_options.get(f"micromeritics_dh_{phase}_rows")
+    if not isinstance(raw_rows, list) or len(raw_rows) < 2:
+        return None
+
+    rows: list[dict[str, float]] = []
+    for index, raw in enumerate(raw_rows, start=1):
+        if not isinstance(raw, dict):
+            continue
+        try:
+            pore_diameter = float(raw["pore_diameter_nm"])
+            cumulative_volume = float(raw.get("cumulative_pore_volume_cm3_g", 0.0))
+            incremental_volume = float(raw.get("incremental_pore_volume_cm3_g", 0.0))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if pore_diameter <= 0.0:
+            continue
+        row: dict[str, float] = {
+            "phase": phase,
+            "interval_index": float(index),
+            "pore_diameter_nm": pore_diameter,
+            "incremental_pore_volume_cm3_g": incremental_volume,
+            "cumulative_pore_volume_cm3_g": cumulative_volume,
+            "dh_correction": "official_excel_table",
+            "pore_distribution_source": str(raw.get("pore_distribution_source", "official_excel_table")),
+        }
+        for key in (
+            "cumulative_pore_diameter_nm",
+            "pore_diameter_range_high_nm",
+            "pore_diameter_range_low_nm",
+            "cumulative_pore_area_m2_g",
+            "incremental_pore_area_m2_g",
+            "dlog_diameter",
+            "differential_pore_volume_cm3_g",
+            "raw_differential_pore_volume_cm3_g",
+            "differential_pore_volume_per_nm_cm3_g_nm",
+            "differential_pore_area_m2_g",
+            "differential_pore_area_per_nm_m2_g_nm",
+        ):
+            value = raw.get(key)
+            if _valid_number(value):
+                row[key] = float(value)
+        if "cumulative_pore_diameter_nm" not in row:
+            low = row.get("pore_diameter_range_low_nm")
+            row["cumulative_pore_diameter_nm"] = float(low) if _valid_number(low) else pore_diameter
+        rows.append(row)
+    return rows if len(rows) >= 2 else None
+
+
 def density_conversion_factor(result: TriStarResult) -> float:
     if result.adsorptive_properties and result.adsorptive_properties.density_conversion_factor:
         return float(result.adsorptive_properties.density_conversion_factor)
@@ -1129,6 +1186,8 @@ def bjh_pore_distribution(
     correction: str = "standard",
     open_pore_fraction: float = 0.0,
     smooth: bool = True,
+    *,
+    dollimore_heal: bool = False,
 ) -> PoreDistributionResult:
     """Approximate BJH pore-size distribution from one isotherm branch.
 
@@ -1138,7 +1197,8 @@ def bjh_pore_distribution(
     decoded.
     """
     phase = "adsorption" if phase == "adsorption" else "desorption"
-    if _uses_official_bjh_table(result):
+    distribution_name = "Dollimore-Heal" if dollimore_heal else "BJH"
+    if not dollimore_heal and _uses_official_bjh_table(result):
         flex_official_rows = _micromeritics_flex_official_bjh_rows(
             result,
             phase,
@@ -1150,7 +1210,7 @@ def bjh_pore_distribution(
             if smooth:
                 flex_official_rows = [dict(row) for row in flex_official_rows]
                 _smooth_distribution_rows(flex_official_rows)
-            return PoreDistributionResult("BJH", phase, "ok", len(flex_official_rows), rows=flex_official_rows)
+            return PoreDistributionResult(distribution_name, phase, "ok", len(flex_official_rows), rows=flex_official_rows)
         quantachrome_official_rows = _quantachrome_official_bjh_rows(
             result,
             phase,
@@ -1163,7 +1223,7 @@ def bjh_pore_distribution(
                 quantachrome_official_rows = [dict(row) for row in quantachrome_official_rows]
                 _smooth_quantachrome_distribution_rows(quantachrome_official_rows)
             return PoreDistributionResult(
-                "BJH",
+                distribution_name,
                 phase,
                 "ok",
                 len(quantachrome_official_rows),
@@ -1171,11 +1231,11 @@ def bjh_pore_distribution(
             )
         official_rows = _bsd_official_bjh_rows(result, phase, thickness_method, correction, open_pore_fraction)
         if official_rows is not None:
-            return PoreDistributionResult("BJH", phase, "ok", len(official_rows), rows=official_rows)
+            return PoreDistributionResult(distribution_name, phase, "ok", len(official_rows), rows=official_rows)
     points = _bjh_branch_points(result, phase)
     points = sorted(points, key=lambda point: float(point.relative_pressure), reverse=True)
     if len(points) < 3:
-        return PoreDistributionResult("BJH", phase, "not_enough_points", len(points))
+        return PoreDistributionResult(distribution_name, phase, "not_enough_points", len(points))
 
     density_factor = density_conversion_factor(result)
     temperature_k = result.run_conditions.bath_temperature_K or 77.350
@@ -1222,7 +1282,7 @@ def bjh_pore_distribution(
         )
 
     if len(base_rows) < 3:
-        return PoreDistributionResult("BJH", phase, "not_enough_valid_points", len(base_rows), rows=base_rows)
+        return PoreDistributionResult(distribution_name, phase, "not_enough_valid_points", len(base_rows), rows=base_rows)
 
     flex_faas_correction = flex_bjh and correction == "faas"
     use_standard_correction = correction == "standard" or flex_faas_correction
@@ -1248,7 +1308,9 @@ def bjh_pore_distribution(
     distribution_rows: list[dict[str, float]] = []
     cumulative_volume = 0.0
     cumulative_area = 0.0
-    if quantachrome_bjh:
+    if dollimore_heal and not flex_bjh:
+        minimum_pore_diameter = DEFAULT_DH_DIAMETER_MIN_NM
+    elif quantachrome_bjh:
         minimum_pore_diameter = QUANTACHROME_BJH_MIN_DIAMETER_NM
     elif jwgb_bjh:
         minimum_pore_diameter = JWGB_BJH_MIN_DIAMETER_NM
@@ -1280,7 +1342,9 @@ def bjh_pore_distribution(
             incremental_volume = abs(float(high["liquid_volume_cm3_g"]) - float(low["liquid_volume_cm3_g"]))
         if incremental_volume < 0.0 or (incremental_volume == 0.0 and not quantachrome_bjh):
             continue
-        if use_standard_correction:
+        if dollimore_heal:
+            pore_diameter = 0.5 * (high_diameter + low_diameter)
+        elif use_standard_correction:
             pore_diameter = _bjh_interval_average_diameter_nm(high, low, bsd_bjh=arithmetic_interval_bjh)
         else:
             pore_diameter = math.sqrt(high_diameter * low_diameter)
@@ -1315,7 +1379,7 @@ def bjh_pore_distribution(
         distribution_rows.append(row)
 
     if len(distribution_rows) < 2:
-        return PoreDistributionResult("BJH", phase, "not_enough_distribution_points", len(distribution_rows), rows=distribution_rows)
+        return PoreDistributionResult(distribution_name, phase, "not_enough_distribution_points", len(distribution_rows), rows=distribution_rows)
     if quantachrome_bjh:
         distribution_rows.sort(key=lambda row: float(row["pore_diameter_nm"]))
         _apply_quantachrome_bjh_low_diameter_increment_correction(distribution_rows)
@@ -1329,7 +1393,53 @@ def bjh_pore_distribution(
             _smooth_quantachrome_distribution_rows(distribution_rows)
         else:
             _smooth_distribution_rows(distribution_rows)
-    return PoreDistributionResult("BJH", phase, "ok", len(distribution_rows), rows=distribution_rows)
+    return PoreDistributionResult(distribution_name, phase, "ok", len(distribution_rows), rows=distribution_rows)
+
+
+def dh_pore_distribution(
+    result: TriStarResult,
+    phase: str = "adsorption",
+    thickness_method: str | None = None,
+    thickness_params: dict[str, float] | None = None,
+    correction: str = "standard",
+    open_pore_fraction: float = 0.0,
+    smooth: bool | None = None,
+) -> PoreDistributionResult:
+    """Dollimore-Heal pore-size distribution.
+
+    Micromeritics' calculation guide defines DH as the same report family as
+    BJH with a different interval-average pore diameter and pore-length
+    treatment. Official Excel DH tables are retained for validation, but normal
+    analysis recalculates DH from the imported isotherm.
+    """
+    phase = "adsorption" if phase == "adsorption" else "desorption"
+    use_smooth = bool(smooth) if smooth is not None else bool(result.method_options.get("vendor_dh_smooth_derivative", False))
+    if _uses_official_dh_table(result):
+        official_rows = _official_dh_rows(result, phase)
+        if official_rows is not None:
+            rows = [dict(row) for row in official_rows]
+            if use_smooth:
+                _smooth_distribution_rows(rows)
+            return PoreDistributionResult("Dollimore-Heal", phase, "ok", len(rows), rows=rows)
+
+    method = thickness_method or str(
+        result.method_options.get(
+            "vendor_dh_thickness_method",
+            result.method_options.get("vendor_bjh_thickness_method", DEFAULT_THICKNESS_METHOD),
+        )
+    )
+    if method == "auto":
+        method = str(result.method_options.get("vendor_dh_thickness_method", DEFAULT_THICKNESS_METHOD))
+    return bjh_pore_distribution(
+        result,
+        phase=phase,
+        thickness_method=method,
+        thickness_params=thickness_params,
+        correction=correction,
+        open_pore_fraction=open_pore_fraction,
+        smooth=use_smooth,
+        dollimore_heal=True,
+    )
 
 
 def _apply_quantachrome_bjh_low_diameter_increment_correction(rows: list[dict[str, float]]) -> None:

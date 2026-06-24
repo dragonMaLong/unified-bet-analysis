@@ -16,6 +16,7 @@ from tristar_bet.analysis import (
     bet_analysis,
     bjh_pore_distribution,
     desorption_points,
+    dh_pore_distribution,
     langmuir_analysis,
     t_plot_analysis,
     t_plot_analysis_by_thickness,
@@ -215,6 +216,125 @@ class PlainNumberAxis(pg.AxisItem):
         return labels
 
 
+class ClickProjectionCursor:
+    def __init__(self, plot: pg.PlotWidget) -> None:
+        self.plot = plot
+        self.plot_item = plot.getPlotItem()
+        self.view_box = self.plot_item.getViewBox()
+        self.point: tuple[float, float] | None = None
+        pen = pg.mkPen("#2563eb", width=1, style=QtCore.Qt.DashLine)
+        self.vertical_line = pg.PlotCurveItem(pen=pen)
+        self.horizontal_line = pg.PlotCurveItem(pen=pen)
+        self.x_label = pg.TextItem(
+            text="",
+            color="#111827",
+            anchor=(0.5, 1.0),
+            fill=pg.mkBrush(255, 255, 255, 235),
+            border=pg.mkPen("#2563eb"),
+        )
+        self.y_label = pg.TextItem(
+            text="",
+            color="#111827",
+            anchor=(0.0, 0.5),
+            fill=pg.mkBrush(255, 255, 255, 235),
+            border=pg.mkPen("#2563eb"),
+        )
+        for item in (self.vertical_line, self.horizontal_line, self.x_label, self.y_label):
+            item.setZValue(10_000)
+            self.view_box.addItem(item, ignoreBounds=True)
+            item.hide()
+        self.plot.scene().sigMouseClicked.connect(self._on_mouse_clicked)
+        self.view_box.sigRangeChanged.connect(lambda *_args: self.update())
+
+    def reattach(self) -> None:
+        added_items = getattr(self.view_box, "addedItems", [])
+        for item in (self.vertical_line, self.horizontal_line, self.x_label, self.y_label):
+            if item not in added_items:
+                self.view_box.addItem(item, ignoreBounds=True)
+        self.update()
+
+    def _on_mouse_clicked(self, event) -> None:
+        if event.button() != QtCore.Qt.LeftButton:
+            return
+        double_click = getattr(event, "double", False)
+        is_double_click = double_click() if callable(double_click) else bool(double_click)
+        if is_double_click:
+            self.point = None
+            self.hide()
+            return
+        scene_pos = event.scenePos()
+        if not self.view_box.sceneBoundingRect().contains(scene_pos):
+            return
+        view_pos = self.view_box.mapSceneToView(scene_pos)
+        x = float(view_pos.x())
+        y = float(view_pos.y())
+        if not np.isfinite(x) or not np.isfinite(y):
+            return
+        self.point = (x, y)
+        self.update()
+
+    def update(self) -> None:
+        if self.point is None:
+            self.hide()
+            return
+        x, y = self.point
+        view_range = self.view_box.viewRange()
+        if not view_range or len(view_range) != 2:
+            self.hide()
+            return
+        (x_min, x_max), (y_min, y_max) = view_range
+        if not all(np.isfinite(value) for value in (x_min, x_max, y_min, y_max)):
+            self.hide()
+            return
+        if (
+            x < min(x_min, x_max)
+            or x > max(x_min, x_max)
+            or y < min(y_min, y_max)
+            or y > max(y_min, y_max)
+        ):
+            self.hide()
+            return
+
+        left, right = min(x_min, x_max), max(x_min, x_max)
+        bottom, top = min(y_min, y_max), max(y_min, y_max)
+        self.vertical_line.setData([x, x], [bottom, top])
+        self.horizontal_line.setData([left, right], [y, y])
+        self.x_label.setText(self._label_text("bottom", x))
+        self.y_label.setText(self._label_text("left", y))
+        self.x_label.setPos(x, bottom)
+        self.y_label.setPos(left, y)
+        for item in (self.vertical_line, self.horizontal_line, self.x_label, self.y_label):
+            item.show()
+
+    def hide(self) -> None:
+        for item in (self.vertical_line, self.horizontal_line, self.x_label, self.y_label):
+            item.hide()
+
+    def _label_text(self, axis_name: str, coordinate: float) -> str:
+        axis = self.plot_item.getAxis(axis_name)
+        value = coordinate
+        if getattr(axis, "logMode", False):
+            try:
+                value = 10.0**coordinate
+            except OverflowError:
+                return ""
+        return _plain_number(float(value))
+
+
+def _enable_click_projection_cursor(plot: pg.PlotWidget) -> None:
+    cursor = ClickProjectionCursor(plot)
+    original_clear = plot.clear
+
+    def clear_with_cursor(*args, **kwargs):
+        result = original_clear(*args, **kwargs)
+        cursor.point = None
+        cursor.reattach()
+        return result
+
+    plot.clear = clear_with_cursor
+    plot._click_projection_cursor = cursor
+
+
 def make_plot(title: str, left_label: str, bottom_label: str) -> pg.PlotWidget:
     bottom_axis = PlainNumberAxis(orientation="bottom")
     left_axis = PlainNumberAxis(orientation="left")
@@ -235,6 +355,7 @@ def make_plot(title: str, left_label: str, bottom_label: str) -> pg.PlotWidget:
         brush=pg.mkBrush(255, 255, 255, 220),
         pen=pg.mkPen("#d1d5db"),
     )
+    _enable_click_projection_cursor(plot)
     return plot
 
 
@@ -1036,6 +1157,119 @@ def plot_bjh_distribution_multi(
     return rows_by_key
 
 
+def plot_dh_distribution_multi(
+    plot: pg.PlotWidget,
+    results,
+    visible: list[bool],
+    colors: list[str],
+    active_index: int = -1,
+    thickness_method: str | None = None,
+    thickness_params: dict[str, float] | None = None,
+    show_adsorption: bool = True,
+    show_desorption: bool = False,
+    smooth: bool = False,
+    pressure_range: tuple[float, float] | None = None,
+    distribution_provider: Callable[..., list[dict[str, float]]] | None = None,
+    display_metrics=None,
+) -> dict[tuple[int, str], list[dict[str, float]]]:
+    metrics = normalize_bjh_display_metrics(display_metrics)
+    plot.clear()
+    _clear_manual_legend_entries(plot)
+    plot.setTitle("Dollimore-Heal 孔径分布")
+    plot.setLabel("left", bjh_display_axis_label(metrics))
+    plot.setLabel("bottom", "孔径 (nm)")
+    plot.setLogMode(x=True, y=False)
+    all_x = []
+    all_y = []
+    legend_entries = []
+    rows_by_key: dict[tuple[int, str], list[dict[str, float]]] = {}
+    if not show_adsorption and not show_desorption:
+        _plot_message(plot, "请选择 DH 吸附或 DH 脱附")
+        return rows_by_key
+
+    for index in _analysis_draw_order(results, visible, active_index):
+        result = results[index]
+        is_active = index == active_index
+        color = _analysis_color(colors, index, active_index)
+        width = ACTIVE_LINE_WIDTH if is_active else DEFAULT_LINE_WIDTH
+        phases: list[tuple[str, bool, QtCore.Qt.PenStyle]] = [
+            ("adsorption", show_adsorption, QtCore.Qt.SolidLine),
+            ("desorption", show_desorption, QtCore.Qt.DashLine),
+        ]
+        for phase, enabled, line_style in phases:
+            if not enabled:
+                continue
+            if distribution_provider is None:
+                distribution = dh_pore_distribution(
+                    result,
+                    phase=phase,
+                    thickness_method=thickness_method,
+                    thickness_params=thickness_params,
+                    smooth=smooth,
+                )
+                rows = list(distribution.rows)
+            else:
+                rows = list(
+                    distribution_provider(
+                        result,
+                        phase=phase,
+                        thickness_method=thickness_method,
+                        thickness_params=thickness_params,
+                        smooth=smooth,
+                    )
+                )
+            rows = _bjh_rows_in_pressure_range(rows, pressure_range)
+            rows_by_key[(index, phase)] = list(rows)
+            if not rows:
+                continue
+            phase_label = "Ads" if phase == "adsorption" else "Des"
+            for metric in metrics:
+                x_values = []
+                y_values = []
+                for row in rows:
+                    try:
+                        diameter = _bjh_metric_diameter(row, metric)
+                        metric_value = _bjh_metric_value(row, metric)
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    x_values.append(diameter)
+                    y_values.append(metric_value)
+                x = np.asarray(x_values, dtype=float)
+                y = np.asarray(y_values, dtype=float)
+                mask = np.isfinite(x) & np.isfinite(y) & (x > 0.0) & (y >= 0.0)
+                if not np.any(mask):
+                    continue
+                x = x[mask]
+                y = y[mask]
+                order = np.argsort(x)
+                x = x[order]
+                y = y[order]
+                pen = pg.mkPen(color, width=width)
+                pen.setStyle(line_style)
+                item = plot.plot(
+                    x,
+                    y,
+                    pen=pen,
+                    symbol=BJH_DISPLAY_METRIC_SYMBOLS.get(metric, "o"),
+                    symbolSize=ACTIVE_SYMBOL_SIZE if is_active else DEFAULT_SYMBOL_SIZE,
+                    symbolPen=pg.mkPen(color, width=ACTIVE_SYMBOL_PEN_WIDTH if is_active else DEFAULT_SYMBOL_PEN_WIDTH),
+                    symbolBrush=pg.mkBrush("#ffffff"),
+                    name=None,
+                )
+                legend_entries.append(
+                    (index, item, f"{_legend_name(result)} DH{phase_label} {bjh_display_metric_label(metric)}")
+                )
+                all_x.extend(x.tolist())
+                all_y.extend(y.tolist())
+
+    _set_sample_legend_entries(plot, legend_entries)
+    if all_x:
+        _fit_range(plot, all_x, all_y, x_log=True)
+    else:
+        _plot_message(plot, "当前样品没有足够的 DH 孔径分布点")
+    return rows_by_key
+
+
 def plot_bjh_selection(
     plot: pg.PlotWidget,
     rows_by_key: dict[tuple[int, str], list[dict[str, float]]],
@@ -1099,6 +1333,19 @@ def plot_pore_distribution_placeholder(
     plot.setLabel("bottom", "孔径 (nm)")
     plot.setLogMode(x=True, y=False)
     _plot_message(plot, "当前没有可显示的 BJH 孔径分布")
+
+
+def plot_dh_distribution_placeholder(
+    plot: pg.PlotWidget,
+    display_metrics=None,
+) -> None:
+    metrics = normalize_bjh_display_metrics(display_metrics)
+    plot.clear()
+    plot.setTitle("Dollimore-Heal 孔径分布")
+    plot.setLabel("left", bjh_display_axis_label(metrics))
+    plot.setLabel("bottom", "孔径 (nm)")
+    plot.setLogMode(x=True, y=False)
+    _plot_message(plot, "当前没有可显示的 DH 孔径分布")
 
 
 def _bjh_rows_in_pressure_range(rows, pressure_range: tuple[float, float] | None):

@@ -156,6 +156,7 @@ class OfficialExcelParser:
         self._add_jwgb_report_values(workbook, method_options)
         self._add_quantachrome_text_report_values(workbook, method_options)
         self._add_micromeritics_flex_report_values(workbook, method_options)
+        self._add_micromeritics_dh_report_values(workbook, method_options)
         self._add_bet_fit_range(workbook, method_options)
 
         return TriStarResult(
@@ -931,6 +932,27 @@ class OfficialExcelParser:
             method_options["excel_t_plot_range_source"] = t_plot_range[2]
             method_options["official_fit_range_usage"] = "validation_only"
 
+    @staticmethod
+    def _add_micromeritics_dh_report_values(workbook: ExcelWorkbook, method_options: dict[str, Any]) -> None:
+        rows_by_phase: dict[str, list[dict[str, float]]] = {}
+        for phase in ("adsorption", "desorption"):
+            rows = _micromeritics_dh_distribution_rows(workbook, phase)
+            if rows:
+                rows_by_phase[phase] = rows
+        if not rows_by_phase:
+            return
+
+        method_options["official_dh_table_usage"] = "validation_only"
+        method_options["vendor_dh_thickness_method"] = "harkins_jura" if _is_micromeritics_flex_workbook(workbook) else "reference"
+        method_options["vendor_dh_smooth_derivative"] = False
+        method_options["micromeritics_dh_table_source"] = "Micromeritics Excel Dollimore-Heal table"
+        if _is_micromeritics_flex_workbook(workbook):
+            method_options["micromeritics_flex_dh_source"] = "official_excel_table"
+        else:
+            method_options["micromeritics_tristar_dh_source"] = "official_excel_table"
+        for phase, rows in rows_by_phase.items():
+            method_options[f"micromeritics_dh_{phase}_rows"] = rows
+
 
 def _read_workbook(path: Path) -> ExcelWorkbook:
     suffix = path.suffix.lower()
@@ -1632,6 +1654,259 @@ def _micromeritics_flex_bjh_distribution_rows(workbook: ExcelWorkbook, phase: st
         if rows:
             return rows
     return []
+
+
+def _micromeritics_dh_distribution_rows(workbook: ExcelWorkbook, phase: str) -> list[dict[str, float]]:
+    phase_title = "adsorption" if phase == "adsorption" else "desorption"
+    title = f"dollimore-heal {phase_title} pore distribution report"
+    rows = _micromeritics_distribution_report_rows(workbook, title, phase)
+    if not rows:
+        return []
+
+    metric_specs = (
+        (
+            f"dollimore-heal {phase_title} cumulative pore volume",
+            "cumulative_pore_diameter_nm",
+            "cumulative_pore_volume_cm3_g",
+        ),
+        (
+            f"dollimore-heal {phase_title} cumulative pore area",
+            "cumulative_pore_diameter_nm",
+            "cumulative_pore_area_m2_g",
+        ),
+        (
+            f"dollimore-heal {phase_title} dv/dlog(d) pore volume",
+            "pore_diameter_nm",
+            "differential_pore_volume_cm3_g",
+        ),
+        (
+            f"dollimore-heal {phase_title} dv/dd pore volume",
+            "pore_diameter_nm",
+            "differential_pore_volume_per_nm_cm3_g_nm",
+        ),
+        (
+            f"dollimore-heal {phase_title} dv/dw pore volume",
+            "pore_diameter_nm",
+            "differential_pore_volume_per_nm_cm3_g_nm",
+        ),
+        (
+            f"dollimore-heal {phase_title} da/dlog(d) pore area",
+            "pore_diameter_nm",
+            "differential_pore_area_m2_g",
+        ),
+    )
+    for metric_title, x_field, y_field in metric_specs:
+        pairs = _micromeritics_plot_pairs(workbook, metric_title)
+        if pairs:
+            _merge_metric_pairs_by_order(rows, pairs, x_field, y_field)
+
+    _finalize_official_pore_distribution_rows(rows, phase, source="micromeritics_dh_official_excel_table")
+    return rows
+
+
+def _micromeritics_distribution_report_rows(
+    workbook: ExcelWorkbook,
+    title: str,
+    phase: str,
+) -> list[dict[str, float]]:
+    for sheet, title_row, start_col, end_col in _micromeritics_report_blocks(workbook, title):
+        header_position = _distribution_report_header(sheet, title_row, start_col, end_col)
+        if header_position is None:
+            continue
+        header_row, columns = header_position
+        rows: list[dict[str, float]] = []
+        blank_streak = 0
+        for row_index in range(header_row + 1, sheet.nrows):
+            average = _number(sheet.cell(row_index, columns["average"]))
+            incremental_volume = _number(sheet.cell(row_index, columns["incremental_volume"]))
+            cumulative_volume = _number(sheet.cell(row_index, columns["cumulative_volume"]))
+            diameter_range = _diameter_range_from_text(sheet.cell(row_index, columns["range"]))
+            if average is None or incremental_volume is None or cumulative_volume is None or diameter_range is None:
+                if rows:
+                    blank_streak += 1
+                    if blank_streak >= 2:
+                        break
+                continue
+            blank_streak = 0
+            high, low = diameter_range
+            row: dict[str, float] = {
+                "phase": phase,
+                "pore_diameter_range_high_nm": high,
+                "pore_diameter_range_low_nm": low,
+                "cumulative_pore_diameter_nm": low,
+                "pore_diameter_nm": float(average),
+                "incremental_pore_volume_cm3_g": float(incremental_volume),
+                "cumulative_pore_volume_cm3_g": float(cumulative_volume),
+            }
+            incremental_area_col = columns.get("incremental_area")
+            cumulative_area_col = columns.get("cumulative_area")
+            incremental_area = _number(sheet.cell(row_index, incremental_area_col)) if incremental_area_col is not None else None
+            cumulative_area = _number(sheet.cell(row_index, cumulative_area_col)) if cumulative_area_col is not None else None
+            if incremental_area is not None:
+                row["incremental_pore_area_m2_g"] = float(incremental_area)
+            if cumulative_area is not None:
+                row["cumulative_pore_area_m2_g"] = float(cumulative_area)
+            rows.append(row)
+        if rows:
+            return rows
+    return []
+
+
+def _micromeritics_report_blocks(
+    workbook: ExcelWorkbook,
+    title: str,
+) -> Iterable[tuple[SheetGrid, int, int, int]]:
+    target = title.lower()
+    for sheet in workbook.sheets:
+        for row_index in range(sheet.nrows):
+            for column_index in range(sheet.ncols):
+                text = _as_clean_string(sheet.cell(row_index, column_index)).strip()
+                if target not in text.lower():
+                    continue
+                end_col = sheet.ncols
+                for candidate in range(column_index + 1, sheet.ncols):
+                    candidate_text = _as_clean_string(sheet.cell(row_index, candidate)).strip()
+                    candidate_lower = candidate_text.lower()
+                    if candidate_text == "|" or (
+                        "pore distribution report" in candidate_lower
+                        and "dollimore-heal" in candidate_lower
+                    ):
+                        end_col = candidate
+                        break
+                yield sheet, row_index, column_index, end_col
+
+
+def _distribution_report_header(
+    sheet: SheetGrid,
+    title_row: int,
+    start_col: int,
+    end_col: int,
+) -> tuple[int, dict[str, int]] | None:
+    for row_index in range(title_row + 1, sheet.nrows):
+        columns: dict[str, int] = {}
+        for column_index in range(start_col, min(end_col, sheet.ncols)):
+            compact = _normalize_header(sheet.cell(row_index, column_index)).replace(" ", "")
+            if "porediameterrange" in compact or "porewidthrange" in compact:
+                columns["range"] = column_index
+            elif "averagediameter" in compact or "averagewidth" in compact:
+                columns["average"] = column_index
+            elif "incrementalporevolume" in compact:
+                columns["incremental_volume"] = column_index
+            elif "cumulativeporevolume" in compact:
+                columns["cumulative_volume"] = column_index
+            elif "incrementalporearea" in compact:
+                columns["incremental_area"] = column_index
+            elif "cumulativeporearea" in compact:
+                columns["cumulative_area"] = column_index
+        if {"range", "average", "incremental_volume", "cumulative_volume"}.issubset(columns):
+            return row_index, columns
+    return None
+
+
+def _micromeritics_plot_pairs(workbook: ExcelWorkbook, title: str) -> list[tuple[float, float]]:
+    for sheet, title_row, start_col, end_col in _micromeritics_report_blocks(workbook, title):
+        header: tuple[int, int] | None = None
+        for row_index in range(title_row + 1, sheet.nrows):
+            for column_index in range(start_col, min(end_col - 1, sheet.ncols - 1) + 1):
+                first = _normalize_header(sheet.cell(row_index, column_index)).replace(" ", "")
+                second = _normalize_header(sheet.cell(row_index, column_index + 1)).replace(" ", "")
+                if (
+                    ("porediameter" in first or "porewidth" in first)
+                    and second
+                    and ("porevolume" in second or "porearea" in second)
+                ):
+                    header = (row_index, column_index)
+                    break
+            if header is not None:
+                break
+        if header is None:
+            continue
+        header_row, column = header
+        pairs: list[tuple[float, float]] = []
+        blank_streak = 0
+        for row_index in range(header_row + 1, sheet.nrows):
+            x_value = _number(sheet.cell(row_index, column))
+            y_value = _number(sheet.cell(row_index, column + 1))
+            if x_value is None or y_value is None:
+                if pairs:
+                    blank_streak += 1
+                    if blank_streak >= 2:
+                        break
+                continue
+            if x_value <= 0.0:
+                if pairs:
+                    break
+                continue
+            blank_streak = 0
+            pairs.append((float(x_value), float(y_value)))
+        if pairs:
+            return pairs
+    return []
+
+
+def _merge_metric_pairs_by_order(
+    rows: list[dict[str, float]],
+    pairs: list[tuple[float, float]],
+    x_field: str,
+    y_field: str,
+) -> None:
+    for row, (x_value, y_value) in zip(rows, pairs):
+        row[x_field] = float(x_value)
+        row[y_field] = float(y_value)
+
+
+def _finalize_official_pore_distribution_rows(
+    rows: list[dict[str, float]],
+    phase: str,
+    *,
+    source: str,
+) -> None:
+    cumulative_area = 0.0
+    for index, row in enumerate(rows, start=1):
+        row["phase"] = phase
+        row["interval_index"] = float(index)
+        row["pore_distribution_source"] = source
+        high = _number(row.get("pore_diameter_range_high_nm"))
+        low = _number(row.get("pore_diameter_range_low_nm"))
+        diameter = _number(row.get("pore_diameter_nm"))
+        incremental_volume = _number(row.get("incremental_pore_volume_cm3_g"))
+        dlog_diameter = 0.0
+        width = 0.0
+        if high is not None and low is not None and high > 0.0 and low > 0.0:
+            dlog_diameter = abs(math.log10(float(high)) - math.log10(float(low)))
+            width = abs(float(high) - float(low))
+            row.setdefault("cumulative_pore_diameter_nm", float(low))
+        elif diameter is not None:
+            row.setdefault("cumulative_pore_diameter_nm", float(diameter))
+        row["dlog_diameter"] = dlog_diameter
+
+        if incremental_volume is not None and "differential_pore_volume_cm3_g" not in row and dlog_diameter > 1e-12:
+            row["differential_pore_volume_cm3_g"] = float(incremental_volume) / dlog_diameter
+        if incremental_volume is not None and "differential_pore_volume_per_nm_cm3_g_nm" not in row and width > 1e-12:
+            row["differential_pore_volume_per_nm_cm3_g_nm"] = float(incremental_volume) / width
+        if (
+            "differential_pore_volume_per_nm_cm3_g_nm" not in row
+            and "differential_pore_volume_cm3_g" in row
+            and diameter is not None
+            and diameter > 1e-12
+        ):
+            row["differential_pore_volume_per_nm_cm3_g_nm"] = (
+                float(row["differential_pore_volume_cm3_g"]) / (math.log(10.0) * float(diameter))
+            )
+        if "differential_pore_volume_cm3_g" in row:
+            row["raw_differential_pore_volume_cm3_g"] = float(row["differential_pore_volume_cm3_g"])
+
+        incremental_area = _number(row.get("incremental_pore_area_m2_g"))
+        if incremental_area is None and incremental_volume is not None and diameter is not None and diameter > 1e-12:
+            incremental_area = 4000.0 * float(incremental_volume) / float(diameter)
+            row["incremental_pore_area_m2_g"] = float(incremental_area)
+        if incremental_area is not None:
+            cumulative_area += float(incremental_area)
+            row.setdefault("cumulative_pore_area_m2_g", cumulative_area)
+        if incremental_area is not None and "differential_pore_area_m2_g" not in row and dlog_diameter > 1e-12:
+            row["differential_pore_area_m2_g"] = float(incremental_area) / dlog_diameter
+        if incremental_area is not None and "differential_pore_area_per_nm_m2_g_nm" not in row and width > 1e-12:
+            row["differential_pore_area_per_nm_m2_g_nm"] = float(incremental_area) / width
 
 
 def _diameter_range_from_text(value: Any) -> tuple[float, float] | None:

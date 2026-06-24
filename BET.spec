@@ -8,14 +8,12 @@ The bundled reference thickness curves (tristar_bet/reference_data) and the
 app logo (tristar_bet/assets) are collected so the .exe runs standalone,
 without the Micromeritics TriStar II Plus software installed.
 """
-from PyInstaller.utils.hooks import collect_submodules
-
 datas = [
     ("tristar_bet/reference_data", "tristar_bet/reference_data"),
     ("tristar_bet/assets", "tristar_bet/assets"),
 ]
 
-hiddenimports = collect_submodules("pyqtgraph")
+hiddenimports = []
 
 a = Analysis(
     ["app.py"],
@@ -26,7 +24,14 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        "PySide6",
+        "PySide6_Addons",
+        "PySide6_Essentials",
+        "shiboken6",
+        "PyQt6",
+        "PySide2",
+    ],
     noarchive=False,
 )
 pyz = PYZ(a.pure)
