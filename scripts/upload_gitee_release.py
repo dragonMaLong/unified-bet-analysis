@@ -33,7 +33,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--token-env", default="GITEE_TOKEN")
     args = parser.parse_args(argv)
 
-    token = os.environ.get(args.token_env, "").strip()
+    token = read_token(args.token_env)
     if not token:
         raise GiteeApiError(f"请先设置环境变量 {args.token_env}。")
 
@@ -217,6 +217,20 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def read_token(name: str) -> str:
+    token = os.environ.get(name, "").strip()
+    if token or os.name != "nt":
+        return token
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            value, _ = winreg.QueryValueEx(key, name)
+    except OSError:
+        return ""
+    return str(value or "").strip()
 
 
 def quote(value: str) -> str:
