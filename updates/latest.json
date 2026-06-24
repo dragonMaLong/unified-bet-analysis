@@ -8,7 +8,7 @@
   "github_release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.0.3",
   "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.0.3/Micromeritics-BET.exe",
   "asset_name": "Micromeritics-BET.exe",
-  "sha256": "91b4c9bce81f73184ae76a4f1ed3301bf06efb19cf89a410a23bff946b6438af",
+  "sha256": "f0d1f1f0e92f477c029b9d4b11b01bc491e7974a21167c503f24434ea88753f4",
   "published_at": "2026-06-24",
   "release_notes": "软件会优先读取 Gitee 清单；当前 v1.0.3 的 Gitee Release 附件尚未上传，因此下载链接临时指向 GitHub Release。"
 }
