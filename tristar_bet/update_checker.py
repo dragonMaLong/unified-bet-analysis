@@ -97,18 +97,24 @@ def _info_from_manifest(payload: dict[str, Any], current_version: str, source_ur
         raise UpdateCheckError("更新清单缺少 version 字段。")
 
     latest_version = _clean_version(version)
-    release_url = str(
-        payload.get("release_url")
-        or payload.get("gitee_url")
-        or payload.get("github_url")
-        or payload.get("html_url")
-        or ""
-    ).strip()
-    download_url = str(
-        payload.get("download_url")
-        or payload.get("browser_download_url")
-        or ""
-    ).strip()
+    detected_source = _source_name_from_url(source_url)
+    source_prefix = "gitee" if detected_source == "Gitee" else "github" if detected_source == "GitHub" else ""
+    release_url = _first_manifest_value(
+        payload,
+        _manifest_keys(
+            source_prefix,
+            "release_url",
+            legacy_keys=("release_url", "html_url", "gitee_url", "github_url"),
+        ),
+    )
+    download_url = _first_manifest_value(
+        payload,
+        _manifest_keys(
+            source_prefix,
+            "download_url",
+            legacy_keys=("download_url", "browser_download_url"),
+        ),
+    )
     asset_name = str(payload.get("asset_name") or "").strip()
     if not asset_name and download_url:
         asset_name = download_url.rstrip("/").rsplit("/", 1)[-1]
@@ -123,10 +129,24 @@ def _info_from_manifest(payload: dict[str, Any], current_version: str, source_ur
         release_name=str(payload.get("release_name") or payload.get("name") or f"v{latest_version}").strip(),
         release_notes=str(payload.get("release_notes") or payload.get("notes") or payload.get("body") or "").strip(),
         published_at=str(payload.get("published_at") or "").strip(),
-        source_name=str(payload.get("source_name") or _source_name_from_url(source_url)).strip(),
+        source_name=str(payload.get(f"{source_prefix}_source_name") or detected_source or payload.get("source_name") or "").strip(),
         source_url=source_url,
         sha256=str(payload.get("sha256") or payload.get("checksum") or "").strip(),
     )
+
+
+def _manifest_keys(source_prefix: str, key: str, *, legacy_keys: tuple[str, ...]) -> tuple[str, ...]:
+    if not source_prefix:
+        return legacy_keys
+    return (f"{source_prefix}_{key}", *legacy_keys)
+
+
+def _first_manifest_value(payload: dict[str, Any], keys: Iterable[str]) -> str:
+    for key in keys:
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value
+    return ""
 
 
 def _info_from_github_release(payload: dict[str, Any], current_version: str, repository: str) -> UpdateInfo:

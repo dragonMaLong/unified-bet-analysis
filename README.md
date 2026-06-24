@@ -162,7 +162,7 @@ validate_against_xls.py             与 XLS 导出结果对照验证的辅助脚
 3. 推送 tag 到 GitHub 后，`.github/workflows/release.yml` 会自动在 Windows 环境运行 `pyinstaller --noconfirm BET.spec`。
 4. GitHub Actions 会创建或更新同名 Release，并上传 `Micromeritics-BET.exe` 与 `SHA256SUMS.txt`。
 5. 将同一份 `Micromeritics-BET.exe` 和 `SHA256SUMS.txt` 上传或同步到 Gitee Release。
-6. 更新 `updates/latest.json` 中的 `version`、`release_url`、`download_url` 和 `sha256`，并推送到 GitHub 与 Gitee 的 `main` 分支。
+6. 更新 `updates/latest.json` 中的 `version`、`gitee_download_url`、`github_download_url` 和 `sha256`，并推送到 GitHub 与 Gitee 的 `main` 分支。同一份清单可以同时写 Gitee 和 GitHub 两套链接，软件会根据实际读取到的清单来源选择下载地址。
 7. 用户点击“软件更新”后，会优先看到 Gitee 清单里的新版下载链接；如果清单不可用，会自动退回 GitHub。
 
 当前更新检查默认使用 GitHub 仓库 `dragonMaLong/unified-bet-analysis` 和 Gitee 仓库 `dragonMalong/unified-bet-analysis`。如果以后迁移仓库，需要同步修改 `tristar_bet/update_checker.py` 中的 `DEFAULT_UPDATE_REPOSITORY`、`DEFAULT_GITEE_MANIFEST_URL` 和 `DEFAULT_GITHUB_MANIFEST_URL`。
