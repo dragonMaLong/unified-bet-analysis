@@ -1184,7 +1184,7 @@ def bjh_pore_distribution(
     bsd_bjh = _uses_bsd_defaults(result)
     jwgb_bjh = _uses_jwgb_defaults(result)
     arithmetic_interval_bjh = bsd_bjh or jwgb_bjh
-    if arithmetic_interval_bjh and thickness_method == "reference":
+    if bsd_bjh and thickness_method == "reference":
         thickness_method = "halsey"
         thickness_params = dict(THICKNESS_METHOD_DEFAULT_PARAMS["halsey"])
     flex_bjh = _uses_micromeritics_flex_bjh_recalculation_defaults(result)
