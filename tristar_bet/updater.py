@@ -150,16 +150,21 @@ def _launch_replacement_script(downloaded_exe: Path) -> None:
     )
     subprocess.Popen(
         [
-            "powershell",
+            _powershell_executable(),
+            "-NoLogo",
             "-NoProfile",
+            "-NonInteractive",
             "-ExecutionPolicy",
             "Bypass",
             "-File",
             str(script_path),
         ],
         cwd=str(script_dir),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         close_fds=True,
-        creationflags=_windows_detached_flags(),
+        creationflags=_windows_update_script_flags(),
     )
 
 
@@ -242,3 +247,21 @@ def _windows_detached_flags() -> int:
     return getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(
         subprocess, "DETACHED_PROCESS", 0
     )
+
+
+def _windows_update_script_flags() -> int:
+    if os.name != "nt":
+        return 0
+    return getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(
+        subprocess, "CREATE_NO_WINDOW", 0
+    )
+
+
+def _powershell_executable() -> str:
+    if os.name != "nt":
+        return "powershell"
+    system_root = os.environ.get("SystemRoot") or r"C:\Windows"
+    path = Path(system_root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    if path.exists():
+        return str(path)
+    return "powershell.exe"
