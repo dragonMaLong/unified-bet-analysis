@@ -1786,7 +1786,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._update_progress_dialog is not None:
             self._update_progress_dialog.close()
             self._update_progress_dialog = None
-        killer = threading.Timer(1.5, lambda: os._exit(0))
+        killer = threading.Timer(5.0, lambda: os._exit(0))
         killer.daemon = True
         killer.start()
         for widget in QtWidgets.QApplication.topLevelWidgets():

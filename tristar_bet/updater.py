@@ -136,6 +136,15 @@ def _remove_quietly(path: Path) -> None:
         pass
 
 
+def _append_update_log(path: Path, message: str) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(message + "\n")
+    except OSError:
+        pass
+
+
 def _launch_replacement_script(downloaded_exe: Path) -> None:
     current_exe = Path(sys.executable).resolve()
     current_pid = os.getpid()
@@ -148,24 +157,32 @@ def _launch_replacement_script(downloaded_exe: Path) -> None:
         _replacement_script_text(current_exe, downloaded_exe, backup_path, log_path, current_pid),
         encoding="utf-8-sig",
     )
-    subprocess.Popen(
-        [
-            _powershell_executable(),
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(script_path),
-        ],
-        cwd=str(script_dir),
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        close_fds=True,
-        creationflags=_windows_update_script_flags(),
+    _append_update_log(
+        log_path,
+        f"launcher prepared update script; old={current_exe} new={downloaded_exe} pid={current_pid}",
     )
+    try:
+        subprocess.Popen(
+            [
+                _powershell_executable(),
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(script_path),
+            ],
+            cwd=str(script_dir),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            creationflags=_windows_update_script_flags(),
+        )
+    except OSError as exc:
+        _append_update_log(log_path, f"launcher failed to start update script: {exc}")
+        raise UpdateDownloadError(f"Failed to launch update replacement script: {exc}") from exc
 
 
 def _replacement_script_text(
@@ -191,6 +208,17 @@ function Write-UpdateLog($Message) {{
     }} catch {{}}
 }}
 
+function Try-UnblockFile($Path) {{
+    try {{
+        if (Test-Path -LiteralPath $Path) {{
+            Unblock-File -LiteralPath $Path -ErrorAction SilentlyContinue
+            Write-UpdateLog ("unblocked " + $Path)
+        }}
+    }} catch {{
+        Write-UpdateLog ("unblock failed for " + $Path + ": " + $_.Exception.Message)
+    }}
+}}
+
 Write-UpdateLog "apply update started; old=$OldPath new=$NewPath pid=$OldProcessId"
 
 try {{
@@ -209,6 +237,7 @@ for ($i = 0; $i -lt 120; $i++) {{
         if (-not (Test-Path -LiteralPath $NewPath)) {{
             throw "downloaded update is missing: $NewPath"
         }}
+        Try-UnblockFile $NewPath
         if (Test-Path -LiteralPath $BackupPath) {{
             Remove-Item -LiteralPath $BackupPath -Force -ErrorAction SilentlyContinue
         }}
@@ -216,8 +245,15 @@ for ($i = 0; $i -lt 120; $i++) {{
             Move-Item -LiteralPath $OldPath -Destination $BackupPath -Force
         }}
         Copy-Item -LiteralPath $NewPath -Destination $OldPath -Force
+        Try-UnblockFile $OldPath
         Write-UpdateLog "replacement succeeded"
-        Start-Process -FilePath $OldPath -WorkingDirectory $TargetDir
+        try {{
+            Start-Process -FilePath $OldPath -WorkingDirectory $TargetDir
+            Write-UpdateLog "replacement launch started"
+        }} catch {{
+            Write-UpdateLog "replacement launch failed: $($_.Exception.Message)"
+            throw
+        }}
         Remove-Item -LiteralPath $BackupPath -Force -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath $NewPath -Force -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
@@ -233,7 +269,19 @@ for ($i = 0; $i -lt 120; $i++) {{
 }}
 
 Write-UpdateLog "replacement failed; launching downloaded exe without replacing old file"
-Start-Process -FilePath $NewPath -WorkingDirectory $NewDir
+Try-UnblockFile $NewPath
+try {{
+    Start-Process -FilePath $NewPath -WorkingDirectory $NewDir
+    Write-UpdateLog "fallback launch started"
+}} catch {{
+    Write-UpdateLog "fallback launch failed: $($_.Exception.Message)"
+    try {{
+        Start-Process -FilePath explorer.exe -ArgumentList "/select,`"$NewPath`""
+    }} catch {{}}
+    try {{
+        msg * "Update failed. Please manually run: $NewPath" 2>$null
+    }} catch {{}}
+}}
 """
 
 
