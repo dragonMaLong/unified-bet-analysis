@@ -1,16 +1,16 @@
 {
-  "version": "1.0.10",
-  "release_name": "v1.0.10",
-  "release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.0.10",
-  "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.0.10/Micromeritics-BET.exe",
+  "version": "1.0.11",
+  "release_name": "v1.0.11",
+  "release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.0.11",
+  "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.0.11/Micromeritics-BET.exe",
   "gitee_source_name": "Gitee",
-  "gitee_release_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/tag/v1.0.10",
-  "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.0.10/Micromeritics-BET.exe",
+  "gitee_release_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/tag/v1.0.11",
+  "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.0.11/Micromeritics-BET.exe",
   "github_source_name": "GitHub",
-  "github_release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.0.10",
-  "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.0.10/Micromeritics-BET.exe",
+  "github_release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.0.11",
+  "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.0.11/Micromeritics-BET.exe",
   "asset_name": "Micromeritics-BET.exe",
-  "sha256": "98e4b5c7257c505cad30d2188ebe7da0c1a07591a00c5c123af351acde160a1f",
+  "sha256": "b6fa8ec774b2b23acf9f3a960140004b2d7beb3e3265674c3ec78713bffd7497",
   "published_at": "2026-06-25",
-  "release_notes": "v1.0.10 hardens the Windows updater: the replacement script now logs launcher startup, unblocks downloaded/replaced executables, reports launch failures, opens the downloaded file location as a fallback, and gives the onefile bootloader more time to release the old executable."
+  "release_notes": "v1.0.11 keeps the Windows updater hardening from v1.0.10 and improves update-source selection: the checker now evaluates all manifest sources and uses the newest version, so a stale Gitee raw cache will not hide a newer GitHub manifest in future updates."
 }
