@@ -42,7 +42,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="Micromeritics-BET",
+    name="BET-DragonScience",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

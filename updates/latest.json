@@ -1,16 +1,16 @@
 {
-  "version": "1.0.11",
-  "release_name": "v1.0.11",
-  "release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.0.11",
-  "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.0.11/Micromeritics-BET.exe",
+  "version": "1.0.12",
+  "release_name": "v1.0.12",
+  "release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.0.12",
+  "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.0.12/BET-DragonScience.exe",
   "gitee_source_name": "Gitee",
-  "gitee_release_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/tag/v1.0.11",
-  "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.0.11/Micromeritics-BET.exe",
+  "gitee_release_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/tag/v1.0.12",
+  "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.0.12/BET-DragonScience.exe",
   "github_source_name": "GitHub",
-  "github_release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.0.11",
-  "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.0.11/Micromeritics-BET.exe",
-  "asset_name": "Micromeritics-BET.exe",
-  "sha256": "b6fa8ec774b2b23acf9f3a960140004b2d7beb3e3265674c3ec78713bffd7497",
+  "github_release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.0.12",
+  "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.0.12/BET-DragonScience.exe",
+  "asset_name": "BET-DragonScience.exe",
+  "sha256": "5a0305b4c054b843557d21f345b34becb5574f5e774b7d5182017bef6b8eb1fb",
   "published_at": "2026-06-25",
-  "release_notes": "v1.0.11 keeps the Windows updater hardening from v1.0.10 and improves update-source selection: the checker now evaluates all manifest sources and uses the newest version, so a stale Gitee raw cache will not hide a newer GitHub manifest in future updates."
+  "release_notes": "v1.0.12 adds per-tab HK selected-pore-volume integration with a 0.6-1.0 nm default range, improves BJH/DH/HK batch settings behavior, and renames the Windows executable to BET-DragonScience.exe."
 }

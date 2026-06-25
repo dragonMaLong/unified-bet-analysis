@@ -1240,6 +1240,7 @@ def plot_dh_distribution_multi(
     show_desorption: bool = False,
     smooth: bool = False,
     pressure_range: tuple[float, float] | None = None,
+    dh_settings_by_index: dict[int, dict] | None = None,
     distribution_provider: Callable[..., list[dict[str, float]]] | None = None,
     display_metrics=None,
 ) -> dict[tuple[int, str], list[dict[str, float]]]:
@@ -1254,7 +1255,7 @@ def plot_dh_distribution_multi(
     all_y = []
     legend_entries = []
     rows_by_key: dict[tuple[int, str], list[dict[str, float]]] = {}
-    if not show_adsorption and not show_desorption:
+    if not dh_settings_by_index and not show_adsorption and not show_desorption:
         _plot_message(plot, "请选择 DH 吸附或 DH 脱附")
         return rows_by_key
 
@@ -1263,9 +1264,15 @@ def plot_dh_distribution_multi(
         is_active = index == active_index
         color = _analysis_color(colors, index, active_index)
         width = ACTIVE_LINE_WIDTH if is_active else DEFAULT_LINE_WIDTH
+        settings = (dh_settings_by_index or {}).get(index, {})
+        sample_thickness_method = str(settings.get("thickness_method", thickness_method))
+        sample_thickness_params = dict(settings.get("thickness_params", thickness_params or {}))
+        sample_show_adsorption = bool(settings.get("show_adsorption", show_adsorption))
+        sample_show_desorption = bool(settings.get("show_desorption", show_desorption))
+        sample_smooth = bool(settings.get("smooth_derivative", smooth))
         phases: list[tuple[str, bool, QtCore.Qt.PenStyle]] = [
-            ("adsorption", show_adsorption, QtCore.Qt.SolidLine),
-            ("desorption", show_desorption, QtCore.Qt.DashLine),
+            ("adsorption", sample_show_adsorption, QtCore.Qt.SolidLine),
+            ("desorption", sample_show_desorption, QtCore.Qt.DashLine),
         ]
         for phase, enabled, line_style in phases:
             if not enabled:
@@ -1274,9 +1281,9 @@ def plot_dh_distribution_multi(
                 distribution = dh_pore_distribution(
                     result,
                     phase=phase,
-                    thickness_method=thickness_method,
-                    thickness_params=thickness_params,
-                    smooth=smooth,
+                    thickness_method=sample_thickness_method,
+                    thickness_params=sample_thickness_params,
+                    smooth=sample_smooth,
                 )
                 rows = list(distribution.rows)
             else:
@@ -1284,9 +1291,9 @@ def plot_dh_distribution_multi(
                     distribution_provider(
                         result,
                         phase=phase,
-                        thickness_method=thickness_method,
-                        thickness_params=thickness_params,
-                        smooth=smooth,
+                        thickness_method=sample_thickness_method,
+                        thickness_params=sample_thickness_params,
+                        smooth=sample_smooth,
                     )
                 )
             rows = _bjh_rows_in_pressure_range(rows, pressure_range)
@@ -1357,6 +1364,7 @@ def plot_hk_distribution_multi(
     cheng_yang_correction: bool = False,
     smooth: bool = False,
     pressure_range: tuple[float, float] | None = None,
+    hk_settings_by_index: dict[int, dict] | None = None,
     distribution_provider: Callable[..., list[dict[str, float]]] | None = None,
     display_metric: str = HK_DIFFERENTIAL_LINEAR,
 ) -> dict[tuple[int, str], list[dict[str, float]]]:
@@ -1377,33 +1385,45 @@ def plot_hk_distribution_multi(
         is_active = index == active_index
         color = _analysis_color(colors, index, active_index)
         width = ACTIVE_LINE_WIDTH if is_active else DEFAULT_LINE_WIDTH
+        settings = (hk_settings_by_index or {}).get(index, {})
+        sample_geometry = str(settings.get("geometry", geometry))
+        sample_adsorbent_key = str(settings.get("adsorbent_key", adsorbent_key))
+        sample_adsorptive_key = str(settings.get("adsorptive_key", adsorptive_key))
+        sample_adsorbent_properties = dict(settings.get("adsorbent_properties", adsorbent_properties or {}))
+        sample_adsorptive_properties = dict(settings.get("adsorptive_properties", adsorptive_properties or {}))
+        sample_interaction_parameter = float(
+            settings.get("interaction_parameter", interaction_parameter_erg_cm4)
+        )
+        sample_interaction_mode = str(settings.get("interaction_parameter_mode", interaction_parameter_mode))
+        sample_cheng_yang = bool(settings.get("cheng_yang_correction", cheng_yang_correction))
+        sample_smooth = bool(settings.get("smooth_derivative", smooth))
         if distribution_provider is None:
             distribution = horvath_kawazoe_pore_distribution(
                 result,
-                geometry=geometry,
-                adsorbent_key=adsorbent_key,
-                adsorptive_key=adsorptive_key,
-                adsorbent_properties=adsorbent_properties,
-                adsorptive_properties=adsorptive_properties,
-                interaction_parameter_erg_cm4=interaction_parameter_erg_cm4,
-                interaction_parameter_mode=interaction_parameter_mode,
-                cheng_yang_correction=cheng_yang_correction,
-                smooth=smooth,
+                geometry=sample_geometry,
+                adsorbent_key=sample_adsorbent_key,
+                adsorptive_key=sample_adsorptive_key,
+                adsorbent_properties=sample_adsorbent_properties,
+                adsorptive_properties=sample_adsorptive_properties,
+                interaction_parameter_erg_cm4=sample_interaction_parameter,
+                interaction_parameter_mode=sample_interaction_mode,
+                cheng_yang_correction=sample_cheng_yang,
+                smooth=sample_smooth,
             )
             rows = list(distribution.rows)
         else:
             rows = list(
                 distribution_provider(
                     result,
-                    geometry=geometry,
-                    adsorbent_key=adsorbent_key,
-                    adsorptive_key=adsorptive_key,
-                    adsorbent_properties=adsorbent_properties,
-                    adsorptive_properties=adsorptive_properties,
-                    interaction_parameter_erg_cm4=interaction_parameter_erg_cm4,
-                    interaction_parameter_mode=interaction_parameter_mode,
-                    cheng_yang_correction=cheng_yang_correction,
-                    smooth=smooth,
+                    geometry=sample_geometry,
+                    adsorbent_key=sample_adsorbent_key,
+                    adsorptive_key=sample_adsorptive_key,
+                    adsorbent_properties=sample_adsorbent_properties,
+                    adsorptive_properties=sample_adsorptive_properties,
+                    interaction_parameter_erg_cm4=sample_interaction_parameter,
+                    interaction_parameter_mode=sample_interaction_mode,
+                    cheng_yang_correction=sample_cheng_yang,
+                    smooth=sample_smooth,
                 )
             )
         rows = _bjh_rows_in_pressure_range(rows, pressure_range)
@@ -1498,6 +1518,55 @@ def plot_bjh_selection(
                     symbol_pen_width=SELECTED_SYMBOL_PEN_WIDTH if is_active else DEFAULT_SYMBOL_PEN_WIDTH,
                 )
             )
+    return [item for item in items if item is not None]
+
+
+def plot_hk_selection(
+    plot: pg.PlotWidget,
+    rows_by_key: dict[tuple[int, str], list[dict[str, float]]],
+    colors: list[str],
+    width_range: tuple[float, float] | None,
+    active_index: int = -1,
+    display_metric: str = HK_DIFFERENTIAL_LINEAR,
+) -> list:
+    metric = normalize_hk_display_metric(display_metric)
+    if width_range is None:
+        return []
+    lo, hi = sorted((float(width_range[0]), float(width_range[1])))
+    if not (np.isfinite(lo) and np.isfinite(hi)):
+        return []
+    items = []
+    keys = sorted(rows_by_key, key=lambda key: (key[0] == active_index, key[0], key[1]))
+    for index, _phase in keys:
+        rows = rows_by_key.get((index, "adsorption"), [])
+        color = _analysis_color(colors, index, active_index)
+        is_active = index == active_index
+        selected_x = []
+        selected_y = []
+        for row in rows:
+            try:
+                width = _hk_metric_width(row)
+                metric_value = _hk_metric_value(row, metric)
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not (np.isfinite(width) and np.isfinite(metric_value)):
+                continue
+            if width <= 0.0 or metric_value < 0.0 or width < lo or width > hi:
+                continue
+            selected_x.append(width)
+            selected_y.append(metric_value)
+        if not selected_x:
+            continue
+        items.append(
+            _plot_selected_xy(
+                plot,
+                np.asarray(selected_x, dtype=float),
+                np.asarray(selected_y, dtype=float),
+                color,
+                symbol_size=SELECTED_SYMBOL_SIZE if is_active else DEFAULT_SYMBOL_SIZE,
+                symbol_pen_width=SELECTED_SYMBOL_PEN_WIDTH if is_active else DEFAULT_SYMBOL_PEN_WIDTH,
+            )
+        )
     return [item for item in items if item is not None]
 
 

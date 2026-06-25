@@ -32,8 +32,8 @@ jobs:
       - name: Write SHA256 checksum
         shell: pwsh
         run: |
-          $hash = (Get-FileHash -Algorithm SHA256 "dist/Micromeritics-BET.exe").Hash.ToLower()
-          "$hash  Micromeritics-BET.exe" | Set-Content -Encoding ascii "dist/SHA256SUMS.txt"
+          $hash = (Get-FileHash -Algorithm SHA256 "dist/BET-DragonScience.exe").Hash.ToLower()
+          "$hash  BET-DragonScience.exe" | Set-Content -Encoding ascii "dist/SHA256SUMS.txt"
 
       - name: Create or update GitHub Release
         shell: pwsh
@@ -45,4 +45,4 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             gh release create "$env:TAG_NAME" --title "$env:TAG_NAME" --notes "Windows executable build for $env:TAG_NAME."
           }
-          gh release upload "$env:TAG_NAME" "dist/Micromeritics-BET.exe" "dist/SHA256SUMS.txt" --clobber
+          gh release upload "$env:TAG_NAME" "dist/BET-DragonScience.exe" "dist/SHA256SUMS.txt" --clobber

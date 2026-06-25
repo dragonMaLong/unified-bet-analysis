@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import os
 import math
 import sys
@@ -68,6 +69,7 @@ from tristar_bet.ui.plots import (
     plot_dh_distribution_placeholder,
     plot_hk_distribution_multi,
     plot_hk_distribution_placeholder,
+    plot_hk_selection,
     plot_isotherm_multi,
     plot_isotherm_selection,
     plot_bjh_distribution_multi,
@@ -507,6 +509,7 @@ T_PLOT_COLUMN = 5
 BJH_PORE_VOLUME_COLUMN = 6
 PORE_VOLUME_METHOD_BJH = "bjh"
 PORE_VOLUME_METHOD_DH = "dh"
+PORE_VOLUME_METHOD_HK = "hk"
 SUPPORTED_DATA_SUFFIXES = (".smp", ".dat", ".qps", ".xls", ".xlsx", ".xlsm")
 BET_DEFAULT_RANGE = (0.05, 0.30)
 BET_PLOT_RANGE = (0.0, 1.0)
@@ -558,6 +561,7 @@ DEFAULT_HK_INTERACTION_PARAMETER = HK_DEFAULT_INTERACTION_PARAMETER_ERG_CM4
 DEFAULT_HK_CHENG_YANG_CORRECTION = False
 DEFAULT_HK_SMOOTH_DERIVATIVE = False
 DEFAULT_HK_DISPLAY_METRIC = HK_DIFFERENTIAL_LINEAR
+DEFAULT_HK_PORE_VOLUME_RANGE = (0.6, 1.0)
 T_PLOT_PANEL_COLLAPSED_WIDTH = 360
 T_PLOT_PANEL_EXPANDED_WIDTH = 660
 BJH_PANEL_COLLAPSED_WIDTH = 380
@@ -637,6 +641,21 @@ def _thickness_params_equal(active: dict[str, object], default: dict[str, object
             if not _float_equal(active_value, default_value):
                 return False
         elif active_value != default_value:
+            return False
+    return True
+
+
+def _settings_values_equal(active: object, default: object) -> bool:
+    if isinstance(default, (int, float)):
+        return _float_equal(active, default)
+    return active == default
+
+
+def _settings_mapping_equal(active: dict[str, object], default: dict[str, object]) -> bool:
+    if set(active) != set(default):
+        return False
+    for key, default_value in default.items():
+        if not _settings_values_equal(active.get(key), default_value):
             return False
     return True
 
@@ -1126,6 +1145,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.custom_t_plot_fit_ranges: dict[int, tuple[float, float]] = {}
         self.custom_t_plot_settings: dict[int, dict[str, object]] = {}
         self.custom_bjh_settings: dict[int, dict[str, object]] = {}
+        self.custom_dh_settings: dict[int, dict[str, object]] = {}
         self.custom_hk_settings: dict[int, dict[str, object]] = {}
         self.bjh_pore_volume_range: tuple[float, float] = DEFAULT_BJH_PORE_VOLUME_RANGE
         self._updating_table = False
@@ -1168,7 +1188,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._dh_diameter_log_bounds: tuple[float, float] | None = None
         self._hk_distribution_rows_by_key: dict[tuple[int, str], list[dict[str, float]]] = {}
         self._hk_distribution_cache: dict[tuple[object, ...], list[dict[str, float]]] = {}
-        self.pore_volume_method = PORE_VOLUME_METHOD_BJH
+        self.hk_region = None
+        self._hk_selection_items = []
+        self._hk_width_log_bounds: tuple[float, float] | None = None
+        self.hk_pore_volume_range: tuple[float, float] = DEFAULT_HK_PORE_VOLUME_RANGE
         self._syncing_t_plot_controls = False
         self.t_plot_thickness_method = DEFAULT_T_PLOT_THICKNESS_METHOD
         self.t_plot_thickness_params_by_method = _default_t_plot_thickness_params_by_method()
@@ -1219,12 +1242,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self._t_plot_region_pending = False
         self._bjh_region_pending = False
         self._dh_region_pending = False
+        self._hk_region_pending = False
         self._syncing_region_changes = False
         self._setting_bet_region = False
         self._setting_langmuir_region = False
         self._setting_t_plot_region = False
         self._setting_bjh_region = False
         self._setting_dh_region = False
+        self._setting_hk_region = False
         self._checking_for_updates = False
         self._update_thread: QtCore.QThread | None = None
         self._update_worker: UpdateCheckWorker | None = None
@@ -1308,12 +1333,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sample_table.horizontalHeaderItem(T_PLOT_COLUMN).setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
         self.sample_table.horizontalHeaderItem(BJH_PORE_VOLUME_COLUMN).setToolTip("点击按 BJH 选区孔容量排序")
         self.sample_table.horizontalHeaderItem(BJH_PORE_VOLUME_COLUMN).setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
-        self.pore_volume_method_button = QtWidgets.QToolButton(sample_header)
-        self.pore_volume_method_button.setArrowType(QtCore.Qt.DownArrow)
-        self.pore_volume_method_button.setAutoRaise(True)
-        self.pore_volume_method_button.setCursor(QtCore.Qt.PointingHandCursor)
-        self.pore_volume_method_button.setFixedSize(22, 22)
-        self.pore_volume_method_button.clicked.connect(self._show_pore_volume_method_menu)
         self._update_pore_volume_header()
         self.sample_table.verticalHeader().setVisible(False)
         self.sample_table.verticalHeader().setDefaultSectionSize(28)
@@ -1951,9 +1970,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self.bjh_default_button = QtWidgets.QPushButton("默认")
         self.bjh_default_button.setToolTip("重置 BJH 厚度曲线、校正参数和显示分支")
         self.bjh_default_button.clicked.connect(self.reset_bjh_to_default)
+        self.bjh_apply_all_button = QtWidgets.QPushButton("全部应用")
+        self.bjh_apply_all_button.setToolTip("把当前 BJH 厚度曲线、校正参数、平滑和吸/脱附设置应用到所有样品")
+        self.bjh_apply_all_button.clicked.connect(self.apply_bjh_settings_to_all)
+        self.bjh_all_default_button = QtWidgets.QPushButton("全部默认")
+        self.bjh_all_default_button.setToolTip("让所有样品恢复各自文件或厂商默认的 BJH 设置")
+        self.bjh_all_default_button.clicked.connect(self.reset_all_bjh_to_default)
         default_button_row = QtWidgets.QHBoxLayout()
         default_button_row.setContentsMargins(0, 0, 0, 0)
         default_button_row.addWidget(self.bjh_default_button)
+        default_button_row.addWidget(self.bjh_apply_all_button)
+        default_button_row.addWidget(self.bjh_all_default_button)
         default_button_row.addStretch(1)
 
         panel_layout.addWidget(thickness_group)
@@ -2024,9 +2051,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self.dh_default_button = QtWidgets.QPushButton("默认")
         self.dh_default_button.setToolTip("重置 DH 显示分支、平滑和显示模式")
         self.dh_default_button.clicked.connect(self.reset_dh_to_default)
+        self.dh_apply_all_button = QtWidgets.QPushButton("全部应用")
+        self.dh_apply_all_button.setToolTip("把当前 DH 厚度曲线、平滑和吸/脱附设置应用到所有样品")
+        self.dh_apply_all_button.clicked.connect(self.apply_dh_settings_to_all)
+        self.dh_all_default_button = QtWidgets.QPushButton("全部默认")
+        self.dh_all_default_button.setToolTip("让所有样品恢复各自文件或厂商默认的 DH 设置")
+        self.dh_all_default_button.clicked.connect(self.reset_all_dh_to_default)
         default_button_row = QtWidgets.QHBoxLayout()
         default_button_row.setContentsMargins(0, 0, 0, 0)
         default_button_row.addWidget(self.dh_default_button)
+        default_button_row.addWidget(self.dh_apply_all_button)
+        default_button_row.addWidget(self.dh_all_default_button)
         default_button_row.addStretch(1)
 
         panel_layout.addWidget(thickness_group)
@@ -2122,9 +2157,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self.hk_default_button = QtWidgets.QPushButton("默认")
         self.hk_default_button.setToolTip("重置 HK 孔型、物性、作用参数和平滑选项")
         self.hk_default_button.clicked.connect(self.reset_hk_to_default)
+        self.hk_apply_all_button = QtWidgets.QPushButton("全部应用")
+        self.hk_apply_all_button.setToolTip("把当前 HK 孔型、物性、作用参数和平滑选项应用到所有样品")
+        self.hk_apply_all_button.clicked.connect(self.apply_hk_settings_to_all)
+        self.hk_all_default_button = QtWidgets.QPushButton("全部默认")
+        self.hk_all_default_button.setToolTip("让所有样品恢复默认 HK 设置")
+        self.hk_all_default_button.clicked.connect(self.reset_all_hk_to_default)
         default_button_row = QtWidgets.QHBoxLayout()
         default_button_row.setContentsMargins(0, 0, 0, 0)
         default_button_row.addWidget(self.hk_default_button)
+        default_button_row.addWidget(self.hk_apply_all_button)
+        default_button_row.addWidget(self.hk_all_default_button)
         default_button_row.addStretch(1)
 
         panel_layout.addWidget(geometry_group)
@@ -2354,7 +2397,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if context == "bjh":
             self._save_bjh_settings_for_active()
         elif context == "dh":
-            return
+            self._save_dh_settings_for_active()
         else:
             self._save_t_plot_settings_for_active()
 
@@ -2368,6 +2411,8 @@ class MainWindow(QtWidgets.QMainWindow):
             if self.dh_thickness_method == "reference":
                 self._dh_distribution_cache.clear()
                 self.refresh_dh_plot()
+                self._refresh_all_sample_bjh_pore_cells()
+                self.refresh_metrics()
         elif self.t_plot_thickness_method == "reference":
             active = self.active_result()
             if active is not None and self.plot_tabs.currentWidget() is self.t_plot_tab:
@@ -2934,9 +2979,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self._set_dh_formula_spins_for_method(method_key, self.dh_thickness_params)
         finally:
             self._syncing_dh_controls = False
+        self._save_dh_settings_for_active()
         self._dh_distribution_cache.clear()
         self.refresh_dh_plot()
-        if self.pore_volume_method == PORE_VOLUME_METHOD_DH:
+        if self._active_pore_volume_method() == PORE_VOLUME_METHOD_DH:
             self._refresh_all_sample_bjh_pore_cells()
 
     def _on_dh_thickness_param_changed(self, method_key: str | None = None) -> None:
@@ -2947,9 +2993,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.dh_thickness_params_by_method[method_key] = dict(params)
         if method_key == self.dh_thickness_method:
             self.dh_thickness_params = dict(params)
+            self._save_dh_settings_for_active()
             self._dh_distribution_cache.clear()
             self.refresh_dh_plot()
-            if self.pore_volume_method == PORE_VOLUME_METHOD_DH:
+            if self._active_pore_volume_method() == PORE_VOLUME_METHOD_DH:
                 self._refresh_all_sample_bjh_pore_cells()
 
     def _read_dh_thickness_params(self, method_key: str) -> dict[str, object]:
@@ -3012,7 +3059,39 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         self.refresh_bjh_plot()
 
-    def reset_bjh_to_default(self) -> None:
+    def _current_bjh_settings_snapshot(self) -> dict[str, object]:
+        return {
+            "thickness_method": self.bjh_thickness_method,
+            "thickness_params_by_method": {
+                method_key: dict(params)
+                for method_key, params in self.bjh_thickness_params_by_method.items()
+            },
+            "thickness_params": dict(self.bjh_thickness_params),
+            "correction": self.bjh_correction,
+            "open_pore_fraction": self.bjh_open_pore_fraction,
+            "smooth_derivative": self.bjh_smooth_derivative,
+            "show_adsorption": self.bjh_show_adsorption,
+            "show_desorption": self.bjh_show_desorption,
+        }
+
+    def apply_bjh_settings_to_all(self) -> None:
+        if not self.results:
+            return
+        settings = self._current_bjh_settings_snapshot()
+        for result in self.results:
+            self.custom_bjh_settings[id(result)] = copy.deepcopy(settings)
+        self._bjh_distribution_cache.clear()
+        self.refresh_bjh_plot()
+        self._refresh_all_sample_bjh_pore_cells()
+        self.statusBar().showMessage("已将当前 BJH 设置应用到所有样品", 3000)
+
+    def reset_all_bjh_to_default(self) -> None:
+        self.custom_bjh_settings.clear()
+        self._bjh_distribution_cache.clear()
+        self.reset_bjh_to_default(reset_region=True)
+        self.statusBar().showMessage("所有样品已恢复各自默认 BJH 设置", 3000)
+
+    def reset_bjh_to_default(self, *, reset_region: bool = False) -> None:
         active = self.active_result()
         if active is not None:
             self.custom_bjh_settings.pop(id(active), None)
@@ -3047,8 +3126,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self._sync_reference_table_for_context("bjh")
         finally:
             self._syncing_bjh_controls = False
-        self.bjh_pore_volume_range = DEFAULT_BJH_PORE_VOLUME_RANGE
-        self._remove_bjh_region()
+        if reset_region:
+            self.bjh_pore_volume_range = DEFAULT_BJH_PORE_VOLUME_RANGE
+            self._remove_bjh_region()
         self.refresh_bjh_plot()
         self._refresh_all_sample_bjh_pore_cells()
 
@@ -3058,8 +3138,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.dh_smooth_derivative = self.dh_smooth_checkbox.isChecked()
         self.dh_show_adsorption = self.dh_adsorption_checkbox.isChecked()
         self.dh_show_desorption = self.dh_desorption_checkbox.isChecked()
+        self._save_dh_settings_for_active()
         self.refresh_dh_plot()
-        if self.pore_volume_method == PORE_VOLUME_METHOD_DH:
+        if self._active_pore_volume_method() == PORE_VOLUME_METHOD_DH:
             self._refresh_all_sample_bjh_pore_cells()
 
     def _set_dh_display_combo(self) -> None:
@@ -3079,19 +3160,61 @@ class MainWindow(QtWidgets.QMainWindow):
         self.dh_differential_mode = self.dh_display_metrics[0]
         if self._syncing_dh_controls:
             return
+        self._save_dh_settings_for_active()
         self.refresh_dh_plot()
 
-    def reset_dh_to_default(self) -> None:
+    def _current_dh_settings_snapshot(self) -> dict[str, object]:
+        return {
+            "thickness_method": self.dh_thickness_method,
+            "thickness_params_by_method": {
+                method_key: dict(params)
+                for method_key, params in self.dh_thickness_params_by_method.items()
+            },
+            "thickness_params": dict(self.dh_thickness_params),
+            "smooth_derivative": self.dh_smooth_derivative,
+            "show_adsorption": self.dh_show_adsorption,
+            "show_desorption": self.dh_show_desorption,
+            "display_metrics": list(self.dh_display_metrics),
+        }
+
+    def apply_dh_settings_to_all(self) -> None:
+        if not self.results:
+            return
+        settings = self._current_dh_settings_snapshot()
+        for result in self.results:
+            self.custom_dh_settings[id(result)] = copy.deepcopy(settings)
+        self._dh_distribution_cache.clear()
+        self.refresh_dh_plot()
+        if self._active_pore_volume_method() == PORE_VOLUME_METHOD_DH:
+            self._refresh_all_sample_bjh_pore_cells()
+        else:
+            self._refresh_sample_bjh_pore_cell(self.active_index)
+        self.statusBar().showMessage("已将当前 DH 设置应用到所有样品", 3000)
+
+    def reset_all_dh_to_default(self) -> None:
+        self.custom_dh_settings.clear()
+        self._dh_distribution_cache.clear()
+        self.reset_dh_to_default(reset_region=True)
+        self.statusBar().showMessage("所有样品已恢复各自默认 DH 设置", 3000)
+
+    def reset_dh_to_default(self, *, reset_region: bool = False) -> None:
+        active = self.active_result()
+        if active is not None:
+            self.custom_dh_settings.pop(id(active), None)
+        settings = self._default_dh_settings() if active is None else self._dh_default_settings_for_result(active)
         self._syncing_dh_controls = True
         try:
-            self.dh_thickness_method = DEFAULT_DH_THICKNESS_METHOD
-            self.dh_thickness_params_by_method = _default_bjh_thickness_params_by_method()
-            self.dh_thickness_params = dict(self.dh_thickness_params_by_method[DEFAULT_DH_THICKNESS_METHOD])
-            self.dh_smooth_derivative = DEFAULT_DH_SMOOTH_DERIVATIVE
-            self.dh_show_adsorption = DEFAULT_DH_SHOW_ADSORPTION
-            self.dh_show_desorption = DEFAULT_DH_SHOW_DESORPTION
-            self.dh_display_metrics = list(DEFAULT_DH_DISPLAY_METRICS)
-            self.dh_differential_mode = DEFAULT_DH_DIFFERENTIAL_MODE
+            self.dh_thickness_method = str(settings["thickness_method"])
+            self.dh_thickness_params_by_method = {
+                method_key: dict(params)
+                for method_key, params in dict(settings["thickness_params_by_method"]).items()
+            }
+            self.dh_thickness_params = dict(settings["thickness_params"])
+            self.dh_smooth_derivative = bool(settings["smooth_derivative"])
+            self.dh_show_adsorption = bool(settings["show_adsorption"])
+            self.dh_show_desorption = bool(settings["show_desorption"])
+            self.dh_display_metrics = list(settings["display_metrics"])
+            self.dh_differential_mode = self.dh_display_metrics[0]
             for key, radio in self.dh_method_radios.items():
                 radio.setChecked(key == self.dh_thickness_method)
             self._set_all_dh_formula_spins()
@@ -3102,9 +3225,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self._sync_reference_table_for_context("dh")
         finally:
             self._syncing_dh_controls = False
+        if reset_region:
+            self.bjh_pore_volume_range = DEFAULT_BJH_PORE_VOLUME_RANGE
+            self._remove_dh_region()
         self._dh_distribution_cache.clear()
         self.refresh_dh_plot()
-        if self.pore_volume_method == PORE_VOLUME_METHOD_DH:
+        if self._active_pore_volume_method() == PORE_VOLUME_METHOD_DH:
             self._refresh_all_sample_bjh_pore_cells()
 
     def _read_hk_interaction_parameter(self) -> float:
@@ -3162,6 +3288,46 @@ class MainWindow(QtWidgets.QMainWindow):
         self._save_hk_settings_for_active()
         self.refresh_hk_plot()
 
+    def _current_hk_settings_snapshot(self) -> dict[str, object]:
+        if self.hk_interaction_parameter_mode == "calculated":
+            interaction_parameter = calculate_hk_interaction_parameter(
+                self.hk_adsorbent_properties,
+                self.hk_adsorptive_properties,
+                adsorbent_key=self.hk_adsorbent_key,
+                adsorptive_key=self.hk_adsorptive_key,
+            )
+        else:
+            interaction_parameter = self._read_hk_interaction_parameter()
+        return {
+            "geometry": self.hk_geometry,
+            "adsorbent_key": self.hk_adsorbent_key,
+            "adsorptive_key": self.hk_adsorptive_key,
+            "adsorbent_properties": dict(self.hk_adsorbent_properties),
+            "adsorptive_properties": dict(self.hk_adsorptive_properties),
+            "interaction_parameter_mode": self.hk_interaction_parameter_mode,
+            "interaction_parameter": interaction_parameter,
+            "cheng_yang_correction": self.hk_cheng_yang_correction,
+            "smooth_derivative": self.hk_smooth_derivative,
+            "display_metric": self.hk_display_metric,
+        }
+
+    def apply_hk_settings_to_all(self) -> None:
+        if not self.results:
+            return
+        settings = self._current_hk_settings_snapshot()
+        self.hk_interaction_parameter = float(settings["interaction_parameter"])
+        if hasattr(self, "hk_interaction_edit"):
+            self.hk_interaction_edit.setText(f"{self.hk_interaction_parameter:.3e}")
+        for result in self.results:
+            self.custom_hk_settings[id(result)] = copy.deepcopy(settings)
+        self.refresh_hk_plot()
+        self.statusBar().showMessage("已将当前 HK 设置应用到所有样品", 3000)
+
+    def reset_all_hk_to_default(self) -> None:
+        self.custom_hk_settings.clear()
+        self.reset_hk_to_default(reset_region=True)
+        self.statusBar().showMessage("所有样品已恢复默认 HK 设置", 3000)
+
     def _open_hk_properties_dialog(self) -> None:
         dialog = HorvathKawazoePropertiesDialog(
             self,
@@ -3185,10 +3351,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 adsorptive_key=self.hk_adsorptive_key,
             )
         self._save_hk_settings_for_active()
-        self._hk_distribution_cache.clear()
         self.refresh_hk_plot()
 
-    def reset_hk_to_default(self) -> None:
+    def reset_hk_to_default(self, *, reset_region: bool = False) -> None:
         active = self.active_result()
         if active is not None:
             self.custom_hk_settings.pop(id(active), None)
@@ -3199,7 +3364,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self._sync_hk_controls_from_state()
         finally:
             self._syncing_hk_controls = False
-        self._hk_distribution_cache.clear()
+        if reset_region:
+            self.hk_pore_volume_range = DEFAULT_HK_PORE_VOLUME_RANGE
+            self._remove_hk_region()
         self.refresh_hk_plot()
 
     def _on_t_plot_surface_area_mode_changed(self) -> None:
@@ -3439,6 +3606,110 @@ class MainWindow(QtWidgets.QMainWindow):
         finally:
             self._syncing_bjh_controls = False
 
+    def _default_dh_settings(self) -> dict[str, object]:
+        params_by_method = _default_bjh_thickness_params_by_method()
+        return {
+            "thickness_method": DEFAULT_DH_THICKNESS_METHOD,
+            "thickness_params_by_method": params_by_method,
+            "thickness_params": dict(params_by_method[DEFAULT_DH_THICKNESS_METHOD]),
+            "smooth_derivative": DEFAULT_DH_SMOOTH_DERIVATIVE,
+            "show_adsorption": DEFAULT_DH_SHOW_ADSORPTION,
+            "show_desorption": DEFAULT_DH_SHOW_DESORPTION,
+            "display_metrics": list(DEFAULT_DH_DISPLAY_METRICS),
+        }
+
+    def _dh_default_settings_for_result(self, result) -> dict[str, object]:
+        settings = self._default_dh_settings()
+        if result is None:
+            return settings
+        params_by_method = dict(settings["thickness_params_by_method"])
+        method = str(result.method_options.get("vendor_dh_thickness_method", settings["thickness_method"]))
+        if method not in params_by_method:
+            method = DEFAULT_DH_THICKNESS_METHOD
+        settings["thickness_method"] = method
+        settings["thickness_params"] = dict(params_by_method[method])
+        if "vendor_dh_smooth_derivative" in result.method_options:
+            settings["smooth_derivative"] = bool(result.method_options.get("vendor_dh_smooth_derivative"))
+        if "vendor_dh_differential_mode" in result.method_options:
+            settings["display_metrics"] = _normalize_bjh_display_metrics(
+                result.method_options.get("vendor_dh_differential_mode")
+            )
+        return settings
+
+    def _dh_settings_for_result(self, result) -> dict[str, object]:
+        settings = self._dh_default_settings_for_result(result)
+        custom = self.custom_dh_settings.get(id(result))
+        if custom:
+            settings.update(custom)
+            params_by_method = _default_bjh_thickness_params_by_method()
+            params_by_method.update(
+                {
+                    method_key: dict(params)
+                    for method_key, params in dict(settings.get("thickness_params_by_method", {})).items()
+                }
+            )
+            if "thickness_params" in custom:
+                method_key = str(settings["thickness_method"])
+                if method_key in params_by_method:
+                    params_by_method[method_key] = {
+                        **params_by_method[method_key],
+                        **dict(custom["thickness_params"]),
+                    }
+            settings["thickness_params_by_method"] = params_by_method
+            method_key = str(settings["thickness_method"])
+            settings["thickness_params"] = dict(
+                params_by_method.get(method_key, params_by_method[DEFAULT_DH_THICKNESS_METHOD])
+            )
+            settings["display_metrics"] = _normalize_bjh_display_metrics(
+                settings.get("display_metrics", DEFAULT_DH_DISPLAY_METRICS)
+            )
+        return settings
+
+    def _save_dh_settings_for_active(self) -> None:
+        active = self.active_result()
+        if active is None:
+            return
+        self.custom_dh_settings[id(active)] = {
+            "thickness_method": self.dh_thickness_method,
+            "thickness_params_by_method": {
+                method_key: dict(params)
+                for method_key, params in self.dh_thickness_params_by_method.items()
+            },
+            "thickness_params": dict(self.dh_thickness_params),
+            "smooth_derivative": self.dh_smooth_derivative,
+            "show_adsorption": self.dh_show_adsorption,
+            "show_desorption": self.dh_show_desorption,
+            "display_metrics": list(self.dh_display_metrics),
+        }
+
+    def _load_dh_settings_for_active(self) -> None:
+        active = self.active_result()
+        settings = self._default_dh_settings() if active is None else self._dh_settings_for_result(active)
+        self._syncing_dh_controls = True
+        try:
+            self.dh_thickness_method = str(settings["thickness_method"])
+            self.dh_thickness_params_by_method = {
+                method_key: dict(params)
+                for method_key, params in dict(settings["thickness_params_by_method"]).items()
+            }
+            self.dh_thickness_params = dict(settings["thickness_params"])
+            self.dh_smooth_derivative = bool(settings["smooth_derivative"])
+            self.dh_show_adsorption = bool(settings["show_adsorption"])
+            self.dh_show_desorption = bool(settings["show_desorption"])
+            self.dh_display_metrics = _normalize_bjh_display_metrics(settings["display_metrics"])
+            self.dh_differential_mode = self.dh_display_metrics[0]
+
+            for key, radio in self.dh_method_radios.items():
+                radio.setChecked(key == self.dh_thickness_method)
+            self._set_all_dh_formula_spins()
+            self.dh_smooth_checkbox.setChecked(self.dh_smooth_derivative)
+            self.dh_adsorption_checkbox.setChecked(self.dh_show_adsorption)
+            self.dh_desorption_checkbox.setChecked(self.dh_show_desorption)
+            self._set_dh_display_combo()
+            self._sync_reference_table_for_context("dh")
+        finally:
+            self._syncing_dh_controls = False
+
     def _default_hk_settings(self) -> dict[str, object]:
         return {
             "geometry": DEFAULT_HK_GEOMETRY,
@@ -3643,6 +3914,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.custom_t_plot_fit_ranges.pop(id(result), None)
         self.custom_t_plot_settings.pop(id(result), None)
         self.custom_bjh_settings.pop(id(result), None)
+        self.custom_dh_settings.pop(id(result), None)
         self.custom_hk_settings.pop(id(result), None)
         self._discard_fit_analysis_cache_for_result(result)
         self._discard_bjh_distribution_cache_for_result(result)
@@ -3677,14 +3949,17 @@ class MainWindow(QtWidgets.QMainWindow):
             self.custom_t_plot_fit_ranges.clear()
             self.custom_t_plot_settings.clear()
             self.custom_bjh_settings.clear()
+            self.custom_dh_settings.clear()
             self.custom_hk_settings.clear()
             self._fit_analysis_cache.clear()
             self._bjh_distribution_cache.clear()
             self._dh_distribution_cache.clear()
             self._hk_distribution_cache.clear()
             self.bjh_pore_volume_range = DEFAULT_BJH_PORE_VOLUME_RANGE
+            self.hk_pore_volume_range = DEFAULT_HK_PORE_VOLUME_RANGE
             self._remove_bjh_region()
             self._remove_dh_region()
+            self._remove_hk_region()
             self._isotherm_region_custom = False
         else:
             self.results.extend(parsed)
@@ -3750,6 +4025,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._reset_all_fit_regions()
         self._load_t_plot_settings_for_active()
         self._load_bjh_settings_for_active()
+        self._load_dh_settings_for_active()
         self._load_hk_settings_for_active()
         self.refresh_isotherm_plot()
         self.refresh_active_views()
@@ -3913,6 +4189,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def refresh_all(self) -> None:
         self._load_t_plot_settings_for_active()
         self._load_bjh_settings_for_active()
+        self._load_dh_settings_for_active()
         self._load_hk_settings_for_active()
         self.refresh_isotherm_plot()
         self.refresh_sample_table()
@@ -4041,7 +4318,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _style_sample_bjh_pore_item(self, item: QtWidgets.QTableWidgetItem, result) -> None:
         label = self._pore_volume_method_label()
-        if self.pore_volume_method == PORE_VOLUME_METHOD_BJH and self._has_custom_bjh_settings(result):
+        if self._is_hk_tab_active() and self._has_custom_hk_settings(result):
+            item.setForeground(QtGui.QBrush(QtGui.QColor(CUSTOM_BET_COLOR)))
+            item.setToolTip("HK 孔型、物性、作用参数或平滑选项已人工调整")
+            return
+        if self._active_pore_volume_method() == PORE_VOLUME_METHOD_DH and self._has_custom_dh_settings(result):
+            item.setForeground(QtGui.QBrush(QtGui.QColor(CUSTOM_BET_COLOR)))
+            item.setToolTip("DH 厚度曲线、公式参数、平滑或显示分支已人工调整")
+            return
+        if self._active_pore_volume_method() == PORE_VOLUME_METHOD_BJH and self._has_custom_bjh_settings(result):
             item.setForeground(QtGui.QBrush(QtGui.QColor(CUSTOM_BET_COLOR)))
             item.setToolTip("BJH 厚度曲线、公式参数、校正或显示分支已人工调整")
         else:
@@ -4062,6 +4347,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def on_plot_tab_changed(self, _index: int) -> None:
         if not self._isotherm_region_custom:
             self.refresh_isotherm_plot()
+        self._update_pore_volume_header()
+        self._refresh_all_sample_bjh_pore_cells()
         self.refresh_analysis_plots()
 
     def refresh_isotherm_plot(self) -> None:
@@ -4102,7 +4389,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._refresh_bet_plot(active, p_min, p_max, reset_region=reset_region)
 
     def refresh_bjh_plot(self) -> None:
-        target_diameter_range = self._current_bjh_diameter_range() or self.bjh_pore_volume_range
+        target_diameter_range = self.bjh_pore_volume_range
         self._remove_bjh_region()
         self._remove_bjh_selection()
         self._bjh_distribution_rows_by_key = {}
@@ -4145,12 +4432,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._sync_bjh_region_to_diameter_range(target_diameter_range)
         current_range = self._current_bjh_diameter_range()
         if current_range is not None:
-            self.bjh_pore_volume_range = current_range
-            self._refresh_bjh_selection(current_range)
+            self.bjh_pore_volume_range = tuple(sorted((float(target_diameter_range[0]), float(target_diameter_range[1]))))
+            self._refresh_bjh_selection(self.bjh_pore_volume_range)
             self._refresh_all_sample_bjh_pore_cells()
 
     def refresh_dh_plot(self) -> None:
-        target_diameter_range = self._current_dh_diameter_range() or self.bjh_pore_volume_range
+        target_diameter_range = self.bjh_pore_volume_range
         self._remove_dh_region()
         self._remove_dh_selection()
         self._dh_distribution_rows_by_key = {}
@@ -4162,6 +4449,10 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             return
         pressure_range = self._dh_pressure_range()
+        dh_settings_by_index = {
+            index: self._dh_settings_for_result(result)
+            for index, result in enumerate(self.results)
+        }
         self._dh_distribution_rows_by_key = plot_dh_distribution_multi(
             self.dh_plot,
             self.results,
@@ -4174,6 +4465,7 @@ class MainWindow(QtWidgets.QMainWindow):
             show_desorption=self.dh_show_desorption,
             smooth=self.dh_smooth_derivative,
             pressure_range=pressure_range,
+            dh_settings_by_index=dh_settings_by_index,
             distribution_provider=self._cached_dh_distribution_rows,
             display_metrics=self.dh_display_metrics,
         )
@@ -4184,18 +4476,26 @@ class MainWindow(QtWidgets.QMainWindow):
         self._sync_dh_region_to_diameter_range(target_diameter_range)
         current_range = self._current_dh_diameter_range()
         if current_range is not None:
-            self.bjh_pore_volume_range = current_range
-            self._refresh_dh_selection(current_range)
+            self.bjh_pore_volume_range = tuple(sorted((float(target_diameter_range[0]), float(target_diameter_range[1]))))
+            self._refresh_dh_selection(self.bjh_pore_volume_range)
             self._refresh_all_sample_bjh_pore_cells()
 
     def refresh_hk_plot(self) -> None:
+        target_width_range = self.hk_pore_volume_range
+        self._remove_hk_region()
+        self._remove_hk_selection()
         self._hk_distribution_rows_by_key = {}
+        self._hk_width_log_bounds = None
         if not self.results:
             plot_hk_distribution_placeholder(
                 self.hk_plot,
                 display_metric=self.hk_display_metric,
             )
             return
+        hk_settings_by_index = {
+            index: self._hk_settings_for_result(result)
+            for index, result in enumerate(self.results)
+        }
         self._hk_distribution_rows_by_key = plot_hk_distribution_multi(
             self.hk_plot,
             self.results,
@@ -4212,9 +4512,17 @@ class MainWindow(QtWidgets.QMainWindow):
             cheng_yang_correction=self.hk_cheng_yang_correction,
             smooth=self.hk_smooth_derivative,
             pressure_range=self._current_pressure_region() if self._isotherm_region_custom else None,
+            hk_settings_by_index=hk_settings_by_index,
             distribution_provider=self._cached_hk_distribution_rows,
             display_metric=self.hk_display_metric,
         )
+        self._hk_width_log_bounds = self._hk_log_bounds_from_rows(self._hk_distribution_rows_by_key)
+        self._sync_hk_region_to_width_range(target_width_range)
+        current_range = self._current_hk_width_range()
+        if current_range is not None:
+            self.hk_pore_volume_range = tuple(sorted((float(target_width_range[0]), float(target_width_range[1]))))
+            self._refresh_hk_selection(self.hk_pore_volume_range)
+        self._refresh_all_sample_bjh_pore_cells()
 
     def _bjh_pressure_range(self) -> tuple[float, float] | None:
         if not self._isotherm_region_custom:
@@ -5036,6 +5344,104 @@ class MainWindow(QtWidgets.QMainWindow):
         lo, hi = sorted((float(log_lo), float(log_hi)))
         return (10.0**lo, 10.0**hi)
 
+    def _remove_hk_selection(self) -> None:
+        for item in self._hk_selection_items:
+            try:
+                self.hk_plot.removeItem(item)
+            except RuntimeError:
+                pass
+        self._hk_selection_items = []
+
+    def _refresh_hk_selection(self, width_range=None) -> None:
+        self._remove_hk_selection()
+        width_range = width_range or self._current_hk_width_range()
+        if width_range is None or not self._hk_distribution_rows_by_key:
+            return
+        self._hk_selection_items = plot_hk_selection(
+            self.hk_plot,
+            self._hk_distribution_rows_by_key,
+            self.sample_colors,
+            width_range,
+            active_index=self.active_index,
+            display_metric=self.hk_display_metric,
+        )
+
+    def _remove_hk_region(self) -> None:
+        if self.hk_region is None:
+            return
+        try:
+            self.hk_region.sigRegionChanged.disconnect(self.on_hk_region_changed)
+        except (RuntimeError, TypeError):
+            pass
+        try:
+            self.hk_plot.removeItem(self.hk_region)
+        except RuntimeError:
+            pass
+        self.hk_region = None
+
+    def _add_hk_region(self, values: list[float], bounds: list[float]) -> None:
+        region = self._make_selection_region(
+            values,
+            bounds=bounds,
+            movable=True,
+            line_color=BJH_REGION_LINE_COLOR,
+            hover_line_color=BJH_REGION_LINE_HOVER_COLOR,
+            fill_color=BJH_REGION_FILL_COLOR,
+            hover_fill_color=BJH_REGION_FILL_HOVER_COLOR,
+        )
+        region.sigRegionChanged.connect(self.on_hk_region_changed)
+        self.hk_plot.addItem(region, ignoreBounds=True)
+        self.hk_region = region
+
+    def on_hk_region_changed(self) -> None:
+        if self._syncing_region_changes or self._setting_hk_region:
+            return
+        if not self._hk_region_pending:
+            self._hk_region_pending = True
+            QtCore.QTimer.singleShot(25, self._update_hk_pore_volume_from_region)
+
+    def _update_hk_pore_volume_from_region(self) -> None:
+        self._hk_region_pending = False
+        width_range = self._current_hk_width_range()
+        if width_range is None:
+            return
+        self.hk_pore_volume_range = width_range
+        self._refresh_hk_selection(width_range)
+        self._refresh_all_sample_bjh_pore_cells()
+
+    def _sync_hk_region_to_width_range(self, width_range: tuple[float, float]) -> None:
+        if self._setting_hk_region or self._hk_width_log_bounds is None:
+            return
+        values = self._diameter_range_to_log_region(width_range)
+        if values is None:
+            return
+        bounds = list(self._hk_width_log_bounds)
+        values = [max(bounds[0], min(value, bounds[1])) for value in values]
+        if values[0] >= values[1]:
+            values = list(bounds)
+        if values[0] >= values[1]:
+            return
+        self._setting_hk_region = True
+        try:
+            if self.hk_region is None:
+                self._add_hk_region(values, bounds)
+            else:
+                if hasattr(self.hk_region, "setBounds"):
+                    self.hk_region.setBounds(bounds)
+                self.hk_region.setRegion(values)
+        finally:
+            self._setting_hk_region = False
+
+    def _current_hk_width_range(self) -> tuple[float, float] | None:
+        if self.hk_region is None:
+            return None
+        try:
+            log_lo, log_hi = self.hk_region.getRegion()
+        except RuntimeError:
+            return None
+        lo, hi = sorted((float(log_lo), float(log_hi)))
+        return (10.0**lo, 10.0**hi)
+
     def _pressure_for_dh_diameter(self, diameter_nm: float) -> float | None:
         try:
             target = float(diameter_nm)
@@ -5335,16 +5741,17 @@ class MainWindow(QtWidgets.QMainWindow):
         active = self.active_result()
         if active is None:
             return []
-        phase = self._dh_pore_volume_phase()
+        settings = self._dh_settings_for_result(active)
+        phase = self._dh_pore_volume_phase(settings)
         if phase is None:
             return []
         return list(
             self._cached_dh_distribution_rows(
                 active,
                 phase=phase,
-                thickness_method=self.dh_thickness_method,
-                thickness_params=dict(self.dh_thickness_params),
-                smooth=bool(self.dh_smooth_derivative),
+                thickness_method=str(settings["thickness_method"]),
+                thickness_params=dict(settings["thickness_params"]),
+                smooth=bool(settings["smooth_derivative"]),
             )
         )
 
@@ -5368,6 +5775,26 @@ class MainWindow(QtWidgets.QMainWindow):
             log_max += 0.01
         return (log_min, log_max)
 
+    @staticmethod
+    def _hk_log_bounds_from_rows(rows_by_key: dict[tuple[int, str], list[dict[str, float]]]) -> tuple[float, float] | None:
+        widths = []
+        for rows in rows_by_key.values():
+            for row in rows:
+                try:
+                    width = float(row.get("pore_width_nm", row.get("pore_diameter_nm")))
+                except (TypeError, ValueError):
+                    continue
+                if np.isfinite(width) and width > 0.0:
+                    widths.append(width)
+        if not widths:
+            return None
+        log_min = math.log10(min(widths))
+        log_max = math.log10(max(widths))
+        if log_min == log_max:
+            log_min -= 0.01
+            log_max += 0.01
+        return (log_min, log_max)
+
     def _reset_all_fit_regions(self) -> None:
         self._remove_bet_region()
         self._remove_bet_selection()
@@ -5379,6 +5806,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._remove_bjh_selection()
         self._remove_dh_region()
         self._remove_dh_selection()
+        self._remove_hk_region()
+        self._remove_hk_selection()
         self._bet_fit_line = None
         self._bet_x_range = None
         self._bet_plot_p_range = None
@@ -5392,6 +5821,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._bjh_diameter_log_bounds = None
         self._dh_distribution_rows_by_key = {}
         self._dh_diameter_log_bounds = None
+        self._hk_distribution_rows_by_key = {}
+        self._hk_width_log_bounds = None
 
     def refresh_metrics(self) -> None:
         active = self.active_result()
@@ -5552,47 +5983,24 @@ class MainWindow(QtWidgets.QMainWindow):
         self._updating_sample_checks = False
 
     def _pore_volume_method_label(self) -> str:
-        return "DH" if self.pore_volume_method == PORE_VOLUME_METHOD_DH else "BJH"
+        method = self._active_pore_volume_method()
+        if method == PORE_VOLUME_METHOD_HK:
+            return "HK"
+        return "DH" if method == PORE_VOLUME_METHOD_DH else "BJH"
+
+    def _active_pore_volume_method(self) -> str:
+        if self._is_hk_tab_active():
+            return PORE_VOLUME_METHOD_HK
+        return PORE_VOLUME_METHOD_DH if self._is_dh_tab_active() else PORE_VOLUME_METHOD_BJH
 
     def _update_pore_volume_header(self) -> None:
         item = self.sample_table.horizontalHeaderItem(BJH_PORE_VOLUME_COLUMN)
         label = self._pore_volume_method_label()
         if item is not None:
             item.setText("选区孔容量(cm3/g)")
-            item.setToolTip(f"当前按 {label} 积分；点击表头排序，点击右侧箭头切换方法")
+            item.setToolTip(f"当前按 {label} 标签页绿色选区积分；切换 BJH/DH/HK 标签页会自动切换算法")
             item.setTextAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
-        button = getattr(self, "pore_volume_method_button", None)
-        if button is not None:
-            button.setToolTip(f"切换选区孔容量积分方法（当前：{label}）")
         self._position_header_controls()
-
-    def _show_pore_volume_method_menu(self) -> None:
-        button = getattr(self, "pore_volume_method_button", None)
-        if button is None:
-            return
-        menu = QtWidgets.QMenu(button)
-        bjh_action = menu.addAction("BJH 积分")
-        dh_action = menu.addAction("DH 积分")
-        for action in (bjh_action, dh_action):
-            action.setCheckable(True)
-        bjh_action.setChecked(self.pore_volume_method == PORE_VOLUME_METHOD_BJH)
-        dh_action.setChecked(self.pore_volume_method == PORE_VOLUME_METHOD_DH)
-        exec_menu = getattr(menu, "exec_", None) or getattr(menu, "exec")
-        chosen = exec_menu(button.mapToGlobal(QtCore.QPoint(0, button.height())))
-        if chosen == bjh_action:
-            self._set_pore_volume_method(PORE_VOLUME_METHOD_BJH)
-        elif chosen == dh_action:
-            self._set_pore_volume_method(PORE_VOLUME_METHOD_DH)
-
-    def _set_pore_volume_method(self, method: str) -> None:
-        if method not in {PORE_VOLUME_METHOD_BJH, PORE_VOLUME_METHOD_DH}:
-            return
-        changed = method != self.pore_volume_method
-        self.pore_volume_method = method
-        self._update_pore_volume_header()
-        self._refresh_all_sample_bjh_pore_cells()
-        if changed:
-            self.statusBar().showMessage(f"选区孔容量已切换为 {self._pore_volume_method_label()} 积分", 3000)
 
     def _position_header_controls(self, *args) -> None:
         header = self.sample_table.frozen_header()
@@ -5602,26 +6010,6 @@ class MainWindow(QtWidgets.QMainWindow):
             y = (header.height() - size.height()) // 2
             self.select_all_check.setVisible(x + size.width() > 0 and x < header.width())
             self.select_all_check.setGeometry(x, y, size.width(), size.height())
-
-        header = self.sample_table.horizontalHeader()
-        button = getattr(self, "pore_volume_method_button", None)
-        if button is None:
-            return
-        if not header.isVisible() or self.sample_table.isColumnHidden(BJH_PORE_VOLUME_COLUMN):
-            button.setVisible(False)
-            return
-        width = button.width()
-        height = button.height()
-        section_x = header.sectionViewportPosition(BJH_PORE_VOLUME_COLUMN)
-        section_width = header.sectionSize(BJH_PORE_VOLUME_COLUMN)
-        item = self.sample_table.horizontalHeaderItem(BJH_PORE_VOLUME_COLUMN)
-        text_width = header.fontMetrics().horizontalAdvance(item.text() if item is not None else "")
-        x = section_x + min(section_width - width - 4, 6 + text_width + 4)
-        y = (header.height() - height) // 2
-        visible = x + width > 0 and section_x < header.width()
-        button.setVisible(visible)
-        if visible:
-            button.setGeometry(x, y, width, height)
 
     def _refresh_visibility_dependent_ui(self) -> None:
         self.refresh_isotherm_plot()
@@ -5640,6 +6028,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._remove_bjh_selection()
         self._remove_dh_region()
         self._remove_dh_selection()
+        self._remove_hk_region()
+        self._remove_hk_selection()
         self._bet_plot_p_range = None
         self._langmuir_plot_p_range = None
         self._t_plot_p_range = None
@@ -5648,6 +6038,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._dh_distribution_rows_by_key = {}
         self._dh_diameter_log_bounds = None
         self._hk_distribution_rows_by_key = {}
+        self._hk_width_log_bounds = None
         for plot in (self.bet_plot, self.langmuir_plot, self.t_plot, self.pore_plot, self.dh_plot, self.hk_plot):
             plot.clear()
 
@@ -6136,7 +6527,10 @@ class MainWindow(QtWidgets.QMainWindow):
         result,
         diameter_range: tuple[float, float] | None = None,
     ) -> float | None:
-        if self.pore_volume_method == PORE_VOLUME_METHOD_DH:
+        method = self._active_pore_volume_method()
+        if method == PORE_VOLUME_METHOD_HK:
+            return self._hk_pore_volume_for_result(result, width_range=diameter_range)
+        if method == PORE_VOLUME_METHOD_DH:
             return self._dh_pore_volume_for_result(result, diameter_range=diameter_range)
         return self._bjh_pore_volume_for_result(result, diameter_range=diameter_range)
 
@@ -6167,7 +6561,8 @@ class MainWindow(QtWidgets.QMainWindow):
         result,
         diameter_range: tuple[float, float] | None = None,
     ) -> float | None:
-        phase = self._dh_pore_volume_phase()
+        settings = self._dh_settings_for_result(result)
+        phase = self._dh_pore_volume_phase(settings)
         if phase is None:
             return None
         diameter_range = diameter_range or self._selected_pore_volume_range()
@@ -6175,11 +6570,33 @@ class MainWindow(QtWidgets.QMainWindow):
         rows = self._cached_dh_distribution_rows(
             result,
             phase=phase,
-            thickness_method=self.dh_thickness_method,
-            thickness_params=dict(self.dh_thickness_params),
-            smooth=bool(self.dh_smooth_derivative),
+            thickness_method=str(settings["thickness_method"]),
+            thickness_params=dict(settings["thickness_params"]),
+            smooth=bool(settings["smooth_derivative"]),
         )
         return self._bjh_pore_volume_from_rows(rows, (d_min, d_max))
+
+    def _hk_pore_volume_for_result(
+        self,
+        result,
+        width_range: tuple[float, float] | None = None,
+    ) -> float | None:
+        settings = self._hk_settings_for_result(result)
+        width_range = width_range or self.hk_pore_volume_range
+        w_min, w_max = sorted((float(width_range[0]), float(width_range[1])))
+        rows = self._cached_hk_distribution_rows(
+            result,
+            geometry=str(settings["geometry"]),
+            adsorbent_key=str(settings["adsorbent_key"]),
+            adsorptive_key=str(settings["adsorptive_key"]),
+            adsorbent_properties=dict(settings["adsorbent_properties"]),
+            adsorptive_properties=dict(settings["adsorptive_properties"]),
+            interaction_parameter_erg_cm4=float(settings["interaction_parameter"]),
+            interaction_parameter_mode=str(settings["interaction_parameter_mode"]),
+            cheng_yang_correction=bool(settings["cheng_yang_correction"]),
+            smooth=bool(settings["smooth_derivative"]),
+        )
+        return self._hk_pore_volume_from_rows(rows, (w_min, w_max))
 
     @staticmethod
     def _bjh_pore_volume_from_rows(
@@ -6200,19 +6617,32 @@ class MainWindow(QtWidgets.QMainWindow):
                 volume += increment
         return volume
 
+    @staticmethod
+    def _hk_pore_volume_from_rows(
+        rows: list[dict[str, float]],
+        width_range: tuple[float, float],
+    ) -> float | None:
+        if not rows:
+            return None
+        w_min, w_max = sorted((float(width_range[0]), float(width_range[1])))
+        volume = 0.0
+        for row in rows:
+            try:
+                width = float(row.get("pore_width_nm", row.get("pore_diameter_nm")))
+                increment = float(row["incremental_pore_volume_cm3_g"])
+            except (TypeError, ValueError, KeyError):
+                continue
+            if np.isfinite(width) and np.isfinite(increment) and w_min <= width <= w_max:
+                volume += increment
+        return volume
+
     def _selected_bjh_pore_volume_range(self) -> tuple[float, float]:
-        current = self._current_bjh_diameter_range()
-        if current is not None:
-            return current
         return self.bjh_pore_volume_range
 
     def _selected_pore_volume_range(self) -> tuple[float, float]:
-        if self.pore_volume_method == PORE_VOLUME_METHOD_DH:
-            current = self._current_dh_diameter_range()
-            if current is not None:
-                return current
-            return self.bjh_pore_volume_range
-        return self._selected_bjh_pore_volume_range()
+        if self._active_pore_volume_method() == PORE_VOLUME_METHOD_HK:
+            return self.hk_pore_volume_range
+        return self.bjh_pore_volume_range
 
     def _has_custom_bjh_settings(self, result) -> bool:
         if id(result) not in self.custom_bjh_settings:
@@ -6239,6 +6669,54 @@ class MainWindow(QtWidgets.QMainWindow):
             return True
         return False
 
+    def _has_custom_dh_settings(self, result) -> bool:
+        if id(result) not in self.custom_dh_settings:
+            return False
+        settings = self._dh_settings_for_result(result)
+        defaults = self._dh_default_settings_for_result(result)
+        if str(settings["thickness_method"]) != str(defaults["thickness_method"]):
+            return True
+        if not _thickness_params_equal(dict(settings["thickness_params"]), dict(defaults["thickness_params"])):
+            return True
+        if bool(settings["smooth_derivative"]) != bool(defaults["smooth_derivative"]):
+            return True
+        if bool(settings["show_adsorption"]) != bool(defaults["show_adsorption"]):
+            return True
+        if bool(settings["show_desorption"]) != bool(defaults["show_desorption"]):
+            return True
+        return False
+
+    def _has_custom_hk_settings(self, result) -> bool:
+        if id(result) not in self.custom_hk_settings:
+            return False
+        settings = self._hk_settings_for_result(result)
+        defaults = self._default_hk_settings()
+        for key in (
+            "geometry",
+            "adsorbent_key",
+            "adsorptive_key",
+            "interaction_parameter_mode",
+        ):
+            if str(settings[key]) != str(defaults[key]):
+                return True
+        if not _settings_mapping_equal(
+            dict(settings["adsorbent_properties"]),
+            dict(defaults["adsorbent_properties"]),
+        ):
+            return True
+        if not _settings_mapping_equal(
+            dict(settings["adsorptive_properties"]),
+            dict(defaults["adsorptive_properties"]),
+        ):
+            return True
+        if not _float_equal(settings["interaction_parameter"], defaults["interaction_parameter"]):
+            return True
+        if bool(settings["cheng_yang_correction"]) != bool(defaults["cheng_yang_correction"]):
+            return True
+        if bool(settings["smooth_derivative"]) != bool(defaults["smooth_derivative"]):
+            return True
+        return False
+
     def _bjh_pore_volume_phase(self, settings: dict[str, object] | None = None) -> str | None:
         if settings is None:
             show_adsorption = self.bjh_show_adsorption
@@ -6252,10 +6730,16 @@ class MainWindow(QtWidgets.QMainWindow):
             return "desorption"
         return None
 
-    def _dh_pore_volume_phase(self) -> str | None:
-        if self.dh_show_adsorption:
+    def _dh_pore_volume_phase(self, settings: dict[str, object] | None = None) -> str | None:
+        if settings is None:
+            show_adsorption = self.dh_show_adsorption
+            show_desorption = self.dh_show_desorption
+        else:
+            show_adsorption = bool(settings["show_adsorption"])
+            show_desorption = bool(settings["show_desorption"])
+        if show_adsorption:
             return "adsorption"
-        if self.dh_show_desorption:
+        if show_desorption:
             return "desorption"
         return None
 
@@ -6795,8 +7279,8 @@ def math_isfinite(value: float) -> bool:
 
 def run(argv: list[str] | None = None) -> int:
     app = QtWidgets.QApplication(argv or sys.argv)
-    app.setApplicationName(APP_NAME)
-    app.setApplicationDisplayName(APP_NAME)
+    app.setApplicationName("UnifiedBET")
+    app.setApplicationDisplayName("")
     if APP_ICON_PATH.exists():
         app.setWindowIcon(QtGui.QIcon(str(APP_ICON_PATH)))
     app.setFont(QtGui.QFont("Microsoft YaHei UI", 9))
