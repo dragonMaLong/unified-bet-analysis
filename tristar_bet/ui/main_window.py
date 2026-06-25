@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import math
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
@@ -1587,7 +1588,15 @@ class MainWindow(QtWidgets.QMainWindow):
             if update_button is not None:
                 update_button.setEnabled(True)
             return
-        QtWidgets.QApplication.quit()
+        if self._update_progress_dialog is not None:
+            self._update_progress_dialog.close()
+            self._update_progress_dialog = None
+        killer = threading.Timer(1.5, lambda: os._exit(0))
+        killer.daemon = True
+        killer.start()
+        for widget in QtWidgets.QApplication.topLevelWidgets():
+            widget.close()
+        QtWidgets.QApplication.exit(0)
 
     def _open_update_page(self, info: UpdateInfo) -> None:
         url = info.download_url or info.release_url

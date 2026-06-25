@@ -138,12 +138,14 @@ def _remove_quietly(path: Path) -> None:
 
 def _launch_replacement_script(downloaded_exe: Path) -> None:
     current_exe = Path(sys.executable).resolve()
+    current_pid = os.getpid()
     script_dir = _download_dir()
     script_dir.mkdir(parents=True, exist_ok=True)
     script_path = script_dir / "apply_update.ps1"
+    log_path = script_dir / "apply_update.log"
     backup_path = current_exe.with_name(current_exe.name + ".old")
     script_path.write_text(
-        _replacement_script_text(current_exe, downloaded_exe, backup_path),
+        _replacement_script_text(current_exe, downloaded_exe, backup_path, log_path, current_pid),
         encoding="utf-8-sig",
     )
     subprocess.Popen(
@@ -161,27 +163,62 @@ def _launch_replacement_script(downloaded_exe: Path) -> None:
     )
 
 
-def _replacement_script_text(current_exe: Path, downloaded_exe: Path, backup_path: Path) -> str:
+def _replacement_script_text(
+    current_exe: Path,
+    downloaded_exe: Path,
+    backup_path: Path,
+    log_path: Path,
+    current_pid: int,
+) -> str:
     return f"""$ErrorActionPreference = 'Stop'
 $OldPath = {_ps_single_quoted(str(current_exe))}
 $NewPath = {_ps_single_quoted(str(downloaded_exe))}
 $BackupPath = {_ps_single_quoted(str(backup_path))}
+$LogPath = {_ps_single_quoted(str(log_path))}
+$OldProcessId = {int(current_pid)}
 $TargetDir = Split-Path -Parent $OldPath
 $NewDir = Split-Path -Parent $NewPath
 
-for ($i = 0; $i -lt 40; $i++) {{
+function Write-UpdateLog($Message) {{
+    try {{
+        $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff'
+        Add-Content -LiteralPath $LogPath -Value "$stamp $Message" -Encoding UTF8
+    }} catch {{}}
+}}
+
+Write-UpdateLog "apply update started; old=$OldPath new=$NewPath pid=$OldProcessId"
+
+try {{
+    $process = Get-Process -Id $OldProcessId -ErrorAction SilentlyContinue
+    if ($process) {{
+        Write-UpdateLog "waiting for old process to exit"
+        Wait-Process -Id $OldProcessId -Timeout 60 -ErrorAction SilentlyContinue
+    }}
+}} catch {{
+    Write-UpdateLog "wait failed: $($_.Exception.Message)"
+}}
+
+for ($i = 0; $i -lt 120; $i++) {{
     Start-Sleep -Milliseconds 500
     try {{
+        if (-not (Test-Path -LiteralPath $NewPath)) {{
+            throw "downloaded update is missing: $NewPath"
+        }}
         if (Test-Path -LiteralPath $BackupPath) {{
             Remove-Item -LiteralPath $BackupPath -Force -ErrorAction SilentlyContinue
         }}
-        Move-Item -LiteralPath $OldPath -Destination $BackupPath -Force
-        Move-Item -LiteralPath $NewPath -Destination $OldPath -Force
+        if (Test-Path -LiteralPath $OldPath) {{
+            Move-Item -LiteralPath $OldPath -Destination $BackupPath -Force
+        }}
+        Copy-Item -LiteralPath $NewPath -Destination $OldPath -Force
+        Write-UpdateLog "replacement succeeded"
         Start-Process -FilePath $OldPath -WorkingDirectory $TargetDir
         Remove-Item -LiteralPath $BackupPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $NewPath -Force -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
         exit 0
     }} catch {{
+        Write-UpdateLog "attempt $i failed: $($_.Exception.Message)"
         if ((-not (Test-Path -LiteralPath $OldPath)) -and (Test-Path -LiteralPath $BackupPath)) {{
             try {{
                 Move-Item -LiteralPath $BackupPath -Destination $OldPath -Force
@@ -190,6 +227,7 @@ for ($i = 0; $i -lt 40; $i++) {{
     }}
 }}
 
+Write-UpdateLog "replacement failed; launching downloaded exe without replacing old file"
 Start-Process -FilePath $NewPath -WorkingDirectory $NewDir
 """
 

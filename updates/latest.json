@@ -1,16 +1,16 @@
 {
-  "version": "1.0.6",
-  "release_name": "v1.0.6",
-  "release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.0.6",
-  "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.0.6/Micromeritics-BET.exe",
+  "version": "1.0.7",
+  "release_name": "v1.0.7",
+  "release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.0.7",
+  "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.0.7/Micromeritics-BET.exe",
   "gitee_source_name": "Gitee",
-  "gitee_release_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/tag/v1.0.6",
-  "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.0.6/Micromeritics-BET.exe",
+  "gitee_release_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/tag/v1.0.7",
+  "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.0.7/Micromeritics-BET.exe",
   "github_source_name": "GitHub",
-  "github_release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.0.6",
-  "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.0.6/Micromeritics-BET.exe",
+  "github_release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.0.7",
+  "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.0.7/Micromeritics-BET.exe",
   "asset_name": "Micromeritics-BET.exe",
-  "sha256": "ec7d431cbb3047ed0e5de67bb9d7c23acbbd8d37fa026c245db4c569dbd0f4cf",
+  "sha256": "8c54f13efca1265f0513567aab18e656cb0a9d2c2d3eb51aee82b14917bc0dce",
   "published_at": "2026-06-24",
-  "release_notes": "v1.0.6 增加 DH 页面绿色孔径选区与下方等温线选区联动；样品列表选区孔容量支持在 BJH/DH 积分之间切换；修正打包配置，避免无关 Qt 绑定进入发行包。"
+  "release_notes": "v1.0.7 修复软件下载完成后无法可靠重启和替换旧 exe 的问题：替换脚本现在会等待旧进程退出、记录 apply_update.log，并由主程序在启动替换脚本后强制释放当前进程。"
 }
