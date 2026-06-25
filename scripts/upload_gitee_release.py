@@ -6,6 +6,7 @@ import json
 import mimetypes
 import os
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -148,12 +149,7 @@ def request_json(
         body = urllib.parse.urlencode(data).encode("utf-8")
         headers["Content-Type"] = "application/x-www-form-urlencoded"
     request = urllib.request.Request(url, data=body, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            raw = response.read()
-    except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", errors="replace")
-        raise GiteeApiError(f"Gitee API HTTP {exc.code}: {raw[:500]}") from exc
+    raw = open_with_retries(request, timeout=60)
     if not raw:
         return None
     try:
@@ -197,12 +193,7 @@ def request_multipart(
         },
         method=method,
     )
-    try:
-        with urllib.request.urlopen(request, timeout=180) as response:
-            raw = response.read()
-    except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", errors="replace")
-        raise GiteeApiError(f"Gitee API HTTP {exc.code}: {raw[:500]}") from exc
+    raw = open_with_retries(request, timeout=180)
     if not raw:
         return None
     try:
@@ -217,6 +208,26 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def open_with_retries(request: urllib.request.Request, *, timeout: int) -> bytes:
+    retry_statuses = {502, 503, 504}
+    last_error: Exception | None = None
+    for attempt in range(1, 5):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return response.read()
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="replace")
+            if exc.code not in retry_statuses or attempt >= 4:
+                raise GiteeApiError(f"Gitee API HTTP {exc.code}: {raw[:500]}") from exc
+            last_error = exc
+        except urllib.error.URLError as exc:
+            if attempt >= 4:
+                raise GiteeApiError(f"Gitee API request failed: {exc}") from exc
+            last_error = exc
+        time.sleep(2 * attempt)
+    raise GiteeApiError(f"Gitee API request failed: {last_error}")
 
 
 def read_token(name: str) -> str:
