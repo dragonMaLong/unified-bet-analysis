@@ -52,25 +52,35 @@ def check_for_update(
     timeout: float = 8.0,
 ) -> UpdateInfo:
     errors: list[str] = []
+    candidates: list[UpdateInfo] = []
     for url in manifest_urls:
         url = str(url or "").strip()
         if not url:
             continue
         try:
             payload = _fetch_json(url, timeout=timeout, api=False)
-            return _info_from_manifest(payload, current_version, url)
+            candidates.append(_info_from_manifest(payload, current_version, url))
         except UpdateCheckError as exc:
             errors.append(f"{_source_name_from_url(url)}: {exc}")
 
+    if candidates:
+        best = _newest_info(candidates)
+        if best.update_available:
+            return best
+
     try:
-        return _info_from_github_release(
+        release_info = _info_from_github_release(
             _fetch_latest_release(repository, timeout=timeout),
             current_version,
             repository,
         )
     except UpdateCheckError as exc:
         errors.append(f"GitHub Releases: {exc}")
+        if candidates:
+            return _newest_info(candidates)
         raise UpdateCheckError("；".join(errors)) from exc
+    candidates.append(release_info)
+    return _newest_info(candidates)
 
 
 def compare_versions(left: str, right: str) -> int:
@@ -84,6 +94,10 @@ def compare_versions(left: str, right: str) -> int:
     if left_parts < right_parts:
         return -1
     return 0
+
+
+def _newest_info(candidates: Iterable[UpdateInfo]) -> UpdateInfo:
+    return max(candidates, key=lambda info: _version_parts(info.latest_version))
 
 
 def _info_from_manifest(payload: dict[str, Any], current_version: str, source_url: str) -> UpdateInfo:
