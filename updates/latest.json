@@ -1,16 +1,16 @@
 {
-  "version": "1.0.8",
-  "release_name": "v1.0.8",
-  "release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.0.8",
-  "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.0.8/Micromeritics-BET.exe",
+  "version": "1.0.9",
+  "release_name": "v1.0.9",
+  "release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.0.9",
+  "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.0.9/Micromeritics-BET.exe",
   "gitee_source_name": "Gitee",
-  "gitee_release_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/tag/v1.0.8",
-  "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.0.8/Micromeritics-BET.exe",
+  "gitee_release_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/tag/v1.0.9",
+  "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.0.9/Micromeritics-BET.exe",
   "github_source_name": "GitHub",
-  "github_release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.0.8",
-  "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.0.8/Micromeritics-BET.exe",
+  "github_release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.0.9",
+  "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.0.9/Micromeritics-BET.exe",
   "asset_name": "Micromeritics-BET.exe",
-  "sha256": "c6a1949d43cfcf8519eaae14282b922c67cb98d8a50fa701e2be2e4f5de160dd",
+  "sha256": "8f00e06412a0dfa4c87f852112396cdc3b9300a812077a42a66b59443558540b",
   "published_at": "2026-06-25",
-  "release_notes": "v1.0.8 adds the Horvath-Kawazoe (HK) tab, HK physical-property presets, multi-sample HK plotting and caching, and validation against TriStar II Plus official Excel data."
+  "release_notes": "v1.0.9 fixes the Windows updater restart/replacement step by launching the PowerShell replacement script with a hidden normal process instead of DETACHED_PROCESS. If updating from v1.0.7 or v1.0.8 does not restart automatically, run the downloaded v1.0.9 exe once manually; future updates from v1.0.9 should restart normally."
 }
