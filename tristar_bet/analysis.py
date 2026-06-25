@@ -46,6 +46,105 @@ DEFAULT_BJH_DIAMETER_MAX_NM = 300.0
 DEFAULT_DH_DIAMETER_MIN_NM = 0.75
 JWGB_BJH_MIN_DIAMETER_NM = 2.0
 MMHG_TO_KPA = 101.325 / 760.0
+HK_AVOGADRO = 6.02214129e23
+HK_GAS_CONSTANT_ERG_MOL_K = 8.31441e7
+HK_ELECTRON_KINETIC_ENERGY_ERG = 0.8183e-6
+HK_DEFAULT_GEOMETRY = "slit"
+HK_DEFAULT_ADSORBENT = "zeolite"
+HK_DEFAULT_ADSORPTIVE = "N2"
+HK_DEFAULT_INTERACTION_PARAMETER_ERG_CM4 = 3.490e-43
+HK_ADSORBENT_PRESETS: dict[str, dict[str, float | str]] = {
+    "zeolite": {
+        "label": "Zeolite",
+        "diameter_nm": 0.3040,
+        "zero_diameter_nm": 0.2609,
+        "polarizability_cm3": 8.500e-25,
+        "susceptibility_cm3": 1.940e-29,
+        "density_per_cm2": 3.750e15,
+    },
+    "aluminophosphate": {
+        "label": "Aluminophosphate",
+        "diameter_nm": 0.2600,
+        "zero_diameter_nm": 0.2232,
+        "polarizability_cm3": 2.500e-24,
+        "susceptibility_cm3": 1.300e-29,
+        "density_per_cm2": 1.480e15,
+    },
+    "aluminosilicate": {
+        "label": "Aluminosilicate",
+        "diameter_nm": 0.2760,
+        "zero_diameter_nm": 0.2369,
+        "polarizability_cm3": 2.500e-24,
+        "susceptibility_cm3": 1.300e-29,
+        "density_per_cm2": 1.310e15,
+    },
+    "carbon_graphite_ross_olivier": {
+        "label": "Carbon-Graphite (Ross/Olivier)",
+        "diameter_nm": 0.3400,
+        "zero_diameter_nm": 0.2918,
+        "polarizability_cm3": 1.020e-24,
+        "susceptibility_cm3": 1.050e-29,
+        "density_per_cm2": 3.845e15,
+    },
+    "carbon_graphite_hk": {
+        "label": "Carbon-Graphite (HK)",
+        "diameter_nm": 0.3400,
+        "zero_diameter_nm": 0.2918,
+        "polarizability_cm3": 1.020e-24,
+        "susceptibility_cm3": 1.350e-28,
+        "density_per_cm2": 3.845e15,
+    },
+    "other": {
+        "label": "Other",
+        "diameter_nm": 0.3000,
+        "zero_diameter_nm": 0.2575,
+        "polarizability_cm3": 1.000e-24,
+        "susceptibility_cm3": 1.000e-29,
+        "density_per_cm2": 1.500e15,
+    },
+}
+HK_ADSORPTIVE_PRESETS: dict[str, dict[str, float | str]] = {
+    "N2": {
+        "label": "N2",
+        "diameter_nm": 0.3000,
+        "zero_diameter_nm": 0.2574,
+        "polarizability_cm3": 1.760e-24,
+        "susceptibility_cm3": 3.600e-29,
+        "density_per_cm2": 6.710e14,
+    },
+    "AR": {
+        "label": "AR",
+        "diameter_nm": 0.2950,
+        "zero_diameter_nm": 0.2530,
+        "polarizability_cm3": 1.630e-24,
+        "susceptibility_cm3": 3.220e-29,
+        "density_per_cm2": 7.608e14,
+    },
+    "CO2": {
+        "label": "CO2",
+        "diameter_nm": 0.3230,
+        "zero_diameter_nm": 0.2770,
+        "polarizability_cm3": 2.700e-24,
+        "susceptibility_cm3": 5.000e-29,
+        "density_per_cm2": 5.450e14,
+    },
+    "He": {
+        "label": "He",
+        "diameter_nm": 0.2000,
+        "zero_diameter_nm": 0.1000,
+        "polarizability_cm3": 1.000e-24,
+        "susceptibility_cm3": 1.000e-29,
+        "density_per_cm2": 1.000e14,
+    },
+    "Kr": {
+        "label": "Kr",
+        "diameter_nm": 0.2000,
+        "zero_diameter_nm": 0.1000,
+        "polarizability_cm3": 1.000e-24,
+        "susceptibility_cm3": 1.000e-29,
+        "density_per_cm2": 1.000e14,
+    },
+}
 MICROACTIVE_BJH_MIN_DIAMETER_BY_THICKNESS_METHOD = {
     "reference": DEFAULT_BJH_DIAMETER_MIN_NM,
     "kjs": 1.7,
@@ -1440,6 +1539,429 @@ def dh_pore_distribution(
         smooth=use_smooth,
         dollimore_heal=True,
     )
+
+
+def hk_adsorbent_presets() -> dict[str, dict[str, float | str]]:
+    return {key: dict(value) for key, value in HK_ADSORBENT_PRESETS.items()}
+
+
+def hk_adsorptive_presets() -> dict[str, dict[str, float | str]]:
+    return {key: dict(value) for key, value in HK_ADSORPTIVE_PRESETS.items()}
+
+
+def calculate_hk_interaction_parameter(
+    adsorbent_properties: dict[str, object] | None = None,
+    adsorptive_properties: dict[str, object] | None = None,
+    *,
+    adsorbent_key: str = HK_DEFAULT_ADSORBENT,
+    adsorptive_key: str = HK_DEFAULT_ADSORPTIVE,
+) -> float:
+    adsorbent = _hk_resolved_properties(HK_ADSORBENT_PRESETS, adsorbent_key, adsorbent_properties)
+    adsorptive = _hk_resolved_properties(HK_ADSORPTIVE_PRESETS, adsorptive_key, adsorptive_properties)
+    alpha_s = _hk_property_float(adsorbent, "polarizability_cm3")
+    alpha_a = _hk_property_float(adsorptive, "polarizability_cm3")
+    chi_s = _hk_property_float(adsorbent, "susceptibility_cm3")
+    chi_a = _hk_property_float(adsorptive, "susceptibility_cm3")
+    density_s = _hk_property_float(adsorbent, "density_per_cm2")
+    density_a = _hk_property_float(adsorptive, "density_per_cm2")
+    if min(alpha_s, alpha_a, chi_s, chi_a, density_s, density_a) <= 0.0:
+        return HK_DEFAULT_INTERACTION_PARAMETER_ERG_CM4
+    denominator = alpha_s / chi_s + alpha_a / chi_a
+    if denominator <= 0.0:
+        return HK_DEFAULT_INTERACTION_PARAMETER_ERG_CM4
+    sample_dispersion = 6.0 * HK_ELECTRON_KINETIC_ENERGY_ERG * alpha_s * alpha_a / denominator
+    adsorptive_dispersion = 1.5 * HK_ELECTRON_KINETIC_ENERGY_ERG * alpha_a * chi_a
+    interaction = density_a * adsorptive_dispersion + density_s * sample_dispersion
+    if _valid_number(interaction) and interaction > 0.0:
+        return float(interaction)
+    return HK_DEFAULT_INTERACTION_PARAMETER_ERG_CM4
+
+
+def horvath_kawazoe_pore_distribution(
+    result: TriStarResult,
+    *,
+    geometry: str = HK_DEFAULT_GEOMETRY,
+    adsorbent_key: str = HK_DEFAULT_ADSORBENT,
+    adsorptive_key: str = HK_DEFAULT_ADSORPTIVE,
+    adsorbent_properties: dict[str, object] | None = None,
+    adsorptive_properties: dict[str, object] | None = None,
+    interaction_parameter_erg_cm4: float | None = HK_DEFAULT_INTERACTION_PARAMETER_ERG_CM4,
+    interaction_parameter_mode: str = "input",
+    cheng_yang_correction: bool = False,
+    smooth: bool = False,
+) -> PoreDistributionResult:
+    points = adsorption_points(result)
+    if len(points) < 3:
+        return PoreDistributionResult("Horvath-Kawazoe", "adsorption", "not_enough_points", len(points))
+
+    geometry_key = str(geometry or HK_DEFAULT_GEOMETRY).strip().lower()
+    if geometry_key not in {"slit", "cylinder", "sphere"}:
+        geometry_key = HK_DEFAULT_GEOMETRY
+    adsorbent = _hk_resolved_properties(HK_ADSORBENT_PRESETS, adsorbent_key, adsorbent_properties)
+    adsorptive = _hk_resolved_properties(HK_ADSORPTIVE_PRESETS, adsorptive_key, adsorptive_properties)
+    if str(interaction_parameter_mode).lower() == "calculated":
+        interaction_parameter = calculate_hk_interaction_parameter(
+            adsorbent,
+            adsorptive,
+            adsorbent_key=adsorbent_key,
+            adsorptive_key=adsorptive_key,
+        )
+    else:
+        try:
+            interaction_parameter = float(interaction_parameter_erg_cm4 or HK_DEFAULT_INTERACTION_PARAMETER_ERG_CM4)
+        except (TypeError, ValueError):
+            interaction_parameter = HK_DEFAULT_INTERACTION_PARAMETER_ERG_CM4
+        if not (_valid_number(interaction_parameter) and interaction_parameter > 0.0):
+            interaction_parameter = HK_DEFAULT_INTERACTION_PARAMETER_ERG_CM4
+
+    temperature_k = result.run_conditions.bath_temperature_K or 77.350
+    if not (50.0 < float(temperature_k) < 500.0):
+        temperature_k = 77.350
+    density_factor = density_conversion_factor(result)
+    monolayer_capacity = _hk_cheng_yang_monolayer_capacity(result, points) if cheng_yang_correction else None
+
+    rows: list[dict[str, float]] = []
+    previous_width_nm: float | None = None
+    previous_volume: float | None = None
+    for point in points:
+        pressure = float(point.relative_pressure)
+        quantity = float(point.quantity_adsorbed_cm3_g_stp or 0.0)
+        if not (0.0 < pressure < 1.0) or quantity <= 0.0:
+            continue
+        width_angstrom = _hk_solve_width_angstrom(
+            pressure,
+            quantity,
+            temperature_k,
+            geometry_key,
+            adsorbent,
+            adsorptive,
+            interaction_parameter,
+            monolayer_capacity,
+        )
+        if width_angstrom is None:
+            continue
+        shell_width_angstrom = width_angstrom - 10.0 * _hk_property_float(adsorbent, "diameter_nm")
+        if not (_valid_number(shell_width_angstrom) and shell_width_angstrom > 0.0):
+            continue
+        shell_width_nm = shell_width_angstrom * 0.1
+        cumulative_volume = quantity * density_factor
+        if previous_width_nm is None or previous_volume is None:
+            incremental_volume = max(0.0, cumulative_volume)
+            width_delta = shell_width_nm
+            log_delta = 0.0
+            differential_log = 0.0
+        else:
+            incremental_volume = max(0.0, cumulative_volume - previous_volume)
+            width_delta = shell_width_nm - previous_width_nm
+            if width_delta <= 1e-12:
+                continue
+            log_delta = math.log10(shell_width_nm) - math.log10(previous_width_nm)
+            differential_log = incremental_volume / log_delta if abs(log_delta) > 1e-12 else 0.0
+        differential_linear = incremental_volume / width_delta if width_delta > 1e-12 else 0.0
+        rows.append(
+            {
+                "phase": "adsorption",
+                "point_index": float(point.index),
+                "relative_pressure": pressure,
+                "quantity_adsorbed_cm3_g_stp": quantity,
+                "pore_width_nm": shell_width_nm,
+                "pore_diameter_nm": shell_width_nm,
+                "cumulative_pore_diameter_nm": shell_width_nm,
+                "pore_diameter_range_high_nm": shell_width_nm,
+                "pore_diameter_range_low_nm": previous_width_nm if previous_width_nm is not None else 0.0,
+                "nucleus_to_nucleus_width_angstrom": width_angstrom,
+                "incremental_pore_volume_cm3_g": incremental_volume,
+                "cumulative_pore_volume_cm3_g": cumulative_volume,
+                "dwidth_nm": width_delta,
+                "dlog_diameter": abs(log_delta),
+                "differential_pore_volume_per_nm_cm3_g_nm": differential_linear,
+                "differential_pore_volume_cm3_g": differential_log,
+                "raw_differential_pore_volume_per_nm_cm3_g_nm": differential_linear,
+                "raw_differential_pore_volume_cm3_g": differential_log,
+                "hk_geometry": geometry_key,
+                "hk_interaction_parameter_erg_cm4": interaction_parameter,
+            }
+        )
+        previous_width_nm = shell_width_nm
+        previous_volume = cumulative_volume
+
+    if len(rows) < 2:
+        return PoreDistributionResult("Horvath-Kawazoe", "adsorption", "not_enough_distribution_points", len(rows), rows=rows)
+    if smooth:
+        _smooth_distribution_rows(rows)
+    return PoreDistributionResult("Horvath-Kawazoe", "adsorption", "ok", len(rows), rows=rows)
+
+
+def _hk_resolved_properties(
+    presets: dict[str, dict[str, float | str]],
+    key: str,
+    overrides: dict[str, object] | None,
+) -> dict[str, object]:
+    resolved = dict(presets.get(str(key), presets.get(str(key).lower(), next(iter(presets.values())))))
+    if overrides:
+        resolved.update(overrides)
+    return resolved
+
+
+def _hk_property_float(properties: dict[str, object], key: str) -> float:
+    try:
+        return float(properties.get(key, 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _hk_cheng_yang_monolayer_capacity(
+    result: TriStarResult,
+    points: Sequence[IsothermPoint],
+) -> float | None:
+    max_pressure = max(float(point.relative_pressure) for point in points)
+    p_max = min(0.2, max_pressure)
+    if p_max <= 0.02:
+        return None
+    fit = langmuir_analysis(result, 0.02, p_max)
+    if fit.ok and fit.monolayer_capacity_cm3_g_stp and fit.monolayer_capacity_cm3_g_stp > 0.0:
+        return float(fit.monolayer_capacity_cm3_g_stp)
+    return None
+
+
+def _hk_solve_width_angstrom(
+    relative_pressure: float,
+    quantity_adsorbed: float,
+    temperature_k: float,
+    geometry: str,
+    adsorbent: dict[str, object],
+    adsorptive: dict[str, object],
+    interaction_parameter: float,
+    monolayer_capacity: float | None,
+) -> float | None:
+    target = math.log(relative_pressure)
+    d0 = 5.0 * (
+        _hk_property_float(adsorptive, "diameter_nm")
+        + _hk_property_float(adsorbent, "diameter_nm")
+    )
+    sample_diameter = 10.0 * _hk_property_float(adsorbent, "diameter_nm")
+    if geometry == "slit":
+        lower = max(2.0 * d0, sample_diameter) + 1e-8
+    elif geometry == "cylinder":
+        lower = max(2.0 * d0, sample_diameter) + 1e-8
+    else:
+        lower = max(d0, sample_diameter) + 1e-8
+    if not (_valid_number(lower) and lower > 0.0):
+        return None
+
+    def value(width: float) -> float:
+        base = _hk_geometry_ln_relative_pressure(
+            width,
+            temperature_k,
+            geometry,
+            adsorbent,
+            adsorptive,
+            interaction_parameter,
+        )
+        if not _valid_number(base):
+            return float("nan")
+        if monolayer_capacity is not None and monolayer_capacity > 0.0:
+            theta = quantity_adsorbed / monolayer_capacity
+            theta = min(max(theta, 1e-9), 1.0 - 1e-9)
+            base -= 1.0 - math.log(1.0 / (1.0 - theta)) / theta
+        return base
+
+    f_low = value(lower) - target
+    if not _valid_number(f_low):
+        lower = lower + 1e-5
+        f_low = value(lower) - target
+    if not _valid_number(f_low):
+        return None
+    if f_low > 0.0:
+        return None
+    high = max(lower * 1.05, lower + 0.05)
+    f_high = value(high) - target
+    for _ in range(160):
+        if _valid_number(f_high) and f_high >= 0.0:
+            break
+        high *= 1.35
+        if high > 1.0e6:
+            return None
+        f_high = value(high) - target
+    if not (_valid_number(f_high) and f_high >= 0.0):
+        return None
+    lo = lower
+    hi = high
+    for _ in range(90):
+        mid = 0.5 * (lo + hi)
+        f_mid = value(mid) - target
+        if not _valid_number(f_mid):
+            lo = mid
+            continue
+        if f_mid < 0.0:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
+
+
+def _hk_geometry_ln_relative_pressure(
+    width_angstrom: float,
+    temperature_k: float,
+    geometry: str,
+    adsorbent: dict[str, object],
+    adsorptive: dict[str, object],
+    interaction_parameter: float,
+) -> float:
+    if geometry == "cylinder":
+        return _hk_cylinder_ln_relative_pressure(
+            width_angstrom,
+            temperature_k,
+            adsorbent,
+            adsorptive,
+            interaction_parameter,
+        )
+    if geometry == "sphere":
+        return _hk_sphere_ln_relative_pressure(
+            width_angstrom,
+            temperature_k,
+            adsorbent,
+            adsorptive,
+        )
+    return _hk_slit_ln_relative_pressure(
+        width_angstrom,
+        temperature_k,
+        adsorbent,
+        adsorptive,
+        interaction_parameter,
+    )
+
+
+def _hk_slit_ln_relative_pressure(
+    width_angstrom: float,
+    temperature_k: float,
+    adsorbent: dict[str, object],
+    adsorptive: dict[str, object],
+    interaction_parameter: float,
+) -> float:
+    d0 = 5.0 * (
+        _hk_property_float(adsorptive, "diameter_nm")
+        + _hk_property_float(adsorbent, "diameter_nm")
+    )
+    sigma = 5.0 * (
+        _hk_property_float(adsorptive, "zero_diameter_nm")
+        + _hk_property_float(adsorbent, "zero_diameter_nm")
+    )
+    if min(d0, sigma, temperature_k, interaction_parameter) <= 0.0 or width_angstrom <= 2.0 * d0:
+        return float("nan")
+    distance = width_angstrom - d0
+    if distance <= 0.0:
+        return float("nan")
+    factor = (
+        HK_AVOGADRO
+        / (HK_GAS_CONSTANT_ERG_MOL_K * temperature_k)
+        * interaction_parameter
+        * 1.0e32
+        / (sigma**4 * (width_angstrom - 2.0 * d0))
+    )
+    term = (
+        sigma**4 / (3.0 * distance**3)
+        - sigma**10 / (9.0 * distance**9)
+        - sigma**4 / (3.0 * d0**3)
+        + sigma**10 / (9.0 * d0**9)
+    )
+    return factor * term
+
+
+def _hk_cylinder_ln_relative_pressure(
+    width_angstrom: float,
+    temperature_k: float,
+    adsorbent: dict[str, object],
+    adsorptive: dict[str, object],
+    interaction_parameter: float,
+) -> float:
+    d0 = 5.0 * (
+        _hk_property_float(adsorptive, "diameter_nm")
+        + _hk_property_float(adsorbent, "diameter_nm")
+    )
+    radius = width_angstrom / 2.0
+    if min(d0, radius, temperature_k, interaction_parameter) <= 0.0 or radius <= d0:
+        return float("nan")
+    x = d0 / radius
+    one_minus = 1.0 - x
+    if not (0.0 <= one_minus < 1.0):
+        return float("nan")
+    alpha = 1.0
+    beta = 1.0
+    series = 0.0
+    for k in range(180):
+        if k > 0:
+            alpha *= ((-4.5 - k) / k) ** 2
+            beta *= ((-1.5 - k) / k) ** 2
+        term = (
+            (one_minus ** (2 * k))
+            / (k + 1.0)
+            * ((21.0 / 32.0) * alpha * x**10 - beta * x**4)
+        )
+        series += term
+        if k > 20 and abs(term) < 1e-14:
+            break
+    factor = (
+        0.75
+        * math.pi
+        * HK_AVOGADRO
+        / (HK_GAS_CONSTANT_ERG_MOL_K * temperature_k)
+        * interaction_parameter
+        * 1.0e32
+        / d0**4
+    )
+    return factor * series
+
+
+def _hk_sphere_ln_relative_pressure(
+    width_angstrom: float,
+    temperature_k: float,
+    adsorbent: dict[str, object],
+    adsorptive: dict[str, object],
+) -> float:
+    diameter_s = 10.0 * _hk_property_float(adsorbent, "diameter_nm")
+    diameter_a = 10.0 * _hk_property_float(adsorptive, "diameter_nm")
+    d0 = 0.5 * (diameter_a + diameter_s)
+    if min(d0, width_angstrom, temperature_k) <= 0.0 or width_angstrom <= d0:
+        return float("nan")
+    alpha_s = _hk_property_float(adsorbent, "polarizability_cm3")
+    alpha_a = _hk_property_float(adsorptive, "polarizability_cm3")
+    chi_s = _hk_property_float(adsorbent, "susceptibility_cm3")
+    chi_a = _hk_property_float(adsorptive, "susceptibility_cm3")
+    density_s = _hk_property_float(adsorbent, "density_per_cm2")
+    density_a = _hk_property_float(adsorptive, "density_per_cm2")
+    if min(alpha_s, alpha_a, chi_s, chi_a, density_s, density_a) <= 0.0:
+        return float("nan")
+    denominator = alpha_s / chi_s + alpha_a / chi_a
+    if denominator <= 0.0:
+        return float("nan")
+    sample_dispersion = 6.0 * HK_ELECTRON_KINETIC_ENERGY_ERG * alpha_s * alpha_a / denominator
+    adsorptive_dispersion = 1.5 * HK_ELECTRON_KINETIC_ENERGY_ERG * alpha_a * chi_a
+    epsilon_12 = sample_dispersion / (4.0 * diameter_s**6)
+    epsilon_22 = adsorptive_dispersion / (4.0 * diameter_a**6)
+    n1 = 4.0 * math.pi * width_angstrom**2 * density_s
+    n2 = 4.0 * math.pi * (width_angstrom - d0) ** 2 * density_a
+    s_value = (width_angstrom - d0) / width_angstrom
+    if abs(1.0 - s_value) < 1e-12 or abs(1.0 + s_value) < 1e-12:
+        return float("nan")
+    t1 = 1.0 / (1.0 - s_value) ** 3 - 1.0 / (1.0 + s_value) ** 3
+    t2 = 1.0 / (1.0 + s_value) ** 2 - 1.0 / (1.0 - s_value) ** 2
+    t3 = 1.0 / (1.0 - s_value) ** 9 - 1.0 / (1.0 + s_value) ** 9
+    t4 = 1.0 / (1.0 + s_value) ** 8 - 1.0 / (1.0 - s_value) ** 8
+    volume_denominator = width_angstrom**3 - d0**3
+    if volume_denominator <= 0.0:
+        return float("nan")
+    factor = (
+        (6.0 * n1 * epsilon_12 + n2 * epsilon_22)
+        * width_angstrom**3
+        * 1.0e32
+        / (HK_GAS_CONSTANT_ERG_MOL_K * temperature_k * volume_denominator)
+    )
+    bracket = (
+        -(d0 / width_angstrom) ** 6 * (t1 / 12.0 + t2 / 8.0)
+        + (d0 / width_angstrom) ** 12 * (t3 / 90.0 + t4 / 80.0)
+    )
+    return factor * bracket
 
 
 def _apply_quantachrome_bjh_low_diameter_increment_correction(rows: list[dict[str, float]]) -> None:

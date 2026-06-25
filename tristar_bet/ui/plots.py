@@ -17,6 +17,7 @@ from tristar_bet.analysis import (
     bjh_pore_distribution,
     desorption_points,
     dh_pore_distribution,
+    horvath_kawazoe_pore_distribution,
     langmuir_analysis,
     t_plot_analysis,
     t_plot_analysis_by_thickness,
@@ -91,6 +92,29 @@ BJH_DISPLAY_METRIC_SYMBOLS = {
     BJH_CUMULATIVE_AREA: "d",
     BJH_DIFFERENTIAL_AREA_LOG: "+",
 }
+HK_CUMULATIVE_VOLUME = "cum_volume"
+HK_DIFFERENTIAL_LINEAR = "linear"
+HK_DIFFERENTIAL_LOG = "log"
+HK_DISPLAY_METRIC_ORDER = (
+    HK_DIFFERENTIAL_LINEAR,
+    HK_DIFFERENTIAL_LOG,
+    HK_CUMULATIVE_VOLUME,
+)
+HK_DISPLAY_METRIC_LABELS = {
+    HK_DIFFERENTIAL_LINEAR: "dV/dW",
+    HK_DIFFERENTIAL_LOG: "dV/dlogW",
+    HK_CUMULATIVE_VOLUME: "Cumulative Pore Volume",
+}
+HK_DISPLAY_METRIC_AXIS_LABELS = {
+    HK_DIFFERENTIAL_LINEAR: "dV/dW (cm3/g/nm)",
+    HK_DIFFERENTIAL_LOG: "dV/dlogW (cm3/g)",
+    HK_CUMULATIVE_VOLUME: "Cumulative Pore Volume (cm3/g)",
+}
+HK_DISPLAY_METRIC_SYMBOLS = {
+    HK_DIFFERENTIAL_LINEAR: "o",
+    HK_DIFFERENTIAL_LOG: "s",
+    HK_CUMULATIVE_VOLUME: "t",
+}
 
 
 def bjh_differential_axis_label(mode: str) -> str:
@@ -122,6 +146,22 @@ def bjh_display_axis_label(metrics) -> str:
     if len(normalized) == 1:
         return BJH_DISPLAY_METRIC_AXIS_LABELS.get(normalized[0], BJH_DISPLAY_METRIC_AXIS_LABELS[BJH_DIFFERENTIAL_LOG])
     return "BJH 显示值（见图例单位）"
+
+
+def hk_display_metric_label(metric: str) -> str:
+    return HK_DISPLAY_METRIC_LABELS.get(metric, HK_DISPLAY_METRIC_LABELS[HK_DIFFERENTIAL_LINEAR])
+
+
+def normalize_hk_display_metric(metric) -> str:
+    if isinstance(metric, (list, tuple)):
+        metric = metric[0] if metric else HK_DIFFERENTIAL_LINEAR
+    metric_key = str(metric or HK_DIFFERENTIAL_LINEAR)
+    return metric_key if metric_key in HK_DISPLAY_METRIC_ORDER else HK_DIFFERENTIAL_LINEAR
+
+
+def hk_display_axis_label(metric) -> str:
+    metric_key = normalize_hk_display_metric(metric)
+    return HK_DISPLAY_METRIC_AXIS_LABELS.get(metric_key, HK_DISPLAY_METRIC_AXIS_LABELS[HK_DIFFERENTIAL_LINEAR])
 
 
 def _valid_nonnegative(value: object) -> float | None:
@@ -196,6 +236,37 @@ def _bjh_metric_diameter(row: dict[str, float], metric: str) -> float:
     value = _valid_nonnegative(row.get("pore_diameter_nm"))
     if value is None or value <= 0.0:
         raise ValueError("missing BJH pore diameter value")
+    return value
+
+
+def _hk_metric_value(row: dict[str, float], metric: str) -> float:
+    metric_key = normalize_hk_display_metric(metric)
+    if metric_key == HK_CUMULATIVE_VOLUME:
+        value = _valid_nonnegative(row.get("cumulative_pore_volume_cm3_g"))
+        if value is None:
+            raise ValueError("missing HK cumulative pore volume value")
+        return value
+    if metric_key == HK_DIFFERENTIAL_LOG:
+        value = _valid_nonnegative(row.get("differential_pore_volume_cm3_g"))
+        if value is None:
+            raise ValueError("missing HK dV/dlogW value")
+        return value
+    value = _valid_nonnegative(row.get("differential_pore_volume_per_nm_cm3_g_nm"))
+    if value is not None:
+        return value
+    incremental = _valid_nonnegative(row.get("incremental_pore_volume_cm3_g"))
+    width_delta = _valid_nonnegative(row.get("dwidth_nm"))
+    if incremental is not None and width_delta is not None and width_delta > 1e-12:
+        return incremental / width_delta
+    raise ValueError("missing HK dV/dW value")
+
+
+def _hk_metric_width(row: dict[str, float]) -> float:
+    value = _valid_nonnegative(row.get("pore_width_nm"))
+    if value is None:
+        value = _valid_nonnegative(row.get("pore_diameter_nm"))
+    if value is None or value <= 0.0:
+        raise ValueError("missing HK pore width value")
     return value
 
 
@@ -1270,6 +1341,115 @@ def plot_dh_distribution_multi(
     return rows_by_key
 
 
+def plot_hk_distribution_multi(
+    plot: pg.PlotWidget,
+    results,
+    visible: list[bool],
+    colors: list[str],
+    active_index: int = -1,
+    geometry: str = "slit",
+    adsorbent_key: str = "zeolite",
+    adsorptive_key: str = "N2",
+    adsorbent_properties: dict[str, object] | None = None,
+    adsorptive_properties: dict[str, object] | None = None,
+    interaction_parameter_erg_cm4: float = 3.49e-43,
+    interaction_parameter_mode: str = "input",
+    cheng_yang_correction: bool = False,
+    smooth: bool = False,
+    pressure_range: tuple[float, float] | None = None,
+    distribution_provider: Callable[..., list[dict[str, float]]] | None = None,
+    display_metric: str = HK_DIFFERENTIAL_LINEAR,
+) -> dict[tuple[int, str], list[dict[str, float]]]:
+    metric = normalize_hk_display_metric(display_metric)
+    plot.clear()
+    _clear_manual_legend_entries(plot)
+    plot.setTitle("Horvath-Kawazoe 孔径分布")
+    plot.setLabel("left", hk_display_axis_label(metric))
+    plot.setLabel("bottom", "孔宽 W (nm)")
+    plot.setLogMode(x=True, y=False)
+    all_x = []
+    all_y = []
+    legend_entries = []
+    rows_by_key: dict[tuple[int, str], list[dict[str, float]]] = {}
+
+    for index in _analysis_draw_order(results, visible, active_index):
+        result = results[index]
+        is_active = index == active_index
+        color = _analysis_color(colors, index, active_index)
+        width = ACTIVE_LINE_WIDTH if is_active else DEFAULT_LINE_WIDTH
+        if distribution_provider is None:
+            distribution = horvath_kawazoe_pore_distribution(
+                result,
+                geometry=geometry,
+                adsorbent_key=adsorbent_key,
+                adsorptive_key=adsorptive_key,
+                adsorbent_properties=adsorbent_properties,
+                adsorptive_properties=adsorptive_properties,
+                interaction_parameter_erg_cm4=interaction_parameter_erg_cm4,
+                interaction_parameter_mode=interaction_parameter_mode,
+                cheng_yang_correction=cheng_yang_correction,
+                smooth=smooth,
+            )
+            rows = list(distribution.rows)
+        else:
+            rows = list(
+                distribution_provider(
+                    result,
+                    geometry=geometry,
+                    adsorbent_key=adsorbent_key,
+                    adsorptive_key=adsorptive_key,
+                    adsorbent_properties=adsorbent_properties,
+                    adsorptive_properties=adsorptive_properties,
+                    interaction_parameter_erg_cm4=interaction_parameter_erg_cm4,
+                    interaction_parameter_mode=interaction_parameter_mode,
+                    cheng_yang_correction=cheng_yang_correction,
+                    smooth=smooth,
+                )
+            )
+        rows = _bjh_rows_in_pressure_range(rows, pressure_range)
+        rows_by_key[(index, "adsorption")] = list(rows)
+        if not rows:
+            continue
+        x_values = []
+        y_values = []
+        for row in rows:
+            try:
+                x_values.append(_hk_metric_width(row))
+                y_values.append(_hk_metric_value(row, metric))
+            except (KeyError, TypeError, ValueError):
+                continue
+        x = np.asarray(x_values, dtype=float)
+        y = np.asarray(y_values, dtype=float)
+        mask = np.isfinite(x) & np.isfinite(y) & (x > 0.0) & (y >= 0.0)
+        if not np.any(mask):
+            continue
+        x = x[mask]
+        y = y[mask]
+        order = np.argsort(x)
+        x = x[order]
+        y = y[order]
+        item = plot.plot(
+            x,
+            y,
+            pen=pg.mkPen(color, width=width),
+            symbol=HK_DISPLAY_METRIC_SYMBOLS.get(metric, "o"),
+            symbolSize=ACTIVE_SYMBOL_SIZE if is_active else DEFAULT_SYMBOL_SIZE,
+            symbolPen=pg.mkPen(color, width=ACTIVE_SYMBOL_PEN_WIDTH if is_active else DEFAULT_SYMBOL_PEN_WIDTH),
+            symbolBrush=pg.mkBrush("#ffffff"),
+            name=None,
+        )
+        legend_entries.append((index, item, f"{_legend_name(result)} HK {hk_display_metric_label(metric)}"))
+        all_x.extend(x.tolist())
+        all_y.extend(y.tolist())
+
+    _set_sample_legend_entries(plot, legend_entries)
+    if all_x:
+        _fit_range(plot, all_x, all_y, x_log=True)
+    else:
+        _plot_message(plot, "当前样品没有足够的 HK 孔径分布点")
+    return rows_by_key
+
+
 def plot_bjh_selection(
     plot: pg.PlotWidget,
     rows_by_key: dict[tuple[int, str], list[dict[str, float]]],
@@ -1348,12 +1528,33 @@ def plot_dh_distribution_placeholder(
     _plot_message(plot, "当前没有可显示的 DH 孔径分布")
 
 
+def plot_hk_distribution_placeholder(
+    plot: pg.PlotWidget,
+    display_metric: str = HK_DIFFERENTIAL_LINEAR,
+) -> None:
+    metric = normalize_hk_display_metric(display_metric)
+    plot.clear()
+    plot.setTitle("Horvath-Kawazoe 孔径分布")
+    plot.setLabel("left", hk_display_axis_label(metric))
+    plot.setLabel("bottom", "孔宽 W (nm)")
+    plot.setLogMode(x=True, y=False)
+    _plot_message(plot, "当前没有可显示的 HK 孔径分布")
+
+
 def _bjh_rows_in_pressure_range(rows, pressure_range: tuple[float, float] | None):
     if pressure_range is None:
         return rows
     pressure_min, pressure_max = sorted((float(pressure_range[0]), float(pressure_range[1])))
     filtered = []
     for row in rows:
+        if "relative_pressure" in row:
+            try:
+                pressure = float(row["relative_pressure"])
+            except (TypeError, ValueError):
+                continue
+            if pressure_min <= pressure <= pressure_max:
+                filtered.append(row)
+            continue
         if "relative_pressure_low" not in row or "relative_pressure_high" not in row:
             filtered.append(row)
             continue

@@ -1,16 +1,16 @@
 {
-  "version": "1.0.7",
-  "release_name": "v1.0.7",
-  "release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.0.7",
-  "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.0.7/Micromeritics-BET.exe",
+  "version": "1.0.8",
+  "release_name": "v1.0.8",
+  "release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.0.8",
+  "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.0.8/Micromeritics-BET.exe",
   "gitee_source_name": "Gitee",
-  "gitee_release_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/tag/v1.0.7",
-  "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.0.7/Micromeritics-BET.exe",
+  "gitee_release_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/tag/v1.0.8",
+  "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.0.8/Micromeritics-BET.exe",
   "github_source_name": "GitHub",
-  "github_release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.0.7",
-  "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.0.7/Micromeritics-BET.exe",
+  "github_release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.0.8",
+  "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.0.8/Micromeritics-BET.exe",
   "asset_name": "Micromeritics-BET.exe",
-  "sha256": "8c54f13efca1265f0513567aab18e656cb0a9d2c2d3eb51aee82b14917bc0dce",
-  "published_at": "2026-06-24",
-  "release_notes": "v1.0.7 修复软件下载完成后无法可靠重启和替换旧 exe 的问题：替换脚本现在会等待旧进程退出、记录 apply_update.log，并由主程序在启动替换脚本后强制释放当前进程。"
+  "sha256": "42902ddf2c6e679733db2e6caacfa4d6f4e469864cc94d8474e117dfef72a02b",
+  "published_at": "2026-06-25",
+  "release_notes": "v1.0.8 adds the Horvath-Kawazoe (HK) tab, HK physical-property presets, multi-sample HK plotting and caching, and validation against TriStar II Plus official Excel data."
 }

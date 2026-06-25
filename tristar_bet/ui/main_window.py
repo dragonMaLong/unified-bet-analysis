@@ -17,6 +17,12 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from tristar_bet import BELMasterParseError, ExcelParseError, TriStarParseError, load_file
 from tristar_bet.analysis import (
     DEFAULT_THICKNESS_METHOD,
+    HK_ADSORBENT_PRESETS,
+    HK_ADSORPTIVE_PRESETS,
+    HK_DEFAULT_ADSORBENT,
+    HK_DEFAULT_ADSORPTIVE,
+    HK_DEFAULT_GEOMETRY,
+    HK_DEFAULT_INTERACTION_PARAMETER_ERG_CM4,
     THICKNESS_METHOD_DEFAULT_PARAMS,
     analysis_bundle,
     automatic_bet_range,
@@ -24,8 +30,10 @@ from tristar_bet.analysis import (
     automatic_t_plot_pressure_range,
     bet_analysis,
     bjh_pore_distribution,
+    calculate_hk_interaction_parameter,
     density_conversion_factor,
     dh_pore_distribution,
+    horvath_kawazoe_pore_distribution,
     langmuir_analysis,
     t_plot_analysis,
     t_plot_analysis_by_thickness,
@@ -44,14 +52,22 @@ from tristar_bet.ui.plots import (
     BJH_DIFFERENTIAL_LOG,
     BJH_DISPLAY_METRIC_ORDER,
     DEFAULT_COLORS,
+    HK_CUMULATIVE_VOLUME,
+    HK_DIFFERENTIAL_LINEAR,
+    HK_DISPLAY_METRIC_ORDER,
     bjh_display_axis_label,
     bjh_display_metric_label,
+    hk_display_axis_label,
+    hk_display_metric_label,
     make_plot,
+    normalize_hk_display_metric,
     plot_bet_multi,
     plot_bet_selection,
     plot_bjh_selection,
     plot_dh_distribution_multi,
     plot_dh_distribution_placeholder,
+    plot_hk_distribution_multi,
+    plot_hk_distribution_placeholder,
     plot_isotherm_multi,
     plot_isotherm_selection,
     plot_bjh_distribution_multi,
@@ -534,6 +550,14 @@ DEFAULT_DH_SMOOTH_DERIVATIVE = True
 DEFAULT_DH_THICKNESS_METHOD = "reference"
 DEFAULT_DH_DIFFERENTIAL_MODE = BJH_DIFFERENTIAL_LOG
 DEFAULT_DH_DISPLAY_METRICS = (BJH_DIFFERENTIAL_LOG,)
+DEFAULT_HK_GEOMETRY = HK_DEFAULT_GEOMETRY
+DEFAULT_HK_ADSORBENT = HK_DEFAULT_ADSORBENT
+DEFAULT_HK_ADSORPTIVE = HK_DEFAULT_ADSORPTIVE
+DEFAULT_HK_INTERACTION_PARAMETER_MODE = "input"
+DEFAULT_HK_INTERACTION_PARAMETER = HK_DEFAULT_INTERACTION_PARAMETER_ERG_CM4
+DEFAULT_HK_CHENG_YANG_CORRECTION = False
+DEFAULT_HK_SMOOTH_DERIVATIVE = False
+DEFAULT_HK_DISPLAY_METRIC = HK_DIFFERENTIAL_LINEAR
 T_PLOT_PANEL_COLLAPSED_WIDTH = 360
 T_PLOT_PANEL_EXPANDED_WIDTH = 660
 BJH_PANEL_COLLAPSED_WIDTH = 380
@@ -952,6 +976,143 @@ class FileImportDialog(QtWidgets.QDialog):
         return sorted({index.row() for index in table.selectionModel().selectedRows()})
 
 
+class HorvathKawazoePropertiesDialog(QtWidgets.QDialog):
+    PROPERTY_FIELDS = (
+        ("diameter_nm", "直径:", "nm", "{:.4f}"),
+        ("zero_diameter_nm", "零能量处直径", "nm", "{:.4f}"),
+        ("polarizability_cm3", "极化", "cm3", "{:.3e}"),
+        ("susceptibility_cm3", "磁化率", "cm3", "{:.3e}"),
+        ("density_per_cm2", "密度", "molecule/cm2", "{:.3e}"),
+    )
+
+    def __init__(
+        self,
+        parent=None,
+        *,
+        adsorbent_key: str = DEFAULT_HK_ADSORBENT,
+        adsorptive_key: str = DEFAULT_HK_ADSORPTIVE,
+        adsorbent_properties: dict[str, object] | None = None,
+        adsorptive_properties: dict[str, object] | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Horvath-Kawazoe 物理性质")
+        self.setMinimumWidth(520)
+        self._adsorbent_edits: dict[str, QtWidgets.QLineEdit] = {}
+        self._adsorptive_edits: dict[str, QtWidgets.QLineEdit] = {}
+
+        self.adsorbent_combo = QtWidgets.QComboBox()
+        for key, props in HK_ADSORBENT_PRESETS.items():
+            self.adsorbent_combo.addItem(str(props.get("label", key)), key)
+        self.adsorptive_combo = QtWidgets.QComboBox()
+        for key, props in HK_ADSORPTIVE_PRESETS.items():
+            self.adsorptive_combo.addItem(str(props.get("label", key)), key)
+
+        adsorbent_group = self._make_properties_group("吸附剂", self.adsorbent_combo, self._adsorbent_edits)
+        adsorptive_group = self._make_properties_group("吸附物", self.adsorptive_combo, self._adsorptive_edits)
+
+        button_row = QtWidgets.QHBoxLayout()
+        ok_button = QtWidgets.QPushButton("OK")
+        cancel_button = QtWidgets.QPushButton("结束")
+        ok_button.clicked.connect(self.accept)
+        cancel_button.clicked.connect(self.reject)
+        button_row.addStretch(1)
+        button_row.addWidget(ok_button)
+        button_row.addSpacing(24)
+        button_row.addWidget(cancel_button)
+        button_row.addStretch(1)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+        layout.addWidget(adsorbent_group)
+        layout.addWidget(adsorptive_group)
+        layout.addLayout(button_row)
+
+        self.adsorbent_combo.currentIndexChanged.connect(lambda _index: self._populate_fields("adsorbent"))
+        self.adsorptive_combo.currentIndexChanged.connect(lambda _index: self._populate_fields("adsorptive"))
+        self._set_combo_data(self.adsorbent_combo, adsorbent_key)
+        self._set_combo_data(self.adsorptive_combo, adsorptive_key)
+        self._populate_fields("adsorbent", adsorbent_properties)
+        self._populate_fields("adsorptive", adsorptive_properties)
+
+    @classmethod
+    def _make_properties_group(
+        cls,
+        title: str,
+        combo: QtWidgets.QComboBox,
+        edits: dict[str, QtWidgets.QLineEdit],
+    ) -> QtWidgets.QGroupBox:
+        group = QtWidgets.QGroupBox(title)
+        layout = QtWidgets.QGridLayout(group)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setHorizontalSpacing(8)
+        layout.setVerticalSpacing(6)
+        layout.addWidget(QtWidgets.QLabel("描述"), 0, 0)
+        layout.addWidget(combo, 0, 1, 1, 2)
+        validator = QtGui.QDoubleValidator(group)
+        validator.setNotation(QtGui.QDoubleValidator.ScientificNotation)
+        for row, (key, label, unit, _fmt) in enumerate(cls.PROPERTY_FIELDS, start=1):
+            edit = QtWidgets.QLineEdit()
+            edit.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+            edit.setValidator(validator)
+            edit.setFixedWidth(130)
+            edits[key] = edit
+            layout.addWidget(QtWidgets.QLabel(label), row, 0)
+            layout.addWidget(edit, row, 1)
+            layout.addWidget(QtWidgets.QLabel(unit), row, 2)
+        layout.setColumnStretch(3, 1)
+        return group
+
+    @staticmethod
+    def _set_combo_data(combo: QtWidgets.QComboBox, target_key: str) -> None:
+        for index in range(combo.count()):
+            if str(combo.itemData(index)) == str(target_key):
+                combo.setCurrentIndex(index)
+                return
+
+    def _populate_fields(self, kind: str, overrides: dict[str, object] | None = None) -> None:
+        if kind == "adsorbent":
+            combo = self.adsorbent_combo
+            presets = HK_ADSORBENT_PRESETS
+            edits = self._adsorbent_edits
+        else:
+            combo = self.adsorptive_combo
+            presets = HK_ADSORPTIVE_PRESETS
+            edits = self._adsorptive_edits
+        key = str(combo.currentData())
+        props = dict(presets.get(key, next(iter(presets.values()))))
+        if overrides:
+            props.update(overrides)
+        for field_key, _label, _unit, fmt in self.PROPERTY_FIELDS:
+            value = props.get(field_key, 0.0)
+            try:
+                text = fmt.format(float(value))
+            except (TypeError, ValueError):
+                text = str(value)
+            edits[field_key].setText(text)
+
+    def selected_adsorbent_key(self) -> str:
+        return str(self.adsorbent_combo.currentData())
+
+    def selected_adsorptive_key(self) -> str:
+        return str(self.adsorptive_combo.currentData())
+
+    def adsorbent_properties(self) -> dict[str, object]:
+        return self._read_properties(self._adsorbent_edits, self.adsorbent_combo.currentText())
+
+    def adsorptive_properties(self) -> dict[str, object]:
+        return self._read_properties(self._adsorptive_edits, self.adsorptive_combo.currentText())
+
+    def _read_properties(self, edits: dict[str, QtWidgets.QLineEdit], label: str) -> dict[str, object]:
+        props: dict[str, object] = {"label": label}
+        for field_key, _label, _unit, _fmt in self.PROPERTY_FIELDS:
+            try:
+                props[field_key] = float(edits[field_key].text())
+            except (KeyError, TypeError, ValueError):
+                props[field_key] = 0.0
+        return props
+
+
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -965,6 +1126,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.custom_t_plot_fit_ranges: dict[int, tuple[float, float]] = {}
         self.custom_t_plot_settings: dict[int, dict[str, object]] = {}
         self.custom_bjh_settings: dict[int, dict[str, object]] = {}
+        self.custom_hk_settings: dict[int, dict[str, object]] = {}
         self.bjh_pore_volume_range: tuple[float, float] = DEFAULT_BJH_PORE_VOLUME_RANGE
         self._updating_table = False
         self._updating_sample_checks = False
@@ -1004,6 +1166,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._dh_distribution_rows_by_key: dict[tuple[int, str], list[dict[str, float]]] = {}
         self._dh_distribution_cache: dict[tuple[object, ...], list[dict[str, float]]] = {}
         self._dh_diameter_log_bounds: tuple[float, float] | None = None
+        self._hk_distribution_rows_by_key: dict[tuple[int, str], list[dict[str, float]]] = {}
+        self._hk_distribution_cache: dict[tuple[object, ...], list[dict[str, float]]] = {}
         self.pore_volume_method = PORE_VOLUME_METHOD_BJH
         self._syncing_t_plot_controls = False
         self.t_plot_thickness_method = DEFAULT_T_PLOT_THICKNESS_METHOD
@@ -1032,6 +1196,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self.dh_show_desorption = DEFAULT_DH_SHOW_DESORPTION
         self.dh_differential_mode = DEFAULT_DH_DIFFERENTIAL_MODE
         self.dh_display_metrics = list(DEFAULT_DH_DISPLAY_METRICS)
+        self._syncing_hk_controls = False
+        self.hk_geometry = DEFAULT_HK_GEOMETRY
+        self.hk_adsorbent_key = DEFAULT_HK_ADSORBENT
+        self.hk_adsorptive_key = DEFAULT_HK_ADSORPTIVE
+        self.hk_adsorbent_properties = dict(HK_ADSORBENT_PRESETS[DEFAULT_HK_ADSORBENT])
+        self.hk_adsorptive_properties = dict(HK_ADSORPTIVE_PRESETS[DEFAULT_HK_ADSORPTIVE])
+        self.hk_interaction_parameter_mode = DEFAULT_HK_INTERACTION_PARAMETER_MODE
+        self.hk_interaction_parameter = DEFAULT_HK_INTERACTION_PARAMETER
+        self.hk_cheng_yang_correction = DEFAULT_HK_CHENG_YANG_CORRECTION
+        self.hk_smooth_derivative = DEFAULT_HK_SMOOTH_DERIVATIVE
+        self.hk_display_metric = DEFAULT_HK_DISPLAY_METRIC
         self.reference_tables: dict[str, QtWidgets.QTableWidget] = {}
         self.reference_name_edits: dict[str, QtWidgets.QLineEdit] = {}
         self._syncing_reference_tables = False
@@ -1223,6 +1398,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.bet_default_button = QtWidgets.QPushButton("默认")
         self.bet_default_button.setToolTip("按自动 BET 选点算法重新计算")
+        self.hk_plot = make_plot(
+            "Horvath-Kawazoe 孔径分布",
+            hk_display_axis_label(self.hk_display_metric),
+            "孔宽 W (nm)",
+        )
+
         self.bet_default_button.setMinimumWidth(76)
         self.bet_default_button.clicked.connect(self.reset_bet_fit_to_default)
         bet_controls = QtWidgets.QHBoxLayout()
@@ -1290,12 +1471,26 @@ class MainWindow(QtWidgets.QMainWindow):
         dh_tab_layout.addWidget(self.dh_options_panel)
         dh_tab_layout.addWidget(dh_plot_panel, 1)
 
+        hk_plot_panel = QtWidgets.QWidget()
+        hk_plot_layout = QtWidgets.QVBoxLayout(hk_plot_panel)
+        hk_plot_layout.setContentsMargins(0, 0, 0, 0)
+        hk_plot_layout.setSpacing(0)
+        hk_plot_layout.addWidget(self.hk_plot, 1)
+        self.hk_options_panel = self._make_hk_options_panel()
+        self.hk_tab = QtWidgets.QWidget()
+        hk_tab_layout = QtWidgets.QHBoxLayout(self.hk_tab)
+        hk_tab_layout.setContentsMargins(0, 0, 0, 0)
+        hk_tab_layout.setSpacing(0)
+        hk_tab_layout.addWidget(self.hk_options_panel)
+        hk_tab_layout.addWidget(hk_plot_panel, 1)
+
         self.plot_tabs = QtWidgets.QTabWidget()
         self.plot_tabs.addTab(self.bet_tab, "BET")
         self.plot_tabs.addTab(self.langmuir_tab, "Langmuir")
         self.plot_tabs.addTab(self.t_plot_tab, "t-Plot")
         self.plot_tabs.addTab(self.bjh_tab, "BJH")
         self.plot_tabs.addTab(self.dh_tab, "DH")
+        self.plot_tabs.addTab(self.hk_tab, "HK")
         self.plot_tabs.currentChanged.connect(self.on_plot_tab_changed)
 
         self.isotherm_table = self._make_table(
@@ -1841,6 +2036,105 @@ class MainWindow(QtWidgets.QMainWindow):
         panel_layout.addWidget(display_group)
         panel_layout.addLayout(default_button_row)
         panel_layout.addStretch(1)
+        return panel
+
+    def _make_hk_options_panel(self) -> QtWidgets.QWidget:
+        panel = QtWidgets.QWidget()
+        panel.setFixedWidth(BJH_PANEL_COLLAPSED_WIDTH)
+        panel_layout = QtWidgets.QVBoxLayout(panel)
+        panel_layout.setContentsMargins(6, 6, 6, 6)
+        panel_layout.setSpacing(8)
+
+        geometry_group = QtWidgets.QGroupBox("孔型")
+        geometry_layout = QtWidgets.QVBoxLayout(geometry_group)
+        geometry_layout.setContentsMargins(8, 8, 8, 8)
+        geometry_layout.setSpacing(4)
+        self.hk_geometry_group = QtWidgets.QButtonGroup(panel)
+        self.hk_geometry_group.setExclusive(True)
+        self.hk_geometry_radios = {}
+        for key, label, enabled in (
+            ("slit", "狭缝(原始H-K)", True),
+            ("cylinder", "圆柱(Satio-Foley)", True),
+            ("sphere", "球形", False),
+        ):
+            radio = QtWidgets.QRadioButton(label)
+            radio.setEnabled(enabled)
+            if not enabled:
+                radio.setToolTip("球形 Cheng-Yang 公式的单位尺度还需要官方导出数据校验，暂不开放")
+            radio.setChecked(key == self.hk_geometry)
+            radio.toggled.connect(self._on_hk_option_changed)
+            self.hk_geometry_group.addButton(radio)
+            self.hk_geometry_radios[key] = radio
+            geometry_layout.addWidget(radio)
+
+        interaction_group = QtWidgets.QGroupBox("作用参数")
+        interaction_layout = QtWidgets.QVBoxLayout(interaction_group)
+        interaction_layout.setContentsMargins(8, 8, 8, 8)
+        interaction_layout.setSpacing(6)
+        self.hk_calculated_radio = QtWidgets.QRadioButton("计算的")
+        self.hk_input_radio = QtWidgets.QRadioButton("输入的")
+        self.hk_input_radio.setChecked(True)
+        self.hk_calculated_radio.toggled.connect(self._on_hk_option_changed)
+        self.hk_input_radio.toggled.connect(self._on_hk_option_changed)
+        interaction_layout.addWidget(self.hk_calculated_radio)
+        calc_label = QtWidgets.QLabel(f"{calculate_hk_interaction_parameter():.3e} erg·cm^4")
+        calc_label.setStyleSheet("color: #6b7280; margin-left: 22px;")
+        self.hk_calculated_value_label = calc_label
+        interaction_layout.addWidget(calc_label)
+        input_row = QtWidgets.QHBoxLayout()
+        input_row.addWidget(self.hk_input_radio)
+        self.hk_interaction_edit = QtWidgets.QLineEdit(f"{self.hk_interaction_parameter:.3e}")
+        self.hk_interaction_edit.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        self.hk_interaction_edit.setFixedWidth(112)
+        validator = QtGui.QDoubleValidator(self.hk_interaction_edit)
+        validator.setNotation(QtGui.QDoubleValidator.ScientificNotation)
+        self.hk_interaction_edit.setValidator(validator)
+        self.hk_interaction_edit.editingFinished.connect(self._on_hk_option_changed)
+        input_row.addWidget(self.hk_interaction_edit)
+        input_row.addWidget(QtWidgets.QLabel("erg·cm^4"))
+        input_row.addStretch(1)
+        interaction_layout.addLayout(input_row)
+        self.hk_properties_button = QtWidgets.QPushButton("性质")
+        self.hk_properties_button.clicked.connect(self._open_hk_properties_dialog)
+        property_row = QtWidgets.QHBoxLayout()
+        property_row.addWidget(self.hk_properties_button)
+        property_row.addStretch(1)
+        interaction_layout.addLayout(property_row)
+
+        self.hk_cheng_yang_checkbox = QtWidgets.QCheckBox("使用Cheng-Yang校正")
+        self.hk_cheng_yang_checkbox.setChecked(DEFAULT_HK_CHENG_YANG_CORRECTION)
+        self.hk_cheng_yang_checkbox.stateChanged.connect(self._on_hk_option_changed)
+        self.hk_smooth_checkbox = QtWidgets.QCheckBox("平滑微分")
+        self.hk_smooth_checkbox.setChecked(DEFAULT_HK_SMOOTH_DERIVATIVE)
+        self.hk_smooth_checkbox.stateChanged.connect(self._on_hk_option_changed)
+
+        display_group = QtWidgets.QGroupBox("显示模式")
+        display_layout = QtWidgets.QVBoxLayout(display_group)
+        display_layout.setContentsMargins(8, 8, 8, 8)
+        display_layout.setSpacing(4)
+        self.hk_display_combo = QtWidgets.QComboBox()
+        for metric in HK_DISPLAY_METRIC_ORDER:
+            self.hk_display_combo.addItem(hk_display_metric_label(metric), metric)
+        self._set_hk_display_combo()
+        self.hk_display_combo.currentIndexChanged.connect(self._on_hk_display_mode_changed)
+        display_layout.addWidget(self.hk_display_combo)
+
+        self.hk_default_button = QtWidgets.QPushButton("默认")
+        self.hk_default_button.setToolTip("重置 HK 孔型、物性、作用参数和平滑选项")
+        self.hk_default_button.clicked.connect(self.reset_hk_to_default)
+        default_button_row = QtWidgets.QHBoxLayout()
+        default_button_row.setContentsMargins(0, 0, 0, 0)
+        default_button_row.addWidget(self.hk_default_button)
+        default_button_row.addStretch(1)
+
+        panel_layout.addWidget(geometry_group)
+        panel_layout.addWidget(interaction_group)
+        panel_layout.addWidget(self.hk_cheng_yang_checkbox)
+        panel_layout.addWidget(self.hk_smooth_checkbox)
+        panel_layout.addWidget(display_group)
+        panel_layout.addLayout(default_button_row)
+        panel_layout.addStretch(1)
+        self._update_hk_interaction_controls()
         return panel
 
     def _make_thickness_method_row(self, key: str, label: str, enabled: bool, *, context: str = "t_plot") -> QtWidgets.QWidget:
@@ -2813,6 +3107,101 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.pore_volume_method == PORE_VOLUME_METHOD_DH:
             self._refresh_all_sample_bjh_pore_cells()
 
+    def _read_hk_interaction_parameter(self) -> float:
+        try:
+            value = float(self.hk_interaction_edit.text())
+        except (AttributeError, TypeError, ValueError):
+            value = self.hk_interaction_parameter
+        if not (np.isfinite(value) and value > 0.0):
+            value = DEFAULT_HK_INTERACTION_PARAMETER
+        return float(value)
+
+    def _update_hk_interaction_controls(self) -> None:
+        calculated = calculate_hk_interaction_parameter(
+            self.hk_adsorbent_properties,
+            self.hk_adsorptive_properties,
+            adsorbent_key=self.hk_adsorbent_key,
+            adsorptive_key=self.hk_adsorptive_key,
+        )
+        if hasattr(self, "hk_calculated_value_label"):
+            self.hk_calculated_value_label.setText(f"{calculated:.3e} erg·cm^4")
+        input_mode = self.hk_interaction_parameter_mode != "calculated"
+        if hasattr(self, "hk_interaction_edit"):
+            self.hk_interaction_edit.setEnabled(input_mode)
+
+    def _on_hk_option_changed(self, *_args) -> None:
+        if self._syncing_hk_controls:
+            return
+        for key, radio in getattr(self, "hk_geometry_radios", {}).items():
+            if radio.isChecked():
+                self.hk_geometry = key
+                break
+        self.hk_interaction_parameter_mode = "calculated" if self.hk_calculated_radio.isChecked() else "input"
+        self.hk_interaction_parameter = self._read_hk_interaction_parameter()
+        self.hk_cheng_yang_correction = self.hk_cheng_yang_checkbox.isChecked()
+        self.hk_smooth_derivative = self.hk_smooth_checkbox.isChecked()
+        self._update_hk_interaction_controls()
+        self._save_hk_settings_for_active()
+        self.refresh_hk_plot()
+
+    def _set_hk_display_combo(self) -> None:
+        combo = getattr(self, "hk_display_combo", None)
+        if combo is None:
+            return
+        target = normalize_hk_display_metric(self.hk_display_metric)
+        for index in range(combo.count()):
+            if combo.itemData(index) == target:
+                combo.setCurrentIndex(index)
+                return
+
+    def _on_hk_display_mode_changed(self, *_args) -> None:
+        combo = getattr(self, "hk_display_combo", None)
+        self.hk_display_metric = normalize_hk_display_metric(combo.currentData() if combo is not None else DEFAULT_HK_DISPLAY_METRIC)
+        if self._syncing_hk_controls:
+            return
+        self._save_hk_settings_for_active()
+        self.refresh_hk_plot()
+
+    def _open_hk_properties_dialog(self) -> None:
+        dialog = HorvathKawazoePropertiesDialog(
+            self,
+            adsorbent_key=self.hk_adsorbent_key,
+            adsorptive_key=self.hk_adsorptive_key,
+            adsorbent_properties=self.hk_adsorbent_properties,
+            adsorptive_properties=self.hk_adsorptive_properties,
+        )
+        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+            return
+        self.hk_adsorbent_key = dialog.selected_adsorbent_key()
+        self.hk_adsorptive_key = dialog.selected_adsorptive_key()
+        self.hk_adsorbent_properties = dialog.adsorbent_properties()
+        self.hk_adsorptive_properties = dialog.adsorptive_properties()
+        self._update_hk_interaction_controls()
+        if self.hk_interaction_parameter_mode == "calculated":
+            self.hk_interaction_parameter = calculate_hk_interaction_parameter(
+                self.hk_adsorbent_properties,
+                self.hk_adsorptive_properties,
+                adsorbent_key=self.hk_adsorbent_key,
+                adsorptive_key=self.hk_adsorptive_key,
+            )
+        self._save_hk_settings_for_active()
+        self._hk_distribution_cache.clear()
+        self.refresh_hk_plot()
+
+    def reset_hk_to_default(self) -> None:
+        active = self.active_result()
+        if active is not None:
+            self.custom_hk_settings.pop(id(active), None)
+        settings = self._default_hk_settings()
+        self._syncing_hk_controls = True
+        try:
+            self._apply_hk_settings(settings)
+            self._sync_hk_controls_from_state()
+        finally:
+            self._syncing_hk_controls = False
+        self._hk_distribution_cache.clear()
+        self.refresh_hk_plot()
+
     def _on_t_plot_surface_area_mode_changed(self) -> None:
         if self._syncing_t_plot_controls:
             return
@@ -3050,6 +3439,108 @@ class MainWindow(QtWidgets.QMainWindow):
         finally:
             self._syncing_bjh_controls = False
 
+    def _default_hk_settings(self) -> dict[str, object]:
+        return {
+            "geometry": DEFAULT_HK_GEOMETRY,
+            "adsorbent_key": DEFAULT_HK_ADSORBENT,
+            "adsorptive_key": DEFAULT_HK_ADSORPTIVE,
+            "adsorbent_properties": dict(HK_ADSORBENT_PRESETS[DEFAULT_HK_ADSORBENT]),
+            "adsorptive_properties": dict(HK_ADSORPTIVE_PRESETS[DEFAULT_HK_ADSORPTIVE]),
+            "interaction_parameter_mode": DEFAULT_HK_INTERACTION_PARAMETER_MODE,
+            "interaction_parameter": DEFAULT_HK_INTERACTION_PARAMETER,
+            "cheng_yang_correction": DEFAULT_HK_CHENG_YANG_CORRECTION,
+            "smooth_derivative": DEFAULT_HK_SMOOTH_DERIVATIVE,
+            "display_metric": DEFAULT_HK_DISPLAY_METRIC,
+        }
+
+    def _hk_settings_for_result(self, result) -> dict[str, object]:
+        settings = self._default_hk_settings()
+        custom = self.custom_hk_settings.get(id(result))
+        if custom:
+            settings.update(custom)
+            settings["adsorbent_properties"] = {
+                **dict(HK_ADSORBENT_PRESETS.get(str(settings["adsorbent_key"]), HK_ADSORBENT_PRESETS[DEFAULT_HK_ADSORBENT])),
+                **dict(custom.get("adsorbent_properties", {})),
+            }
+            settings["adsorptive_properties"] = {
+                **dict(HK_ADSORPTIVE_PRESETS.get(str(settings["adsorptive_key"]), HK_ADSORPTIVE_PRESETS[DEFAULT_HK_ADSORPTIVE])),
+                **dict(custom.get("adsorptive_properties", {})),
+            }
+        return settings
+
+    def _apply_hk_settings(self, settings: dict[str, object]) -> None:
+        self.hk_geometry = str(settings.get("geometry", DEFAULT_HK_GEOMETRY))
+        if self.hk_geometry not in {"slit", "cylinder"}:
+            self.hk_geometry = DEFAULT_HK_GEOMETRY
+        self.hk_adsorbent_key = str(settings.get("adsorbent_key", DEFAULT_HK_ADSORBENT))
+        if self.hk_adsorbent_key not in HK_ADSORBENT_PRESETS:
+            self.hk_adsorbent_key = DEFAULT_HK_ADSORBENT
+        self.hk_adsorptive_key = str(settings.get("adsorptive_key", DEFAULT_HK_ADSORPTIVE))
+        if self.hk_adsorptive_key not in HK_ADSORPTIVE_PRESETS:
+            self.hk_adsorptive_key = DEFAULT_HK_ADSORPTIVE
+        self.hk_adsorbent_properties = {
+            **dict(HK_ADSORBENT_PRESETS[self.hk_adsorbent_key]),
+            **dict(settings.get("adsorbent_properties", {})),
+        }
+        self.hk_adsorptive_properties = {
+            **dict(HK_ADSORPTIVE_PRESETS[self.hk_adsorptive_key]),
+            **dict(settings.get("adsorptive_properties", {})),
+        }
+        mode = str(settings.get("interaction_parameter_mode", DEFAULT_HK_INTERACTION_PARAMETER_MODE))
+        self.hk_interaction_parameter_mode = "calculated" if mode == "calculated" else "input"
+        try:
+            self.hk_interaction_parameter = float(settings.get("interaction_parameter", DEFAULT_HK_INTERACTION_PARAMETER))
+        except (TypeError, ValueError):
+            self.hk_interaction_parameter = DEFAULT_HK_INTERACTION_PARAMETER
+        if not (np.isfinite(self.hk_interaction_parameter) and self.hk_interaction_parameter > 0.0):
+            self.hk_interaction_parameter = DEFAULT_HK_INTERACTION_PARAMETER
+        self.hk_cheng_yang_correction = bool(settings.get("cheng_yang_correction", DEFAULT_HK_CHENG_YANG_CORRECTION))
+        self.hk_smooth_derivative = bool(settings.get("smooth_derivative", DEFAULT_HK_SMOOTH_DERIVATIVE))
+        self.hk_display_metric = normalize_hk_display_metric(settings.get("display_metric", DEFAULT_HK_DISPLAY_METRIC))
+
+    def _save_hk_settings_for_active(self) -> None:
+        active = self.active_result()
+        if active is None:
+            return
+        self.custom_hk_settings[id(active)] = {
+            "geometry": self.hk_geometry,
+            "adsorbent_key": self.hk_adsorbent_key,
+            "adsorptive_key": self.hk_adsorptive_key,
+            "adsorbent_properties": dict(self.hk_adsorbent_properties),
+            "adsorptive_properties": dict(self.hk_adsorptive_properties),
+            "interaction_parameter_mode": self.hk_interaction_parameter_mode,
+            "interaction_parameter": self.hk_interaction_parameter,
+            "cheng_yang_correction": self.hk_cheng_yang_correction,
+            "smooth_derivative": self.hk_smooth_derivative,
+            "display_metric": self.hk_display_metric,
+        }
+
+    def _sync_hk_controls_from_state(self) -> None:
+        for key, radio in getattr(self, "hk_geometry_radios", {}).items():
+            radio.setChecked(key == self.hk_geometry)
+        if hasattr(self, "hk_calculated_radio"):
+            self.hk_calculated_radio.setChecked(self.hk_interaction_parameter_mode == "calculated")
+        if hasattr(self, "hk_input_radio"):
+            self.hk_input_radio.setChecked(self.hk_interaction_parameter_mode != "calculated")
+        if hasattr(self, "hk_interaction_edit"):
+            self.hk_interaction_edit.setText(f"{self.hk_interaction_parameter:.3e}")
+        if hasattr(self, "hk_cheng_yang_checkbox"):
+            self.hk_cheng_yang_checkbox.setChecked(self.hk_cheng_yang_correction)
+        if hasattr(self, "hk_smooth_checkbox"):
+            self.hk_smooth_checkbox.setChecked(self.hk_smooth_derivative)
+        self._set_hk_display_combo()
+        self._update_hk_interaction_controls()
+
+    def _load_hk_settings_for_active(self) -> None:
+        active = self.active_result()
+        settings = self._default_hk_settings() if active is None else self._hk_settings_for_result(active)
+        self._syncing_hk_controls = True
+        try:
+            self._apply_hk_settings(settings)
+            self._sync_hk_controls_from_state()
+        finally:
+            self._syncing_hk_controls = False
+
     def _read_directory_setting(self, key: str) -> Path:
         value = self.settings.value(key, "")
         if value:
@@ -3152,9 +3643,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.custom_t_plot_fit_ranges.pop(id(result), None)
         self.custom_t_plot_settings.pop(id(result), None)
         self.custom_bjh_settings.pop(id(result), None)
+        self.custom_hk_settings.pop(id(result), None)
         self._discard_fit_analysis_cache_for_result(result)
         self._discard_bjh_distribution_cache_for_result(result)
         self._discard_dh_distribution_cache_for_result(result)
+        self._discard_hk_distribution_cache_for_result(result)
 
     def load_files(self, paths: Iterable[str], *, replace: bool) -> None:
         parsed = []
@@ -3184,9 +3677,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self.custom_t_plot_fit_ranges.clear()
             self.custom_t_plot_settings.clear()
             self.custom_bjh_settings.clear()
+            self.custom_hk_settings.clear()
             self._fit_analysis_cache.clear()
             self._bjh_distribution_cache.clear()
             self._dh_distribution_cache.clear()
+            self._hk_distribution_cache.clear()
             self.bjh_pore_volume_range = DEFAULT_BJH_PORE_VOLUME_RANGE
             self._remove_bjh_region()
             self._remove_dh_region()
@@ -3255,6 +3750,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._reset_all_fit_regions()
         self._load_t_plot_settings_for_active()
         self._load_bjh_settings_for_active()
+        self._load_hk_settings_for_active()
         self.refresh_isotherm_plot()
         self.refresh_active_views()
         self.refresh_analysis_plots()
@@ -3417,6 +3913,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def refresh_all(self) -> None:
         self._load_t_plot_settings_for_active()
         self._load_bjh_settings_for_active()
+        self._load_hk_settings_for_active()
         self.refresh_isotherm_plot()
         self.refresh_sample_table()
         self.refresh_active_views()
@@ -3599,6 +4096,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.refresh_bjh_plot()
         elif current_tab is self.dh_tab:
             self.refresh_dh_plot()
+        elif current_tab is self.hk_tab:
+            self.refresh_hk_plot()
         else:
             self._refresh_bet_plot(active, p_min, p_max, reset_region=reset_region)
 
@@ -3688,6 +4187,34 @@ class MainWindow(QtWidgets.QMainWindow):
             self.bjh_pore_volume_range = current_range
             self._refresh_dh_selection(current_range)
             self._refresh_all_sample_bjh_pore_cells()
+
+    def refresh_hk_plot(self) -> None:
+        self._hk_distribution_rows_by_key = {}
+        if not self.results:
+            plot_hk_distribution_placeholder(
+                self.hk_plot,
+                display_metric=self.hk_display_metric,
+            )
+            return
+        self._hk_distribution_rows_by_key = plot_hk_distribution_multi(
+            self.hk_plot,
+            self.results,
+            self.visible_results,
+            self.sample_colors,
+            active_index=self.active_index,
+            geometry=self.hk_geometry,
+            adsorbent_key=self.hk_adsorbent_key,
+            adsorptive_key=self.hk_adsorptive_key,
+            adsorbent_properties=self.hk_adsorbent_properties,
+            adsorptive_properties=self.hk_adsorptive_properties,
+            interaction_parameter_erg_cm4=self.hk_interaction_parameter,
+            interaction_parameter_mode=self.hk_interaction_parameter_mode,
+            cheng_yang_correction=self.hk_cheng_yang_correction,
+            smooth=self.hk_smooth_derivative,
+            pressure_range=self._current_pressure_region() if self._isotherm_region_custom else None,
+            distribution_provider=self._cached_hk_distribution_rows,
+            display_metric=self.hk_display_metric,
+        )
 
     def _bjh_pressure_range(self) -> tuple[float, float] | None:
         if not self._isotherm_region_custom:
@@ -4602,6 +5129,14 @@ class MainWindow(QtWidgets.QMainWindow):
             if key[0] != result_id
         }
 
+    def _discard_hk_distribution_cache_for_result(self, result) -> None:
+        result_id = id(result)
+        self._hk_distribution_cache = {
+            key: rows
+            for key, rows in self._hk_distribution_cache.items()
+            if key[0] != result_id
+        }
+
     def _store_bjh_distribution_cache(self, cache_key: tuple[object, ...], rows: list[dict[str, float]]) -> None:
         self._bjh_distribution_cache[cache_key] = rows
         while len(self._bjh_distribution_cache) > BJH_DISTRIBUTION_CACHE_LIMIT:
@@ -4695,6 +5230,85 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         rows = list(distribution.rows)
         self._store_dh_distribution_cache(cache_key, rows)
+        return rows
+
+    def _hk_distribution_cache_key(
+        self,
+        result,
+        *,
+        geometry: str,
+        adsorbent_key: str,
+        adsorptive_key: str,
+        adsorbent_properties: dict[str, object] | None,
+        adsorptive_properties: dict[str, object] | None,
+        interaction_parameter_erg_cm4: float,
+        interaction_parameter_mode: str,
+        cheng_yang_correction: bool,
+        smooth: bool,
+    ) -> tuple[object, ...]:
+        return (
+            id(result),
+            str(getattr(getattr(result, "header", None), "file_path", "")),
+            int(getattr(result, "point_count", 0)),
+            str(geometry),
+            str(adsorbent_key),
+            str(adsorptive_key),
+            self._freeze_cache_value(adsorbent_properties or {}),
+            self._freeze_cache_value(adsorptive_properties or {}),
+            float(interaction_parameter_erg_cm4),
+            str(interaction_parameter_mode),
+            bool(cheng_yang_correction),
+            bool(smooth),
+        )
+
+    def _store_hk_distribution_cache(self, cache_key: tuple[object, ...], rows: list[dict[str, float]]) -> None:
+        self._hk_distribution_cache[cache_key] = rows
+        while len(self._hk_distribution_cache) > BJH_DISTRIBUTION_CACHE_LIMIT:
+            self._hk_distribution_cache.pop(next(iter(self._hk_distribution_cache)))
+
+    def _cached_hk_distribution_rows(
+        self,
+        result,
+        *,
+        geometry: str,
+        adsorbent_key: str,
+        adsorptive_key: str,
+        adsorbent_properties: dict[str, object] | None,
+        adsorptive_properties: dict[str, object] | None,
+        interaction_parameter_erg_cm4: float,
+        interaction_parameter_mode: str,
+        cheng_yang_correction: bool,
+        smooth: bool,
+    ) -> list[dict[str, float]]:
+        cache_key = self._hk_distribution_cache_key(
+            result,
+            geometry=geometry,
+            adsorbent_key=adsorbent_key,
+            adsorptive_key=adsorptive_key,
+            adsorbent_properties=adsorbent_properties,
+            adsorptive_properties=adsorptive_properties,
+            interaction_parameter_erg_cm4=interaction_parameter_erg_cm4,
+            interaction_parameter_mode=interaction_parameter_mode,
+            cheng_yang_correction=cheng_yang_correction,
+            smooth=smooth,
+        )
+        cached = self._hk_distribution_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        distribution = horvath_kawazoe_pore_distribution(
+            result,
+            geometry=geometry,
+            adsorbent_key=adsorbent_key,
+            adsorptive_key=adsorptive_key,
+            adsorbent_properties=adsorbent_properties,
+            adsorptive_properties=adsorptive_properties,
+            interaction_parameter_erg_cm4=interaction_parameter_erg_cm4,
+            interaction_parameter_mode=interaction_parameter_mode,
+            cheng_yang_correction=cheng_yang_correction,
+            smooth=smooth,
+        )
+        rows = list(distribution.rows)
+        self._store_hk_distribution_cache(cache_key, rows)
         return rows
 
     def _active_bjh_distribution_rows(self) -> list[dict[str, float]]:
@@ -5033,7 +5647,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._bjh_diameter_log_bounds = None
         self._dh_distribution_rows_by_key = {}
         self._dh_diameter_log_bounds = None
-        for plot in (self.bet_plot, self.langmuir_plot, self.t_plot, self.pore_plot, self.dh_plot):
+        self._hk_distribution_rows_by_key = {}
+        for plot in (self.bet_plot, self.langmuir_plot, self.t_plot, self.pore_plot, self.dh_plot, self.hk_plot):
             plot.clear()
 
     def _all_pressure_values(self) -> np.ndarray:
@@ -5089,6 +5704,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _is_dh_tab_active(self) -> bool:
         return getattr(self, "plot_tabs", None) is not None and self.plot_tabs.currentWidget() is self.dh_tab
+
+    def _is_hk_tab_active(self) -> bool:
+        return getattr(self, "plot_tabs", None) is not None and self.plot_tabs.currentWidget() is self.hk_tab
 
     def _clamp_pressure_region(self, raw_region: list[float] | tuple[float, float], pressure: np.ndarray) -> list[float]:
         data_min = float(np.nanmin(pressure))
@@ -5240,6 +5858,10 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._is_dh_tab_active():
             self.refresh_dh_plot()
             self._refresh_all_sample_bjh_pore_cells()
+            self.refresh_metrics()
+            return
+        if self._is_hk_tab_active():
+            self.refresh_hk_plot()
             self.refresh_metrics()
             return
         self.refresh_sample_table()
