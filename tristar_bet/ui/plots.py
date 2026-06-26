@@ -654,19 +654,25 @@ class ClickProjectionCursor:
         double_click = getattr(event, "double", False)
         is_double_click = double_click() if callable(double_click) else bool(double_click)
         if is_double_click:
-            self.point = None
-            self.hide()
+            self.clear()
             return
-        scene_pos = event.scenePos()
+        self.set_scene_position(event.scenePos())
+
+    def set_scene_position(self, scene_pos: QtCore.QPointF) -> bool:
         if not self.view_box.sceneBoundingRect().contains(scene_pos):
-            return
+            return False
         view_pos = self.view_box.mapSceneToView(scene_pos)
         x = float(view_pos.x())
         y = float(view_pos.y())
         if not np.isfinite(x) or not np.isfinite(y):
-            return
+            return False
         self.point = (x, y)
         self.update()
+        return True
+
+    def clear(self) -> None:
+        self.point = None
+        self.hide()
 
     def update(self) -> None:
         if self.point is None:
@@ -728,6 +734,334 @@ def _enable_click_projection_cursor(plot: pg.PlotWidget) -> None:
 
     plot.clear = clear_with_cursor
     plot._click_projection_cursor = cursor
+
+
+class SampleCurveInteractionController(QtCore.QObject):
+    HOVER_DELAY_MS = 0
+    HIT_DISTANCE_PX = 12.0
+
+    def __init__(self, plot: pg.PlotWidget) -> None:
+        super().__init__(plot)
+        self.plot = plot
+        self.plot_item = plot.getPlotItem()
+        self.view_box = self.plot_item.getViewBox()
+        self.entries: list[dict[str, object]] = []
+        self.hovered_entry: dict[str, object] | None = None
+        self.pending_scene_pos: QtCore.QPointF | None = None
+        self.hover_timer = QtCore.QTimer(self)
+        self.hover_timer.setSingleShot(True)
+        self.hover_timer.setInterval(self.HOVER_DELAY_MS)
+        self.hover_timer.timeout.connect(self._resolve_hover)
+        self.tooltip = pg.TextItem(
+            text="",
+            color="#111827",
+            anchor=(0.0, 1.0),
+            fill=pg.mkBrush(255, 255, 255, 238),
+            border=pg.mkPen("#2563eb"),
+        )
+        self.tooltip.setZValue(20_000)
+        self.tooltip.hide()
+        self.plot.scene().sigMouseMoved.connect(self._on_mouse_moved)
+        self.plot.installEventFilter(self)
+        viewport = getattr(self.plot, "viewport", lambda: None)()
+        if viewport is not None:
+            viewport.installEventFilter(self)
+
+    def eventFilter(self, obj, event) -> bool:
+        if event.type() in {QtCore.QEvent.Leave, QtCore.QEvent.Hide}:
+            self.clear_hover()
+        return False
+
+    def reset(self) -> None:
+        self.hover_timer.stop()
+        self.entries = []
+        self.pending_scene_pos = None
+        self.hovered_entry = None
+        self.tooltip.hide()
+
+    def register(
+        self,
+        item,
+        *,
+        sample_index: int,
+        label: str,
+        x_values,
+        y_values,
+    ) -> None:
+        x = np.asarray(x_values, dtype=float)
+        y = np.asarray(y_values, dtype=float)
+        if x.size == 0 or y.size == 0:
+            return
+        count = min(int(x.size), int(y.size))
+        if count <= 0:
+            return
+        x = x[:count]
+        y = y[:count]
+        mask = np.isfinite(x) & np.isfinite(y)
+        if not np.any(mask):
+            return
+        x = x[mask]
+        y = y[mask]
+        base_pen = _copy_pen_option(item.opts.get("pen"))
+        base_symbol_pen = _copy_pen_option(item.opts.get("symbolPen"))
+        base_shadow_pen = _copy_pen_option(item.opts.get("shadowPen"))
+        entry = {
+            "item": item,
+            "sample_index": int(sample_index),
+            "label": str(label),
+            "x": x,
+            "y": y,
+            "base_pen": base_pen,
+            "base_symbol_pen": base_symbol_pen,
+            "base_shadow_pen": base_shadow_pen,
+            "base_symbol_size": item.opts.get("symbolSize"),
+            "base_z": float(item.zValue()),
+        }
+        self.entries.append(entry)
+        try:
+            item.setCurveClickable(True, width=max(10, int(self.HIT_DISTANCE_PX * 1.6)))
+            item.sigClicked.connect(
+                lambda _item, event, index=int(sample_index), controller=self: controller._on_curve_clicked(index, event)
+            )
+        except Exception:
+            pass
+
+    def _on_mouse_moved(self, scene_pos) -> None:
+        if not self.view_box.sceneBoundingRect().contains(scene_pos):
+            self.clear_hover()
+            return
+        self.pending_scene_pos = QtCore.QPointF(scene_pos)
+        if self.HOVER_DELAY_MS <= 0:
+            self._resolve_hover()
+        else:
+            self.hover_timer.start()
+
+    def _resolve_hover(self) -> None:
+        scene_pos = self.pending_scene_pos
+        if scene_pos is None or not self.entries:
+            self.clear_hover()
+            return
+        if not self.view_box.sceneBoundingRect().contains(scene_pos):
+            self.clear_hover()
+            return
+        best_entry = None
+        best_distance = math.inf
+        best_view_point = None
+        for entry in self.entries:
+            distance, view_point = self._distance_to_entry(scene_pos, entry)
+            if distance < best_distance:
+                best_distance = distance
+                best_entry = entry
+                best_view_point = view_point
+        if best_entry is None or best_distance > self.HIT_DISTANCE_PX:
+            self.clear_hover()
+            return
+        self._set_hover(best_entry, best_view_point)
+
+    def _distance_to_entry(self, scene_pos: QtCore.QPointF, entry: dict[str, object]) -> tuple[float, QtCore.QPointF | None]:
+        x = np.asarray(entry["x"], dtype=float)
+        y = np.asarray(entry["y"], dtype=float)
+        x_view, y_view = self._data_to_view_coordinates(x, y)
+        mask = np.isfinite(x_view) & np.isfinite(y_view)
+        if not np.any(mask):
+            return (math.inf, None)
+        x_view = x_view[mask]
+        y_view = y_view[mask]
+        scene_points = [
+            self.view_box.mapViewToScene(QtCore.QPointF(float(xi), float(yi)))
+            for xi, yi in zip(x_view, y_view)
+        ]
+        if not scene_points:
+            return (math.inf, None)
+        px = float(scene_pos.x())
+        py = float(scene_pos.y())
+        if len(scene_points) == 1:
+            point = scene_points[0]
+            return (math.hypot(float(point.x()) - px, float(point.y()) - py), QtCore.QPointF(x_view[0], y_view[0]))
+
+        best_distance = math.inf
+        best_view_point = None
+        for idx in range(len(scene_points) - 1):
+            p1 = scene_points[idx]
+            p2 = scene_points[idx + 1]
+            x1, y1 = float(p1.x()), float(p1.y())
+            x2, y2 = float(p2.x()), float(p2.y())
+            dx = x2 - x1
+            dy = y2 - y1
+            denom = dx * dx + dy * dy
+            if denom <= 1e-12:
+                t = 0.0
+            else:
+                t = max(0.0, min(1.0, ((px - x1) * dx + (py - y1) * dy) / denom))
+            nearest_x = x1 + t * dx
+            nearest_y = y1 + t * dy
+            distance = math.hypot(nearest_x - px, nearest_y - py)
+            if distance < best_distance:
+                best_distance = distance
+                view_x = float(x_view[idx]) + t * (float(x_view[idx + 1]) - float(x_view[idx]))
+                view_y = float(y_view[idx]) + t * (float(y_view[idx + 1]) - float(y_view[idx]))
+                best_view_point = QtCore.QPointF(view_x, view_y)
+        return (best_distance, best_view_point)
+
+    def _data_to_view_coordinates(self, x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        x_view = np.asarray(x, dtype=float).copy()
+        y_view = np.asarray(y, dtype=float).copy()
+        if getattr(self.plot_item.getAxis("bottom"), "logMode", False):
+            with np.errstate(divide="ignore", invalid="ignore"):
+                x_view = np.where(x_view > 0.0, np.log10(x_view), np.nan)
+        if getattr(self.plot_item.getAxis("left"), "logMode", False):
+            with np.errstate(divide="ignore", invalid="ignore"):
+                y_view = np.where(y_view > 0.0, np.log10(y_view), np.nan)
+        return x_view, y_view
+
+    def _set_hover(self, entry: dict[str, object], view_point: QtCore.QPointF | None) -> None:
+        if self.hovered_entry is entry:
+            self._move_tooltip(entry, view_point)
+            return
+        self._restore_all()
+        self.hovered_entry = entry
+        for other in self.entries:
+            item = other.get("item")
+            if item is None:
+                continue
+            try:
+                item.setOpacity(1.0 if other is entry else 0.22)
+            except Exception:
+                pass
+        item = entry.get("item")
+        if item is not None:
+            base_pen = entry.get("base_pen")
+            if isinstance(base_pen, QtGui.QPen):
+                highlight_pen = QtGui.QPen(base_pen)
+                highlight_pen.setWidthF(max(float(base_pen.widthF()) + 2.5, 5.0))
+                item.setPen(highlight_pen)
+                glow_pen = QtGui.QPen(base_pen)
+                glow_pen.setColor(QtGui.QColor("#fbbf24"))
+                glow_pen.setWidthF(max(float(base_pen.widthF()) + 8.0, 10.0))
+                item.setShadowPen(glow_pen)
+            base_symbol_size = entry.get("base_symbol_size")
+            if base_symbol_size is not None:
+                try:
+                    item.setSymbolSize(float(base_symbol_size) + 3.0)
+                except Exception:
+                    pass
+            try:
+                item.setZValue(15_000)
+            except Exception:
+                pass
+        self._move_tooltip(entry, view_point)
+        _refresh_legend_layout(self.plot)
+
+    def clear_hover(self) -> None:
+        self.hover_timer.stop()
+        self.pending_scene_pos = None
+        self._restore_all()
+        self.hovered_entry = None
+        self.tooltip.hide()
+
+    def _restore_all(self) -> None:
+        for entry in self.entries:
+            item = entry.get("item")
+            if item is None:
+                continue
+            try:
+                item.setOpacity(1.0)
+                if isinstance(entry.get("base_pen"), QtGui.QPen):
+                    item.setPen(QtGui.QPen(entry["base_pen"]))
+                if isinstance(entry.get("base_symbol_pen"), QtGui.QPen):
+                    item.setSymbolPen(QtGui.QPen(entry["base_symbol_pen"]))
+                if isinstance(entry.get("base_shadow_pen"), QtGui.QPen):
+                    item.setShadowPen(QtGui.QPen(entry["base_shadow_pen"]))
+                else:
+                    item.setShadowPen(None)
+                if entry.get("base_symbol_size") is not None:
+                    item.setSymbolSize(entry["base_symbol_size"])
+                item.setZValue(float(entry.get("base_z", 0.0)))
+            except Exception:
+                pass
+
+    def _move_tooltip(self, entry: dict[str, object], view_point: QtCore.QPointF | None) -> None:
+        if view_point is None:
+            return
+        added_items = getattr(self.view_box, "addedItems", [])
+        if self.tooltip not in added_items:
+            self.view_box.addItem(self.tooltip, ignoreBounds=True)
+        self.tooltip.setText(str(entry.get("label", "")))
+        self.tooltip.setPos(float(view_point.x()), float(view_point.y()))
+        self.tooltip.show()
+
+    def _on_curve_clicked(self, sample_index: int, event) -> None:
+        if event.button() != QtCore.Qt.LeftButton:
+            return
+        double_click = getattr(event, "double", False)
+        is_double_click = double_click() if callable(double_click) else bool(double_click)
+        cursor = getattr(self.plot, "_click_projection_cursor", None)
+        if is_double_click:
+            if cursor is not None and hasattr(cursor, "clear"):
+                cursor.clear()
+            if hasattr(event, "accept"):
+                event.accept()
+            callback = getattr(self.plot, "_sample_curve_selected_callback", None)
+            if callable(callback):
+                callback(int(sample_index))
+            return
+        if cursor is not None and hasattr(cursor, "set_scene_position"):
+            cursor.set_scene_position(event.scenePos())
+
+
+def _sample_curve_controller(plot: pg.PlotWidget) -> SampleCurveInteractionController:
+    controller = getattr(plot, "_sample_curve_interaction_controller", None)
+    if controller is None:
+        controller = SampleCurveInteractionController(plot)
+        setattr(plot, "_sample_curve_interaction_controller", controller)
+        if not getattr(plot, "_sample_curve_clear_patched", False):
+            original_clear = plot.clear
+
+            def clear_with_sample_curve_reset(*args, **kwargs):
+                result = original_clear(*args, **kwargs)
+                controller.reset()
+                return result
+
+            plot.clear = clear_with_sample_curve_reset
+            setattr(plot, "_sample_curve_clear_patched", True)
+    return controller
+
+
+def _copy_pen_option(value) -> QtGui.QPen | None:
+    if value is None:
+        return None
+    if isinstance(value, QtGui.QPen):
+        return QtGui.QPen(value)
+    try:
+        return QtGui.QPen(pg.mkPen(value))
+    except Exception:
+        return None
+
+
+def _reset_sample_curve_interactions(plot: pg.PlotWidget) -> None:
+    controller = getattr(plot, "_sample_curve_interaction_controller", None)
+    if controller is not None:
+        controller.reset()
+
+
+def _register_sample_curve(
+    plot: pg.PlotWidget,
+    item,
+    *,
+    sample_index: int,
+    label: str,
+    x_values,
+    y_values,
+) -> None:
+    if item is None:
+        return
+    _sample_curve_controller(plot).register(
+        item,
+        sample_index=sample_index,
+        label=label,
+        x_values=x_values,
+        y_values=y_values,
+    )
 
 
 def make_plot(title: str, left_label: str, bottom_label: str, *, legend_position: str = "left") -> pg.PlotWidget:
@@ -811,8 +1145,16 @@ def plot_isotherm_multi(
         )
         if item is not None:
             legend_entries.append((index, item, name))
+            _register_sample_curve(
+                plot,
+                item,
+                sample_index=index,
+                label=f"{name} Adsorption",
+                x_values=[float(point.relative_pressure) for point in adsorption],
+                y_values=[float(point.quantity_adsorbed_cm3_g_stp or 0.0) for point in adsorption],
+            )
         _plot_adsorption_desorption_bridge(plot, adsorption, desorption, color, width=width)
-        _plot_points(
+        desorption_item = _plot_points(
             plot,
             desorption,
             color,
@@ -823,6 +1165,15 @@ def plot_isotherm_multi(
             symbol_pen_width=symbol_pen_width,
             filled=False,
         )
+        if desorption_item is not None:
+            _register_sample_curve(
+                plot,
+                desorption_item,
+                sample_index=index,
+                label=f"{name} Desorption",
+                x_values=[float(point.relative_pressure) for point in desorption],
+                y_values=[float(point.quantity_adsorbed_cm3_g_stp or 0.0) for point in desorption],
+            )
         _collect_xy(adsorption)
         _collect_xy(desorption)
 
@@ -843,6 +1194,8 @@ def plot_isotherm_selection(
     colors: list[str],
     selected_range: tuple[float, float] | list[float],
     active_index: int = -1,
+    *,
+    fade_inactive: bool = False,
 ) -> list:
     if selected_range is None:
         return []
@@ -856,7 +1209,9 @@ def plot_isotherm_selection(
         if index >= len(visible) or not visible[index]:
             continue
         result = results[index]
-        color = _analysis_color(colors, index, active_index)
+        is_active = index == active_index
+        base_color = _analysis_color(colors, index, active_index)
+        color = _color_with_alpha(base_color, 64) if fade_inactive and not is_active else base_color
         items.append(_plot_selected_isotherm_points(plot, adsorption_points(result), color, lo, hi))
         items.append(_plot_selected_isotherm_points(plot, desorption_points(result), color, lo, hi))
     return [item for item in items if item is not None]
@@ -1551,8 +1906,17 @@ def plot_bjh_distribution_multi(
                     symbolBrush=pg.mkBrush("#ffffff"),
                     name=None,
                 )
+                curve_label = f"{_legend_name(result)} BJH{phase_label} {bjh_display_metric_label(metric)}"
+                _register_sample_curve(
+                    plot,
+                    item,
+                    sample_index=index,
+                    label=curve_label,
+                    x_values=x,
+                    y_values=y,
+                )
                 legend_entries.append(
-                    (index, item, f"{_legend_name(result)} BJH{phase_label} {bjh_display_metric_label(metric)}")
+                    (index, item, curve_label)
                 )
                 all_x.extend(x.tolist())
                 all_y.extend(y.tolist())
@@ -1671,8 +2035,17 @@ def plot_dh_distribution_multi(
                     symbolBrush=pg.mkBrush("#ffffff"),
                     name=None,
                 )
+                curve_label = f"{_legend_name(result)} DH{phase_label} {bjh_display_metric_label(metric)}"
+                _register_sample_curve(
+                    plot,
+                    item,
+                    sample_index=index,
+                    label=curve_label,
+                    x_values=x,
+                    y_values=y,
+                )
                 legend_entries.append(
-                    (index, item, f"{_legend_name(result)} DH{phase_label} {bjh_display_metric_label(metric)}")
+                    (index, item, curve_label)
                 )
                 all_x.extend(x.tolist())
                 all_y.extend(y.tolist())
@@ -1795,7 +2168,16 @@ def plot_hk_distribution_multi(
             symbolBrush=pg.mkBrush("#ffffff"),
             name=None,
         )
-        legend_entries.append((index, item, f"{_legend_name(result)} HK {hk_display_metric_label(metric)}"))
+        curve_label = f"{_legend_name(result)} HK {hk_display_metric_label(metric)}"
+        _register_sample_curve(
+            plot,
+            item,
+            sample_index=index,
+            label=curve_label,
+            x_values=x,
+            y_values=y,
+        )
+        legend_entries.append((index, item, curve_label))
         all_x.extend(x.tolist())
         all_y.extend(y.tolist())
 
@@ -1891,7 +2273,16 @@ def plot_dft_distribution_multi(
             symbolBrush=pg.mkBrush("#ffffff"),
             name=None,
         )
-        legend_entries.append((index, item, f"{_legend_name(result)} DFT"))
+        curve_label = f"{_legend_name(result)} DFT"
+        _register_sample_curve(
+            plot,
+            item,
+            sample_index=index,
+            label=curve_label,
+            x_values=x,
+            y_values=y,
+        )
+        legend_entries.append((index, item, curve_label))
         all_x.extend(x.tolist())
         all_y.extend(y.tolist())
 
@@ -2327,6 +2718,7 @@ def _analysis_color(colors: list[str], index: int, active_index: int) -> str:
 
 
 def _clear_manual_legend_entries(plot: pg.PlotWidget) -> None:
+    _reset_sample_curve_interactions(plot)
     setattr(plot, "_manual_sample_legend_entries", [])
     legend = getattr(plot.plotItem, "legend", None)
     if legend is not None:
