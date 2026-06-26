@@ -1,16 +1,16 @@
 {
-  "version": "1.0.12",
-  "release_name": "v1.0.12",
-  "release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.0.12",
-  "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.0.12/BET-DragonScience.exe",
+  "version": "1.0.13",
+  "release_name": "v1.0.13",
+  "release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.0.13",
+  "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.0.13/BET-DragonScience.exe",
   "gitee_source_name": "Gitee",
-  "gitee_release_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/tag/v1.0.12",
-  "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.0.12/BET-DragonScience.exe",
+  "gitee_release_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/tag/v1.0.13",
+  "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.0.13/BET-DragonScience.exe",
   "github_source_name": "GitHub",
-  "github_release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.0.12",
-  "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.0.12/BET-DragonScience.exe",
+  "github_release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.0.13",
+  "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.0.13/BET-DragonScience.exe",
   "asset_name": "BET-DragonScience.exe",
-  "sha256": "5a0305b4c054b843557d21f345b34becb5574f5e774b7d5182017bef6b8eb1fb",
-  "published_at": "2026-06-25",
-  "release_notes": "v1.0.12 adds per-tab HK selected-pore-volume integration with a 0.6-1.0 nm default range, improves BJH/DH/HK batch settings behavior, and renames the Windows executable to BET-DragonScience.exe."
+  "sha256": "1f24d5a324adb4708b593ab8e95ae83fdb29c96d93b82a22755717339d6360c7",
+  "published_at": "2026-06-26",
+  "release_notes": "v1.0.13 adds the DFT page, improves DFT regularization interaction, fixes drag-and-drop on frozen sample columns, and makes sample-table horizontal scrolling smoother."
 }

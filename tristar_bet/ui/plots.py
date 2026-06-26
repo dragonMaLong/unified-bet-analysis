@@ -7,7 +7,7 @@ from typing import Callable
 import numpy as np
 import pyqtgraph as pg
 
-from pyqtgraph.Qt import QtCore
+from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 from tristar_bet.analysis import (
     FitResult,
@@ -16,6 +16,7 @@ from tristar_bet.analysis import (
     bet_analysis,
     bjh_pore_distribution,
     desorption_points,
+    dft_pore_distribution,
     dh_pore_distribution,
     horvath_kawazoe_pore_distribution,
     langmuir_analysis,
@@ -115,6 +116,329 @@ HK_DISPLAY_METRIC_SYMBOLS = {
     HK_DIFFERENTIAL_LOG: "s",
     HK_CUMULATIVE_VOLUME: "t",
 }
+
+
+class _LegendToggleButton(QtWidgets.QToolButton):
+    def __init__(self, plot: pg.PlotWidget) -> None:
+        super().__init__(plot)
+        self._plot = plot
+        self.setCheckable(True)
+        self.setChecked(True)
+        self.setAutoRaise(True)
+        self.setFixedSize(24, 22)
+        self.setCursor(QtCore.Qt.PointingHandCursor)
+        self.setToolTip("隐藏图例")
+        self._press_global_pos: QtCore.QPoint | None = None
+        self._press_button_pos: QtCore.QPoint | None = None
+        self._dragging_button = False
+        self.toggled.connect(self._on_toggled)
+
+    def _on_toggled(self, checked: bool) -> None:
+        _set_plot_legend_visible(self._plot, checked)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() != QtCore.Qt.LeftButton:
+            super().mousePressEvent(event)
+            return
+        self._press_global_pos = self._event_global_pos(event)
+        self._press_button_pos = QtCore.QPoint(self.pos())
+        self._dragging_button = False
+        event.accept()
+
+    def mouseMoveEvent(self, event) -> None:
+        if not (event.buttons() & QtCore.Qt.LeftButton) or self._press_global_pos is None or self._press_button_pos is None:
+            super().mouseMoveEvent(event)
+            return
+        delta = self._event_global_pos(event) - self._press_global_pos
+        if not self._dragging_button and delta.manhattanLength() < QtWidgets.QApplication.startDragDistance():
+            event.accept()
+            return
+        self._dragging_button = True
+        self._move_to(self._press_button_pos + delta)
+        event.accept()
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() != QtCore.Qt.LeftButton:
+            super().mouseReleaseEvent(event)
+            return
+        if self._dragging_button:
+            self._dragging_button = False
+            self._press_global_pos = None
+            self._press_button_pos = None
+            event.accept()
+            return
+        self._press_global_pos = None
+        self._press_button_pos = None
+        self.setChecked(not self.isChecked())
+        event.accept()
+
+    def _move_to(self, position: QtCore.QPoint) -> None:
+        margin = 4
+        x = max(margin, min(int(position.x()), max(margin, self._plot.width() - self.width() - margin)))
+        y = max(margin, min(int(position.y()), max(margin, self._plot.height() - self.height() - margin)))
+        self.move(x, y)
+        self.raise_()
+        legend = getattr(self._plot.plotItem, "legend", None)
+        if legend is not None and legend.isVisible():
+            _move_legend_to_toggle_anchor(self._plot)
+        else:
+            setattr(self._plot, "_legend_hidden_toggle_anchor", QtCore.QPoint(self.pos()))
+
+    @staticmethod
+    def _event_global_pos(event) -> QtCore.QPoint:
+        if hasattr(event, "globalPosition"):
+            return event.globalPosition().toPoint()
+        return event.globalPos()
+
+    def paintEvent(self, event) -> None:
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        rect = self.rect().adjusted(1, 1, -1, -1)
+        hovered = bool(self.underMouse())
+        painter.setPen(QtGui.QPen(QtGui.QColor("#cbd5e1"), 1))
+        painter.setBrush(QtGui.QBrush(QtGui.QColor("#ffffff" if not hovered else "#f8fafc")))
+        painter.drawRoundedRect(rect, 5, 5)
+
+        icon_rect = QtCore.QRectF(7, 7, 14, 10)
+        pen = QtGui.QPen(QtGui.QColor("#334155"), 1.6)
+        painter.setPen(pen)
+        painter.setBrush(QtCore.Qt.NoBrush)
+        path = QtGui.QPainterPath()
+        path.moveTo(icon_rect.left(), icon_rect.center().y())
+        path.cubicTo(
+            icon_rect.left() + 3,
+            icon_rect.top(),
+            icon_rect.right() - 3,
+            icon_rect.top(),
+            icon_rect.right(),
+            icon_rect.center().y(),
+        )
+        path.cubicTo(
+            icon_rect.right() - 3,
+            icon_rect.bottom(),
+            icon_rect.left() + 3,
+            icon_rect.bottom(),
+            icon_rect.left(),
+            icon_rect.center().y(),
+        )
+        painter.drawPath(path)
+        if self.isChecked():
+            painter.setBrush(QtGui.QBrush(QtGui.QColor("#334155")))
+            painter.drawEllipse(QtCore.QPointF(icon_rect.center()), 2.3, 2.3)
+        else:
+            painter.drawLine(QtCore.QLineF(7, 18, 21, 6))
+
+
+class _LegendToggleEventFilter(QtCore.QObject):
+    def eventFilter(self, obj, event) -> bool:
+        plot = self.parent()
+        if event.type() in {
+            QtCore.QEvent.Resize,
+            QtCore.QEvent.Show,
+            QtCore.QEvent.MouseMove,
+            QtCore.QEvent.MouseButtonRelease,
+        }:
+            _position_legend_toggle_button(plot)
+        return False
+
+
+def _install_legend_toggle(plot: pg.PlotWidget) -> None:
+    if getattr(plot, "_legend_toggle_button", None) is not None:
+        return
+    setattr(plot, "_legend_visible", True)
+    original_clear = plot.clear
+
+    def clear_with_legend_toggle(*args, **kwargs):
+        result = original_clear(*args, **kwargs)
+        _apply_plot_legend_visibility(plot)
+        button = getattr(plot, "_legend_toggle_button", None)
+        if button is not None:
+            button.show()
+            button.raise_()
+        return result
+
+    plot.clear = clear_with_legend_toggle
+    button = _LegendToggleButton(plot)
+    event_filter = _LegendToggleEventFilter(plot)
+    plot.installEventFilter(event_filter)
+    viewport = getattr(plot, "viewport", lambda: None)()
+    if viewport is not None:
+        viewport.installEventFilter(event_filter)
+    setattr(plot, "_legend_toggle_button", button)
+    setattr(plot, "_legend_toggle_event_filter", event_filter)
+    _position_legend_toggle_button(plot)
+    button.show()
+    button.raise_()
+
+
+def _apply_default_legend_position(plot: pg.PlotWidget) -> None:
+    if getattr(plot, "_legend_user_offset", None) is not None:
+        return
+    if getattr(plot, "_legend_default_position", "left") != "right":
+        return
+    legend = getattr(plot.plotItem, "legend", None)
+    if legend is None:
+        return
+    rect = _legend_rect_in_plot(plot)
+    if rect is None:
+        return
+    try:
+        legend_pos = legend.pos()
+        base_x = rect.left() - float(legend_pos.x())
+        base_y = rect.top() - float(legend_pos.y())
+    except Exception:
+        return
+    margin = 10.0
+    desired_left = max(margin, float(plot.width()) - float(rect.width()) - margin)
+    desired_top = margin
+    offset_x = float(desired_left) - base_x
+    offset_y = float(desired_top) - base_y
+    _apply_legend_offset(plot, (offset_x, offset_y))
+
+
+def _position_legend_toggle_button(plot) -> None:
+    button = getattr(plot, "_legend_toggle_button", None)
+    if button is None:
+        return
+    _refresh_legend_layout(plot)
+    margin = 4
+    position = _legend_toggle_position(plot, button)
+    x = max(margin, min(int(position.x()), max(margin, plot.width() - button.width() - margin)))
+    y = max(margin, min(int(position.y()), max(margin, plot.height() - button.height() - margin)))
+    button.move(x, y)
+    button.raise_()
+
+
+def _legend_toggle_position(plot, button: QtWidgets.QToolButton) -> QtCore.QPoint:
+    legend = getattr(plot.plotItem, "legend", None)
+    if legend is not None and legend.isVisible():
+        try:
+            rect = _legend_rect_in_plot(plot)
+            if rect is None:
+                raise RuntimeError("legend rect unavailable")
+            position = QtCore.QPoint(
+                int(rect.right() - button.width() - 4),
+                int(rect.top() + 4),
+            )
+            return position
+        except Exception:
+            pass
+    anchor = getattr(plot, "_legend_hidden_toggle_anchor", None)
+    if isinstance(anchor, QtCore.QPoint):
+        return QtCore.QPoint(anchor)
+    return QtCore.QPoint(max(4, plot.width() - button.width() - 8), 8)
+
+
+def _move_legend_to_toggle_anchor(plot) -> None:
+    legend = getattr(plot.plotItem, "legend", None)
+    button = getattr(plot, "_legend_toggle_button", None)
+    if legend is None or button is None or not legend.isVisible():
+        return
+    rect = _legend_rect_in_plot(plot)
+    if rect is None:
+        return
+    try:
+        legend_pos = legend.pos()
+        base_x = rect.left() - float(legend_pos.x())
+        base_y = rect.top() - float(legend_pos.y())
+        desired_rect_left = button.x() + button.width() + 4 - rect.width()
+        desired_rect_top = button.y() - 4
+        desired_offset = (
+            float(desired_rect_left) - base_x,
+            float(desired_rect_top) - base_y,
+        )
+        _apply_legend_offset(plot, desired_offset)
+        setattr(plot, "_legend_user_offset", (float(desired_offset[0]), float(desired_offset[1])))
+    except Exception:
+        return
+    _position_legend_toggle_button(plot)
+
+
+def _apply_legend_offset(plot, offset: tuple[float, float]) -> None:
+    legend = getattr(plot.plotItem, "legend", None)
+    if legend is None:
+        return
+    legend.anchor(itemPos=(0, 0), parentPos=(0, 0), offset=(float(offset[0]), float(offset[1])))
+
+
+def _legend_rect_in_plot(plot) -> QtCore.QRect | None:
+    legend = getattr(plot.plotItem, "legend", None)
+    if legend is None:
+        return None
+    try:
+        _refresh_legend_layout(plot)
+        scene_rect = legend.sceneBoundingRect()
+        top_left = plot.mapFromScene(scene_rect.topLeft())
+        bottom_right = plot.mapFromScene(scene_rect.bottomRight())
+        return QtCore.QRect(top_left, bottom_right).normalized()
+    except Exception:
+        return None
+
+
+def _refresh_legend_layout(plot) -> None:
+    legend = getattr(plot.plotItem, "legend", None)
+    if legend is None:
+        return
+    for method_name in ("updateSize", "adjustSize", "updateGeometry"):
+        method = getattr(legend, method_name, None)
+        if callable(method):
+            try:
+                method()
+            except Exception:
+                pass
+
+
+def _legend_is_inside_plot(plot) -> bool:
+    rect = _legend_rect_in_plot(plot)
+    if rect is None:
+        return True
+    safe_rect = plot.rect().adjusted(4, 4, -4, -4)
+    intersection = safe_rect.intersected(rect)
+    return intersection.width() >= 24 and intersection.height() >= 20
+
+
+def _set_plot_legend_visible(plot: pg.PlotWidget, visible: bool) -> None:
+    setattr(plot, "_legend_visible", bool(visible))
+    _apply_plot_legend_visibility(plot)
+
+
+def _apply_plot_legend_visibility(plot: pg.PlotWidget) -> None:
+    visible = bool(getattr(plot, "_legend_visible", True))
+    legend = getattr(plot.plotItem, "legend", None)
+    button = getattr(plot, "_legend_toggle_button", None)
+    if legend is not None and button is not None and not visible:
+        setattr(plot, "_legend_hidden_toggle_anchor", QtCore.QPoint(button.pos()))
+    if legend is not None:
+        legend.setVisible(bool(visible))
+        if visible:
+            hidden_anchor = getattr(plot, "_legend_hidden_toggle_anchor", None)
+            if isinstance(hidden_anchor, QtCore.QPoint):
+                _move_legend_to_toggle_anchor(plot)
+                try:
+                    delattr(plot, "_legend_hidden_toggle_anchor")
+                except AttributeError:
+                    pass
+            else:
+                user_offset = getattr(plot, "_legend_user_offset", None)
+                if user_offset is not None:
+                    _apply_legend_offset(plot, user_offset)
+    if button is not None:
+        button.blockSignals(True)
+        button.setChecked(bool(visible))
+        button.setToolTip("隐藏图例" if visible else "显示图例")
+        button.blockSignals(False)
+        _position_legend_toggle_button(plot)
+        button.update()
+
+
+def _sync_plot_legend_visibility(plot: pg.PlotWidget) -> None:
+    _apply_plot_legend_visibility(plot)
+    QtCore.QTimer.singleShot(0, lambda plot=plot: _finalize_legend_layout(plot))
+
+
+def _finalize_legend_layout(plot: pg.PlotWidget) -> None:
+    _apply_default_legend_position(plot)
+    _position_legend_toggle_button(plot)
 
 
 def bjh_differential_axis_label(mode: str) -> str:
@@ -406,7 +730,7 @@ def _enable_click_projection_cursor(plot: pg.PlotWidget) -> None:
     plot._click_projection_cursor = cursor
 
 
-def make_plot(title: str, left_label: str, bottom_label: str) -> pg.PlotWidget:
+def make_plot(title: str, left_label: str, bottom_label: str, *, legend_position: str = "left") -> pg.PlotWidget:
     bottom_axis = PlainNumberAxis(orientation="bottom")
     left_axis = PlainNumberAxis(orientation="left")
     bottom_axis.setStyle(tickTextWidth=86, autoExpandTextSpace=True)
@@ -426,7 +750,9 @@ def make_plot(title: str, left_label: str, bottom_label: str) -> pg.PlotWidget:
         brush=pg.mkBrush(255, 255, 255, 220),
         pen=pg.mkPen("#d1d5db"),
     )
+    setattr(plot, "_legend_default_position", "right" if legend_position == "right" else "left")
     _enable_click_projection_cursor(plot)
+    _install_legend_toggle(plot)
     return plot
 
 
@@ -436,12 +762,16 @@ def plot_isotherm_multi(
     visible: list[bool],
     colors: list[str],
     active_index: int = -1,
+    *,
+    fade_inactive: bool = False,
+    active_fit_rows: list[dict[str, float]] | None = None,
+    x_log: bool = False,
 ) -> None:
     plot.clear()
     plot.setTitle("吸附/脱附等温线")
     plot.setLabel("left", "吸附量 (cm3/g STP)")
     plot.setLabel("bottom", "相对压力 (P/P0)")
-    plot.setLogMode(x=False, y=False)
+    plot.setLogMode(x=bool(x_log), y=False)
     all_x = []
     all_y = []
     legend_entries = []
@@ -460,7 +790,8 @@ def plot_isotherm_multi(
             continue
         result = results[index]
         is_active = index == active_index
-        color = _analysis_color(colors, index, active_index)
+        base_color = _analysis_color(colors, index, active_index)
+        color = _color_with_alpha(base_color, 46) if fade_inactive and not is_active else base_color
         width = ACTIVE_LINE_WIDTH if is_active else DEFAULT_LINE_WIDTH
         symbol_size = ACTIVE_SYMBOL_SIZE if is_active else DEFAULT_SYMBOL_SIZE
         symbol_pen_width = ACTIVE_SYMBOL_PEN_WIDTH if is_active else DEFAULT_SYMBOL_PEN_WIDTH
@@ -495,8 +826,14 @@ def plot_isotherm_multi(
         _collect_xy(adsorption)
         _collect_xy(desorption)
 
+    fit_item, fit_x, fit_y = _plot_dft_isotherm_fit(plot, active_fit_rows)
+    if fit_item is not None:
+        legend_entries.append((len(results) + 1, fit_item, "DFT model fit"))
+        all_x.extend(fit_x)
+        all_y.extend(fit_y)
+
     _set_sample_legend_entries(plot, legend_entries)
-    _fit_range(plot, all_x, all_y)
+    _fit_range(plot, all_x, all_y, x_log=bool(x_log))
 
 
 def plot_isotherm_selection(
@@ -1470,6 +1807,251 @@ def plot_hk_distribution_multi(
     return rows_by_key
 
 
+def plot_dft_distribution_multi(
+    plot: pg.PlotWidget,
+    results,
+    visible: list[bool],
+    colors: list[str],
+    active_index: int = -1,
+    analysis_type: str = "dft_pore",
+    geometry: str = "slit",
+    model: str = "n2_dft_model",
+    regularization: float = 0.316,
+    dft_settings_by_index: dict[int, dict] | None = None,
+    result_provider: Callable[..., object] | None = None,
+) -> dict[int, list[dict[str, float]]]:
+    plot.clear()
+    _clear_manual_legend_entries(plot)
+    plot.setTitle("DFT pore distribution")
+    plot.setLabel("left", "dV/dlogW (cm3/g)")
+    plot.setLabel("bottom", "Pore width W (nm)")
+    plot.setLogMode(x=True, y=False)
+    all_x = []
+    all_y = []
+    legend_entries = []
+    rows_by_index: dict[int, list[dict[str, float]]] = {}
+
+    for index in _analysis_draw_order(results, visible, active_index):
+        result = results[index]
+        is_active = index == active_index
+        color = _analysis_color(colors, index, active_index)
+        width = ACTIVE_LINE_WIDTH if is_active else DEFAULT_LINE_WIDTH
+        settings = (dft_settings_by_index or {}).get(index, {})
+        sample_analysis_type = str(settings.get("analysis_type", analysis_type))
+        sample_geometry = str(settings.get("geometry", geometry))
+        sample_model = str(settings.get("model", model))
+        sample_regularization = float(settings.get("regularization", regularization))
+        if result_provider is None:
+            dft_result = dft_pore_distribution(
+                result,
+                analysis_type=sample_analysis_type,
+                geometry=sample_geometry,
+                model=sample_model,
+                regularization=sample_regularization,
+                include_diagnostics=False,
+            )
+        else:
+            dft_result = result_provider(
+                result,
+                analysis_type=sample_analysis_type,
+                geometry=sample_geometry,
+                model=sample_model,
+                regularization=sample_regularization,
+                include_diagnostics=False,
+            )
+        rows = list(getattr(dft_result, "rows", []))
+        rows_by_index[index] = rows
+        if not rows:
+            continue
+        x_values = []
+        y_values = []
+        for row in rows:
+            try:
+                x_values.append(float(row.get("pore_width_nm", row.get("pore_diameter_nm"))))
+                y_values.append(float(row.get("differential_pore_volume_cm3_g", 0.0)))
+            except (TypeError, ValueError):
+                continue
+        x = np.asarray(x_values, dtype=float)
+        y = np.asarray(y_values, dtype=float)
+        mask = np.isfinite(x) & np.isfinite(y) & (x > 0.0) & (y >= 0.0)
+        if not np.any(mask):
+            continue
+        x = x[mask]
+        y = y[mask]
+        order = np.argsort(x)
+        x = x[order]
+        y = y[order]
+        item = plot.plot(
+            x,
+            y,
+            pen=pg.mkPen(color, width=width),
+            symbol="o",
+            symbolSize=ACTIVE_SYMBOL_SIZE if is_active else DEFAULT_SYMBOL_SIZE,
+            symbolPen=pg.mkPen(color, width=ACTIVE_SYMBOL_PEN_WIDTH if is_active else DEFAULT_SYMBOL_PEN_WIDTH),
+            symbolBrush=pg.mkBrush("#ffffff"),
+            name=None,
+        )
+        legend_entries.append((index, item, f"{_legend_name(result)} DFT"))
+        all_x.extend(x.tolist())
+        all_y.extend(y.tolist())
+
+    _set_sample_legend_entries(plot, legend_entries)
+    if all_x:
+        _fit_range(plot, all_x, all_y, x_log=True)
+    else:
+        _plot_message(plot, "No DFT pore distribution points")
+    return rows_by_index
+
+
+def plot_dft_selection(
+    plot: pg.PlotWidget,
+    rows_by_index: dict[int, list[dict[str, float]]],
+    colors: list[str],
+    width_range: tuple[float, float] | None,
+    active_index: int = -1,
+) -> list:
+    if width_range is None:
+        return []
+    lo, hi = sorted((float(width_range[0]), float(width_range[1])))
+    if not (np.isfinite(lo) and np.isfinite(hi)):
+        return []
+    items = []
+    keys = sorted(rows_by_index, key=lambda index: (index == active_index, index))
+    for index in keys:
+        rows = rows_by_index.get(index, [])
+        color = _analysis_color(colors, index, active_index)
+        is_active = index == active_index
+        selected_x = []
+        selected_y = []
+        for row in rows:
+            try:
+                width = float(row.get("pore_width_nm", row.get("pore_diameter_nm")))
+                value = float(row.get("differential_pore_volume_cm3_g", 0.0))
+            except (TypeError, ValueError):
+                continue
+            if not (np.isfinite(width) and np.isfinite(value)):
+                continue
+            if width <= 0.0 or value < 0.0 or width < lo or width > hi:
+                continue
+            selected_x.append(width)
+            selected_y.append(value)
+        if not selected_x:
+            continue
+        items.append(
+            _plot_selected_xy(
+                plot,
+                np.asarray(selected_x, dtype=float),
+                np.asarray(selected_y, dtype=float),
+                color,
+                symbol_size=SELECTED_SYMBOL_SIZE if is_active else DEFAULT_SYMBOL_SIZE,
+                symbol_pen_width=SELECTED_SYMBOL_PEN_WIDTH if is_active else DEFAULT_SYMBOL_PEN_WIDTH,
+            )
+        )
+    return [item for item in items if item is not None]
+
+
+def plot_dft_diagnostics(
+    plot: pg.PlotWidget,
+    diagnostic_rows: list[dict[str, float]],
+    regularization: float,
+) -> pg.InfiniteLine | None:
+    plot.clear()
+    _clear_manual_legend_entries(plot)
+    right_view = getattr(plot, "_dft_roughness_view", None)
+    if right_view is not None:
+        for item in list(getattr(right_view, "addedItems", [])):
+            try:
+                right_view.removeItem(item)
+            except Exception:
+                pass
+    plot_item = plot.getPlotItem()
+    plot.setTitle("拟合误差 / 分布粗糙度 vs. 正则化")
+    plot.setLabel("bottom", "正则化")
+    plot.setLabel("left", "RMS 拟合误差 (mmol/g)", color="#2563eb")
+    plot_item.showAxis("right")
+    plot_item.getAxis("right").setLabel("分布粗糙度", color="#f97316")
+    plot_item.getAxis("left").setTextPen(pg.mkPen("#2563eb"))
+    plot_item.getAxis("right").setTextPen(pg.mkPen("#f97316"))
+    plot.setLogMode(x=True, y=False)
+    if not diagnostic_rows:
+        _plot_message(plot, "No DFT diagnostic data")
+        return None
+    reg = np.asarray([max(float(row["regularization"]), 1e-6) for row in diagnostic_rows], dtype=float)
+    rms = np.asarray([float(row["rms_error_mmol_g"]) for row in diagnostic_rows], dtype=float)
+    rough = np.asarray([float(row["distribution_roughness"]) for row in diagnostic_rows], dtype=float)
+    mask = np.isfinite(reg) & np.isfinite(rms) & np.isfinite(rough) & (reg > 0.0)
+    if not np.any(mask):
+        _plot_message(plot, "No DFT diagnostic data")
+        return None
+    reg = reg[mask]
+    rms = rms[mask]
+    rough = rough[mask]
+    if right_view is None:
+        right_view = pg.ViewBox()
+        setattr(plot, "_dft_roughness_view", right_view)
+        plot_item.scene().addItem(right_view)
+        plot_item.getAxis("right").linkToView(right_view)
+        right_view.setXLink(plot_item.vb)
+
+        def update_views():
+            right_view.setGeometry(plot_item.vb.sceneBoundingRect())
+            right_view.linkedViewChanged(plot_item.vb, right_view.XAxis)
+
+        setattr(plot, "_dft_roughness_update", update_views)
+        plot_item.vb.sigResized.connect(update_views)
+    update_views = getattr(plot, "_dft_roughness_update", None)
+    if callable(update_views):
+        update_views()
+    rms_item = plot.plot(
+        reg,
+        rms,
+        pen=pg.mkPen("#2563eb", width=2),
+        symbol="o",
+        symbolSize=6,
+        symbolPen=pg.mkPen("#2563eb"),
+        symbolBrush=pg.mkBrush("#2563eb"),
+        name=None,
+    )
+    rough_item = pg.PlotDataItem(
+        reg,
+        rough,
+        pen=pg.mkPen("#f97316", width=2),
+        symbol="o",
+        symbolSize=6,
+        symbolPen=pg.mkPen("#f97316"),
+        symbolBrush=pg.mkBrush("#f97316"),
+        name=None,
+    )
+    rough_item.setLogMode(True, False)
+    right_view.addItem(rough_item)
+    _set_sample_legend_entries(
+        plot,
+        [
+            (0, rms_item, "RMS error"),
+            (1, rough_item, "Distribution roughness"),
+        ],
+    )
+    line = pg.InfiniteLine(
+        pos=math.log10(max(float(regularization), 1e-6)),
+        angle=90,
+        movable=True,
+        pen=pg.mkPen("#1d4ed8", width=2),
+        hoverPen=pg.mkPen("#2563eb", width=3),
+    )
+    line.setCursor(QtCore.Qt.SizeHorCursor)
+    plot.addItem(line, ignoreBounds=True)
+    _fit_range(plot, reg.tolist(), rms.tolist(), x_log=True)
+    rough_min = float(np.nanmin(rough))
+    rough_max = float(np.nanmax(rough))
+    if np.isfinite(rough_min) and np.isfinite(rough_max):
+        if rough_min == rough_max:
+            rough_min -= 1.0
+            rough_max += 1.0
+        margin = (rough_max - rough_min) * 0.08
+        right_view.setYRange(rough_min - margin, rough_max + margin, padding=0.0)
+    return line
+
+
 def plot_bjh_selection(
     plot: pg.PlotWidget,
     rows_by_key: dict[tuple[int, str], list[dict[str, float]]],
@@ -1634,10 +2216,46 @@ def _bjh_rows_in_pressure_range(rows, pressure_range: tuple[float, float] | None
     return filtered
 
 
+def _color_with_alpha(color, alpha: int):
+    faded = pg.mkColor(color)
+    faded.setAlpha(max(0, min(255, int(alpha))))
+    return faded
+
+
+def _plot_dft_isotherm_fit(plot: pg.PlotWidget, fit_rows: list[dict[str, float]] | None):
+    if not fit_rows:
+        return None, [], []
+    x_values = []
+    y_values = []
+    for row in fit_rows:
+        try:
+            pressure = float(row["relative_pressure"])
+            quantity = float(row["model_quantity_adsorbed_cm3_g_stp"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if np.isfinite(pressure) and np.isfinite(quantity) and pressure > 0.0 and quantity >= 0.0:
+            x_values.append(pressure)
+            y_values.append(quantity)
+    if not x_values:
+        return None, [], []
+    x = np.asarray(x_values, dtype=float)
+    y = np.asarray(y_values, dtype=float)
+    order = np.argsort(x)
+    x = x[order]
+    y = y[order]
+    item = plot.plot(
+        x,
+        y,
+        pen=pg.mkPen("#111827", width=3),
+        name=None,
+    )
+    return item, x.tolist(), y.tolist()
+
+
 def _plot_points(
     plot: pg.PlotWidget,
     points,
-    color: str,
+    color,
     name: str | None,
     *,
     solid: bool,
@@ -1713,6 +2331,7 @@ def _clear_manual_legend_entries(plot: pg.PlotWidget) -> None:
     legend = getattr(plot.plotItem, "legend", None)
     if legend is not None:
         legend.clear()
+    _sync_plot_legend_visibility(plot)
 
 
 def _append_sample_legend_entry(plot: pg.PlotWidget, index: int, item, name: str | None) -> None:
@@ -1731,6 +2350,8 @@ def _set_sample_legend_entries(plot: pg.PlotWidget, entries) -> None:
     legend.clear()
     for _index, item, name in sorted(entries, key=lambda entry: entry[0]):
         legend.addItem(item, name)
+    _apply_default_legend_position(plot)
+    _sync_plot_legend_visibility(plot)
 
 
 def _plot_analysis_xy(
