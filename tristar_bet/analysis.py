@@ -6,6 +6,7 @@ from typing import Sequence
 
 import numpy as np
 
+from .dft_models import interpolate_dft_kernel, load_dft_model_kernel
 from .models import IsothermPoint, TriStarResult
 from .reference_thickness import default_reference_params, normalize_reference_points, reference_thickness_nm
 
@@ -46,6 +47,26 @@ DEFAULT_BJH_DIAMETER_MAX_NM = 300.0
 DEFAULT_DH_DIAMETER_MIN_NM = 0.75
 JWGB_BJH_MIN_DIAMETER_NM = 2.0
 MMHG_TO_KPA = 101.325 / 760.0
+DFT_DEFAULT_ANALYSIS_TYPE = "dft_pore"
+DFT_DEFAULT_GEOMETRY = "slit"
+DFT_DEFAULT_MODEL = "n2_dft_model"
+DFT_DEFAULT_REGULARIZATION = 0.316
+DFT_REGULARIZATION_VALUES = (
+    0.0,
+    0.00001,
+    0.00003,
+    0.00010,
+    0.00032,
+    0.00100,
+    0.00316,
+    0.01000,
+    0.03160,
+    0.10000,
+    0.31600,
+    1.00000,
+    3.16000,
+    10.00000,
+)
 HK_AVOGADRO = 6.02214129e23
 HK_GAS_CONSTANT_ERG_MOL_K = 8.31441e7
 HK_ELECTRON_KINETIC_ENERGY_ERG = 0.8183e-6
@@ -224,6 +245,25 @@ class PoreDistributionResult:
     status: str
     point_count: int = 0
     rows: list[dict[str, float]] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return self.status == "ok"
+
+
+@dataclass(frozen=True)
+class DftPoreDistributionResult:
+    name: str
+    phase: str
+    status: str
+    point_count: int = 0
+    regularization: float = DFT_DEFAULT_REGULARIZATION
+    analysis_type: str = DFT_DEFAULT_ANALYSIS_TYPE
+    geometry: str = DFT_DEFAULT_GEOMETRY
+    model: str = DFT_DEFAULT_MODEL
+    rows: list[dict[str, float]] = field(default_factory=list)
+    fit_rows: list[dict[str, float]] = field(default_factory=list)
+    diagnostic_rows: list[dict[str, float]] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -1539,6 +1579,282 @@ def dh_pore_distribution(
         smooth=use_smooth,
         dollimore_heal=True,
     )
+
+
+def dft_pore_distribution(
+    result: TriStarResult,
+    *,
+    analysis_type: str = DFT_DEFAULT_ANALYSIS_TYPE,
+    geometry: str = DFT_DEFAULT_GEOMETRY,
+    model: str = DFT_DEFAULT_MODEL,
+    regularization: float = DFT_DEFAULT_REGULARIZATION,
+    phase: str = "adsorption",
+    include_diagnostics: bool = True,
+) -> DftPoreDistributionResult:
+    """Regularized DFT/NLDFT pore distribution.
+
+    Official Micromeritics DFT model files are used when available. The smooth
+    analytic kernel remains only as a fallback so the UI can still run when the
+    optional model archive is missing.
+    """
+    phase_key = "adsorption" if phase == "adsorption" else "desorption"
+    source_points = adsorption_points(result) if phase_key == "adsorption" else desorption_points(result)
+    points = [
+        point
+        for point in source_points
+        if _valid_number(point.relative_pressure)
+        and _valid_number(point.quantity_adsorbed_cm3_g_stp)
+        and 0.0 < float(point.relative_pressure) < 1.0
+        and float(point.quantity_adsorbed_cm3_g_stp or 0.0) >= 0.0
+    ]
+    points = sorted(points, key=lambda point: float(point.relative_pressure))
+    if len(points) < 5:
+        return DftPoreDistributionResult("DFT", phase_key, "not_enough_points", len(points))
+
+    geometry_key = str(geometry or DFT_DEFAULT_GEOMETRY).strip().lower()
+    if geometry_key not in {"slit", "cylinder"}:
+        geometry_key = DFT_DEFAULT_GEOMETRY
+    analysis_key = str(analysis_type or DFT_DEFAULT_ANALYSIS_TYPE).strip().lower()
+    if analysis_key not in {"dft_pore", "typical"}:
+        analysis_key = DFT_DEFAULT_ANALYSIS_TYPE
+    model_key = str(model or DFT_DEFAULT_MODEL)
+    try:
+        lambda_value = float(regularization)
+    except (TypeError, ValueError):
+        lambda_value = DFT_DEFAULT_REGULARIZATION
+    if not _valid_number(lambda_value):
+        lambda_value = DFT_DEFAULT_REGULARIZATION
+    lambda_value = max(0.0, min(lambda_value, 10.0))
+
+    pressure = np.asarray([float(point.relative_pressure) for point in points], dtype=float)
+    quantity_stp = np.asarray([float(point.quantity_adsorbed_cm3_g_stp or 0.0) for point in points], dtype=float)
+    target_mmol = np.asarray(
+        [
+            float(point.quantity_adsorbed_mmol_g)
+            if _valid_number(point.quantity_adsorbed_mmol_g)
+            else float(point.quantity_adsorbed_cm3_g_stp or 0.0) / 22.414
+            for point in points
+        ],
+        dtype=float,
+    )
+    target_mmol = np.maximum(target_mmol, 0.0)
+    density_factor = density_conversion_factor(result)
+    target_liquid = np.maximum(quantity_stp * density_factor, 0.0)
+    if not np.any(target_liquid > 0.0):
+        return DftPoreDistributionResult("DFT", phase_key, "not_enough_adsorbed_volume", len(points))
+
+    official_kernel = load_dft_model_kernel(model_key)
+    if official_kernel is not None:
+        pore_widths = np.asarray(official_kernel.pore_widths_nm, dtype=float)
+        kernel = interpolate_dft_kernel(official_kernel, pressure)
+    else:
+        pore_widths = _dft_width_grid_nm(analysis_key)
+        kernel = _dft_kernel_matrix(pressure, pore_widths, geometry_key)
+    increments = _dft_regularized_nonnegative_solution(kernel, target_liquid, lambda_value)
+    model_liquid = kernel @ increments
+    residual_mmol_factor = 1.0 / max(density_factor * 22.414, 1e-12)
+    diagnostic_rows = (
+        _dft_regularization_diagnostics(
+            kernel,
+            target_liquid,
+            target_to_mmol_factor=residual_mmol_factor,
+        )
+        if include_diagnostics
+        else []
+    )
+
+    rows: list[dict[str, float]] = []
+    cumulative = 0.0
+    width_edges = _dft_width_bin_edges_nm(pore_widths)
+    for index, (width, increment) in enumerate(zip(pore_widths, increments)):
+        width = float(width)
+        increment = max(0.0, float(increment))
+        cumulative += increment
+        width_low = float(width_edges[index])
+        width_high = float(width_edges[index + 1])
+        width_delta = max(width_high - width_low, 0.0)
+        log_delta = math.log10(width_high) - math.log10(width_low) if width_low > 0.0 else 0.0
+        differential_log = increment / log_delta if abs(log_delta) > 1e-12 else 0.0
+        differential_linear = increment / width_delta if width_delta > 1e-12 else 0.0
+        rows.append(
+            {
+                "phase": phase_key,
+                "pore_width_nm": width,
+                "pore_diameter_nm": width,
+                "cumulative_pore_diameter_nm": width,
+                "pore_width_low_nm": width_low,
+                "pore_width_high_nm": width_high,
+                "incremental_pore_volume_cm3_g": increment,
+                "cumulative_pore_volume_cm3_g": cumulative,
+                "dwidth_nm": width_delta,
+                "dlog_diameter": abs(log_delta),
+                "differential_pore_volume_per_nm_cm3_g_nm": differential_linear,
+                "differential_pore_volume_cm3_g": differential_log,
+                "dft_regularization": lambda_value,
+            }
+        )
+
+    fit_rows: list[dict[str, float]] = []
+    for point, measured_mmol, model_volume in zip(points, target_mmol, model_liquid):
+        measured = float(point.quantity_adsorbed_cm3_g_stp or 0.0)
+        model_quantity = float(model_volume / density_factor) if density_factor > 0.0 else 0.0
+        fit_rows.append(
+            {
+                "point_index": float(point.index),
+                "relative_pressure": float(point.relative_pressure),
+                "quantity_adsorbed_cm3_g_stp": measured,
+                "model_quantity_adsorbed_cm3_g_stp": model_quantity,
+                "quantity_adsorbed_mmol_g": float(measured_mmol),
+                "model_quantity_adsorbed_mmol_g": model_quantity / 22.414,
+            }
+        )
+
+    if len(rows) < 2:
+        return DftPoreDistributionResult("DFT", phase_key, "not_enough_distribution_points", len(rows))
+    return DftPoreDistributionResult(
+        "DFT",
+        phase_key,
+        "ok",
+        len(points),
+        regularization=lambda_value,
+        analysis_type=analysis_key,
+        geometry=geometry_key,
+        model=model_key,
+        rows=rows,
+        fit_rows=fit_rows,
+        diagnostic_rows=diagnostic_rows,
+    )
+
+
+def _dft_width_grid_nm(analysis_type: str) -> np.ndarray:
+    if analysis_type == "typical":
+        return np.geomspace(0.55, 80.0, 96)
+    return np.geomspace(0.45, 100.0, 112)
+
+
+def _dft_kernel_matrix(pressure: np.ndarray, widths_nm: np.ndarray, geometry: str) -> np.ndarray:
+    log_pressure = np.log(np.clip(pressure, 1e-10, 0.999999))
+    widths = np.asarray(widths_nm, dtype=float)
+    if geometry == "cylinder":
+        effective_size = np.maximum(widths * 0.50 - 0.18, 0.035)
+        transition_width = 0.55
+    else:
+        effective_size = np.maximum(widths - 0.32, 0.035)
+        transition_width = 0.48
+    # Empirical N2 77 K filling pressure used only for the initial scaffold.
+    characteristic_log_p = -np.power(0.86 / effective_size, 1.12)
+    matrix = 1.0 / (1.0 + np.exp(-(log_pressure[:, None] - characteristic_log_p[None, :]) / transition_width))
+    matrix[pressure[:, None] < 1e-9] = 0.0
+    return matrix
+
+
+def _dft_width_bin_edges_nm(widths_nm: np.ndarray) -> np.ndarray:
+    widths = np.asarray(widths_nm, dtype=float)
+    if widths.size == 0:
+        return np.zeros(1, dtype=float)
+    if widths.size == 1:
+        width = max(float(widths[0]), 1e-9)
+        return np.asarray([width * 0.9, width * 1.1], dtype=float)
+    edges = np.empty(widths.size + 1, dtype=float)
+    edges[1:-1] = np.sqrt(widths[:-1] * widths[1:])
+    first_ratio = max(widths[1] / max(widths[0], 1e-12), 1.000001)
+    last_ratio = max(widths[-1] / max(widths[-2], 1e-12), 1.000001)
+    edges[0] = widths[0] / math.sqrt(first_ratio)
+    edges[-1] = widths[-1] * math.sqrt(last_ratio)
+    edges = np.maximum(edges, 1e-9)
+    return edges
+
+
+def _dft_second_difference_matrix(size: int) -> np.ndarray:
+    if size < 3:
+        return np.zeros((0, size), dtype=float)
+    matrix = np.zeros((size - 2, size), dtype=float)
+    for index in range(size - 2):
+        matrix[index, index] = 1.0
+        matrix[index, index + 1] = -2.0
+        matrix[index, index + 2] = 1.0
+    return matrix
+
+
+def _dft_regularized_nonnegative_solution(
+    kernel: np.ndarray,
+    target: np.ndarray,
+    regularization: float,
+) -> np.ndarray:
+    if kernel.size == 0 or target.size == 0:
+        return np.zeros(kernel.shape[1] if kernel.ndim == 2 else 0, dtype=float)
+    target_scale = max(float(np.nanmax(np.abs(target))), 1e-12)
+    y = np.asarray(target, dtype=float) / target_scale
+    k = np.asarray(kernel, dtype=float)
+    column_norm = np.linalg.norm(k, axis=0)
+    column_norm[column_norm <= 1e-12] = 1.0
+    k_scaled = k / column_norm[None, :]
+    size = k_scaled.shape[1]
+    second = _dft_second_difference_matrix(size)
+    lambda_value = max(0.0, float(regularization)) * 0.02
+    gram = k_scaled.T @ k_scaled
+    if second.size:
+        gram = gram + lambda_value * (second.T @ second)
+    gram = gram + 1e-9 * np.eye(size)
+    rhs = k_scaled.T @ y
+    lipschitz = float(np.linalg.norm(gram, ord=2))
+    if not (_valid_number(lipschitz) and lipschitz > 1e-12):
+        lipschitz = 1.0
+    x = np.zeros(size, dtype=float)
+    z = x.copy()
+    t = 1.0
+    for _ in range(900):
+        gradient = gram @ z - rhs
+        next_x = np.maximum(0.0, z - gradient / lipschitz)
+        next_t = 0.5 * (1.0 + math.sqrt(1.0 + 4.0 * t * t))
+        z = next_x + ((t - 1.0) / next_t) * (next_x - x)
+        x = next_x
+        t = next_t
+    return np.maximum(0.0, x / column_norm * target_scale)
+
+
+def _dft_solution_metrics(
+    kernel: np.ndarray,
+    target: np.ndarray,
+    increments: np.ndarray,
+    *,
+    target_to_mmol_factor: float = 1.0,
+) -> tuple[float, float]:
+    fit = kernel @ increments
+    residual_mmol_g = (fit - target) * float(target_to_mmol_factor)
+    rms_mmol_g = math.sqrt(float(np.mean(np.square(residual_mmol_g))))
+    if increments.size >= 3:
+        second = np.diff(increments, n=2)
+        denominator = max(float(np.sum(np.abs(increments))), 1e-12)
+        roughness = float(np.sqrt(np.mean(np.square(second))) / denominator * increments.size * increments.size)
+    else:
+        roughness = 0.0
+    return rms_mmol_g, roughness
+
+
+def _dft_regularization_diagnostics(
+    kernel: np.ndarray,
+    target: np.ndarray,
+    *,
+    target_to_mmol_factor: float = 1.0,
+) -> list[dict[str, float]]:
+    rows: list[dict[str, float]] = []
+    for value in DFT_REGULARIZATION_VALUES:
+        increments = _dft_regularized_nonnegative_solution(kernel, target, value)
+        rms, roughness = _dft_solution_metrics(
+            kernel,
+            target,
+            increments,
+            target_to_mmol_factor=target_to_mmol_factor,
+        )
+        rows.append(
+            {
+                "regularization": float(value),
+                "rms_error_mmol_g": rms,
+                "distribution_roughness": roughness,
+            }
+        )
+    return rows
 
 
 def hk_adsorbent_presets() -> dict[str, dict[str, float | str]]:

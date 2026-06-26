@@ -18,6 +18,11 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from tristar_bet import BELMasterParseError, ExcelParseError, TriStarParseError, load_file
 from tristar_bet.analysis import (
     DEFAULT_THICKNESS_METHOD,
+    DFT_DEFAULT_ANALYSIS_TYPE,
+    DFT_DEFAULT_GEOMETRY,
+    DFT_DEFAULT_MODEL,
+    DFT_DEFAULT_REGULARIZATION,
+    DFT_REGULARIZATION_VALUES,
     HK_ADSORBENT_PRESETS,
     HK_ADSORPTIVE_PRESETS,
     HK_DEFAULT_ADSORBENT,
@@ -33,6 +38,7 @@ from tristar_bet.analysis import (
     bjh_pore_distribution,
     calculate_hk_interaction_parameter,
     density_conversion_factor,
+    dft_pore_distribution,
     dh_pore_distribution,
     horvath_kawazoe_pore_distribution,
     langmuir_analysis,
@@ -40,6 +46,7 @@ from tristar_bet.analysis import (
     t_plot_analysis_by_thickness,
     thickness_nm,
 )
+from tristar_bet.dft_models import dft_model_options
 from tristar_bet.reference_thickness import (
     DEFAULT_REFERENCE_DIR,
     normalize_reference_points,
@@ -67,6 +74,9 @@ from tristar_bet.ui.plots import (
     plot_bjh_selection,
     plot_dh_distribution_multi,
     plot_dh_distribution_placeholder,
+    plot_dft_diagnostics,
+    plot_dft_distribution_multi,
+    plot_dft_selection,
     plot_hk_distribution_multi,
     plot_hk_distribution_placeholder,
     plot_hk_selection,
@@ -179,6 +189,8 @@ class SampleTableWidget(QtWidgets.QTableWidget):
         self._frozen_table = QtWidgets.QTableView(self)
         self._frozen_table.setModel(self.model())
         self._frozen_table.setSelectionModel(self.selectionModel())
+        self._frozen_table.setAcceptDrops(True)
+        self._frozen_table.viewport().setAcceptDrops(True)
         self._frozen_table.setFocusPolicy(QtCore.Qt.NoFocus)
         self._frozen_table.setFrameShape(QtWidgets.QFrame.NoFrame)
         self._frozen_table.setShowGrid(False)
@@ -259,6 +271,12 @@ class SampleTableWidget(QtWidgets.QTableWidget):
     def eventFilter(self, obj, event) -> bool:
         frozen_table = getattr(self, "_frozen_table", None)
         if frozen_table is not None and obj is frozen_table.viewport():
+            if event.type() in (QtCore.QEvent.DragEnter, QtCore.QEvent.DragMove):
+                if self._accept_file_drag_event(event):
+                    return True
+            if event.type() == QtCore.QEvent.Drop:
+                if self._accept_file_drop_event(event):
+                    return True
             if event.type() == QtCore.QEvent.ContextMenu:
                 row = self._frozen_table.rowAt(event.pos().y())
                 if row >= 0:
@@ -286,7 +304,7 @@ class SampleTableWidget(QtWidgets.QTableWidget):
         if index.isValid():
             horizontal_value = self.horizontalScrollBar().value()
             super().scrollTo(index, hint)
-            if index.column() < self.FROZEN_COLUMN_COUNT:
+            if index.column() < self.FROZEN_COLUMN_COUNT or self.selectionBehavior() == QtWidgets.QAbstractItemView.SelectRows:
                 self.horizontalScrollBar().setValue(horizontal_value)
 
     def resizeEvent(self, event) -> None:
@@ -447,26 +465,34 @@ class SampleTableWidget(QtWidgets.QTableWidget):
             scroll_bar.setValue(scroll_bar.value() + step)
 
     def dragEnterEvent(self, event) -> None:
-        paths = self._smp_paths_from_mime_data(event.mimeData())
-        if paths:
-            event.acceptProposedAction()
+        if self._accept_file_drag_event(event):
             return
         super().dragEnterEvent(event)
 
     def dragMoveEvent(self, event) -> None:
-        paths = self._smp_paths_from_mime_data(event.mimeData())
-        if paths:
-            event.acceptProposedAction()
+        if self._accept_file_drag_event(event):
             return
         super().dragMoveEvent(event)
 
     def dropEvent(self, event) -> None:
+        if self._accept_file_drop_event(event):
+            return
+        super().dropEvent(event)
+
+    def _accept_file_drag_event(self, event) -> bool:
         paths = self._smp_paths_from_mime_data(event.mimeData())
         if paths:
             event.acceptProposedAction()
-            self.smpFilesDropped.emit(paths)
-            return
-        super().dropEvent(event)
+            return True
+        return False
+
+    def _accept_file_drop_event(self, event) -> bool:
+        paths = self._smp_paths_from_mime_data(event.mimeData())
+        if not paths:
+            return False
+        event.acceptProposedAction()
+        self.smpFilesDropped.emit(paths)
+        return True
 
     @staticmethod
     def _smp_paths_from_mime_data(mime_data) -> list[str]:
@@ -510,6 +536,7 @@ BJH_PORE_VOLUME_COLUMN = 6
 PORE_VOLUME_METHOD_BJH = "bjh"
 PORE_VOLUME_METHOD_DH = "dh"
 PORE_VOLUME_METHOD_HK = "hk"
+PORE_VOLUME_METHOD_DFT = "dft"
 SUPPORTED_DATA_SUFFIXES = (".smp", ".dat", ".qps", ".xls", ".xlsx", ".xlsm")
 BET_DEFAULT_RANGE = (0.05, 0.30)
 BET_PLOT_RANGE = (0.0, 1.0)
@@ -562,10 +589,16 @@ DEFAULT_HK_CHENG_YANG_CORRECTION = False
 DEFAULT_HK_SMOOTH_DERIVATIVE = False
 DEFAULT_HK_DISPLAY_METRIC = HK_DIFFERENTIAL_LINEAR
 DEFAULT_HK_PORE_VOLUME_RANGE = (0.6, 1.0)
+DEFAULT_DFT_ANALYSIS_TYPE = DFT_DEFAULT_ANALYSIS_TYPE
+DEFAULT_DFT_GEOMETRY = DFT_DEFAULT_GEOMETRY
+DEFAULT_DFT_MODEL = DFT_DEFAULT_MODEL
+DEFAULT_DFT_REGULARIZATION = DFT_DEFAULT_REGULARIZATION
+DEFAULT_DFT_PORE_VOLUME_RANGE = (0.6, 10.0)
 T_PLOT_PANEL_COLLAPSED_WIDTH = 360
 T_PLOT_PANEL_EXPANDED_WIDTH = 660
 BJH_PANEL_COLLAPSED_WIDTH = 380
 BJH_PANEL_EXPANDED_WIDTH = 660
+DFT_PANEL_WIDTH = 430
 REGION_LINE_COLOR = "#2563eb"
 REGION_LINE_HOVER_COLOR = "#dc2626"
 REGION_FILL_COLOR = (37, 99, 235, 34)
@@ -672,6 +705,310 @@ def _normalize_bjh_display_metric(value: object) -> str:
 def _default_user_directory() -> Path:
     desktop = Path.home() / "Desktop"
     return desktop if desktop.exists() else Path.home()
+
+
+class RegularizationSlider(QtWidgets.QWidget):
+    valueChanged = Signal(float)
+    valueChangeFinished = Signal(float)
+    _AXIS_LOG_FACTOR = 5.0
+
+    def __init__(self, values: Iterable[float], value: float, parent=None) -> None:
+        super().__init__(parent)
+        self._values = sorted({float(v) for v in values})
+        self._value = float(value)
+        self._dragging = False
+        self._editor = QtWidgets.QLineEdit(self)
+        validator = QtGui.QDoubleValidator(0.0, 10.0, 5, self._editor)
+        validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+        self._editor.setValidator(validator)
+        self._editor.setAlignment(QtCore.Qt.AlignCenter)
+        self._editor.setToolTip("请输入 0 到 10 之间的数字")
+        self._editor.hide()
+        self._editor.editingFinished.connect(self._finish_inline_edit)
+        self.setMinimumHeight(76)
+        self.setMinimumWidth(320)
+        self.setMouseTracking(True)
+        self.setCursor(QtCore.Qt.PointingHandCursor)
+
+    def value(self) -> float:
+        return float(self._value)
+
+    def setValue(self, value: float, *, emit: bool = False) -> None:
+        value = self._clamp_value(value)
+        if _float_equal(value, self._value, tol=1e-12):
+            self._value = value
+            self.update()
+            return
+        self._value = value
+        self.update()
+        if emit:
+            self.valueChanged.emit(self._value)
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        left, right = self._track_bounds()
+        y = self.height() - 24
+        active_x = self._value_to_x(self._value)
+
+        left_button, right_button = self._button_rects()
+        self._draw_arrow_button(painter, left_button, "left")
+        self._draw_arrow_button(painter, right_button, "right")
+
+        painter.setPen(QtGui.QPen(QtGui.QColor("#6b7280"), 2))
+        painter.drawLine(QtCore.QLineF(left, y, right, y))
+        painter.setPen(QtGui.QPen(QtGui.QColor(CUSTOM_BET_COLOR), 4))
+        painter.drawLine(QtCore.QLineF(left, y, active_x, y))
+
+        tick_pen = QtGui.QPen(QtGui.QColor("#cbd5e1"), 1)
+        painter.setPen(tick_pen)
+        for index in range(len(self._values)):
+            x = self._fraction_to_x(self._preset_fraction(index))
+            painter.drawLine(QtCore.QLineF(x, y - 8, x, y + 8))
+
+        knob_radius = 11
+        painter.setBrush(QtGui.QBrush(QtGui.QColor(CUSTOM_BET_COLOR)))
+        painter.setPen(QtGui.QPen(QtGui.QColor("#ffffff"), 3))
+        painter.drawEllipse(QtCore.QPointF(active_x, y), knob_radius, knob_radius)
+
+        label = self._format_value(self._value)
+        font = painter.font()
+        font.setPointSize(9)
+        font.setBold(True)
+        painter.setFont(font)
+        metrics = QtGui.QFontMetrics(font)
+        rect = self._label_rect(label, metrics)
+        painter.setPen(QtGui.QPen(QtGui.QColor("#d1d5db"), 1))
+        painter.setBrush(QtGui.QBrush(QtGui.QColor("#ffffff")))
+        painter.drawRoundedRect(rect, 4, 4)
+        painter.setPen(QtGui.QPen(QtGui.QColor("#111827"), 1))
+        painter.drawText(rect, QtCore.Qt.AlignCenter, label)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() != QtCore.Qt.LeftButton:
+            super().mousePressEvent(event)
+            return
+        left_button, right_button = self._button_rects()
+        if left_button.contains(event.pos()):
+            self._step_preset(-1)
+            self.valueChangeFinished.emit(self._value)
+            event.accept()
+            return
+        if right_button.contains(event.pos()):
+            self._step_preset(1)
+            self.valueChangeFinished.emit(self._value)
+            event.accept()
+            return
+        if self._current_label_rect().contains(event.pos()):
+            self._begin_inline_edit()
+            event.accept()
+            return
+        self._dragging = True
+        self.setValue(self._x_to_value(event.pos().x()), emit=True)
+        event.accept()
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._dragging:
+            self.setValue(self._x_to_value(event.pos().x()), emit=True)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == QtCore.Qt.LeftButton and self._dragging:
+            self._dragging = False
+            self.setValue(self._x_to_value(event.pos().x()), emit=True)
+            self.valueChangeFinished.emit(self._value)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        if event.button() != QtCore.Qt.LeftButton:
+            super().mouseDoubleClickEvent(event)
+            return
+        left_button, right_button = self._button_rects()
+        if left_button.contains(event.pos()):
+            self._step_preset(-1)
+            self.valueChangeFinished.emit(self._value)
+            event.accept()
+            return
+        if right_button.contains(event.pos()):
+            self._step_preset(1)
+            self.valueChangeFinished.emit(self._value)
+            event.accept()
+            return
+        if self._current_label_rect().contains(event.pos()):
+            self._begin_inline_edit()
+        event.accept()
+
+    def _begin_inline_edit(self) -> None:
+        rect = self._current_label_rect()
+        self._editor.setGeometry(rect)
+        self._editor.setText(self._format_value(self._value))
+        self._editor.selectAll()
+        self._editor.show()
+        self._editor.setFocus(QtCore.Qt.MouseFocusReason)
+
+    def _finish_inline_edit(self) -> None:
+        if not self._editor.isVisible():
+            return
+        text = self._editor.text().strip()
+        self._editor.hide()
+        try:
+            value = float(text)
+        except ValueError:
+            self.update()
+            return
+        if 0.0 <= value <= 10.0:
+            self.setValue(value, emit=True)
+            self.valueChangeFinished.emit(self._value)
+        else:
+            self.update()
+
+    def isDragging(self) -> bool:
+        return bool(self._dragging)
+
+    def _track_bounds(self) -> tuple[float, float]:
+        return (46.0, max(48.0, float(self.width() - 46)))
+
+    def _button_rects(self) -> tuple[QtCore.QRect, QtCore.QRect]:
+        y = self.height() - 39
+        return QtCore.QRect(4, y, 30, 30), QtCore.QRect(self.width() - 34, y, 30, 30)
+
+    def _draw_arrow_button(self, painter: QtGui.QPainter, rect: QtCore.QRect, direction: str) -> None:
+        painter.setPen(QtGui.QPen(QtGui.QColor("#cbd5e1"), 1))
+        painter.setBrush(QtGui.QBrush(QtGui.QColor("#f8fafc")))
+        painter.drawRoundedRect(rect, 5, 5)
+        center = rect.center()
+        if direction == "left":
+            points = [
+                QtCore.QPointF(center.x() - 4, center.y()),
+                QtCore.QPointF(center.x() + 4, center.y() - 6),
+                QtCore.QPointF(center.x() + 4, center.y() + 6),
+            ]
+        else:
+            points = [
+                QtCore.QPointF(center.x() + 4, center.y()),
+                QtCore.QPointF(center.x() - 4, center.y() - 6),
+                QtCore.QPointF(center.x() - 4, center.y() + 6),
+            ]
+        painter.setPen(QtCore.Qt.NoPen)
+        painter.setBrush(QtGui.QBrush(QtGui.QColor("#334155")))
+        painter.drawPolygon(QtGui.QPolygonF(points))
+
+    def _value_to_x(self, value: float) -> float:
+        fraction = self._value_to_fraction(value)
+        return self._fraction_to_x(fraction)
+
+    def _fraction_to_x(self, fraction: float) -> float:
+        left, right = self._track_bounds()
+        return left + (right - left) * max(0.0, min(1.0, float(fraction)))
+
+    def _x_to_value(self, x: float) -> float:
+        left, right = self._track_bounds()
+        if right <= left:
+            return self._value
+        fraction = max(0.0, min(1.0, (float(x) - left) / (right - left)))
+        return self._fraction_to_value(fraction)
+
+    def _value_to_fraction(self, value: float) -> float:
+        value = max(0.0, min(float(value), 10.0))
+        values = self._values
+        if not values or len(values) == 1:
+            return 0.0
+        if value <= values[0]:
+            return 0.0
+        if value >= values[-1]:
+            return 1.0
+        for index, preset in enumerate(values):
+            if abs(value - preset) <= max(1e-12, abs(preset) * 1e-9):
+                return self._index_fraction_to_axis_fraction(index / (len(values) - 1))
+        for index in range(len(values) - 1):
+            low = values[index]
+            high = values[index + 1]
+            if low <= value <= high:
+                if low <= 0.0:
+                    local = value / high if high > 0.0 else 0.0
+                else:
+                    local = (math.log10(value) - math.log10(low)) / (math.log10(high) - math.log10(low))
+                index_fraction = (index + max(0.0, min(1.0, local))) / (len(values) - 1)
+                return self._index_fraction_to_axis_fraction(index_fraction)
+        return 1.0
+
+    def _fraction_to_value(self, fraction: float) -> float:
+        fraction = max(0.0, min(1.0, float(fraction)))
+        values = self._values
+        if not values:
+            return self._value
+        if len(values) == 1:
+            return values[0]
+        index_fraction = self._axis_fraction_to_index_fraction(fraction)
+        position = index_fraction * (len(values) - 1)
+        index = int(math.floor(position))
+        if index >= len(values) - 1:
+            return values[-1]
+        local = position - index
+        low = values[index]
+        high = values[index + 1]
+        if low <= 0.0:
+            return low + (high - low) * local
+        return 10.0 ** (math.log10(low) + (math.log10(high) - math.log10(low)) * local)
+
+    def _preset_fraction(self, index: int) -> float:
+        if len(self._values) <= 1:
+            return 0.0
+        index_fraction = int(index) / (len(self._values) - 1)
+        return self._index_fraction_to_axis_fraction(index_fraction)
+
+    @classmethod
+    def _index_fraction_to_axis_fraction(cls, index_fraction: float) -> float:
+        index_fraction = max(0.0, min(1.0, float(index_fraction)))
+        return math.log1p(cls._AXIS_LOG_FACTOR * index_fraction) / math.log1p(cls._AXIS_LOG_FACTOR)
+
+    @classmethod
+    def _axis_fraction_to_index_fraction(cls, axis_fraction: float) -> float:
+        axis_fraction = max(0.0, min(1.0, float(axis_fraction)))
+        return math.expm1(axis_fraction * math.log1p(cls._AXIS_LOG_FACTOR)) / cls._AXIS_LOG_FACTOR
+
+    def _current_label_rect(self) -> QtCore.QRect:
+        font = self.font()
+        font.setPointSize(9)
+        font.setBold(True)
+        return self._label_rect(self._format_value(self._value), QtGui.QFontMetrics(font))
+
+    def _label_rect(self, label: str, metrics: QtGui.QFontMetrics) -> QtCore.QRect:
+        active_x = self._value_to_x(self._value)
+        text_width = metrics.horizontalAdvance(label) + 14
+        rect_x = max(4, min(self.width() - text_width - 4, int(active_x - text_width / 2)))
+        return QtCore.QRect(rect_x, 6, text_width, 24)
+
+    def _step_preset(self, direction: int) -> None:
+        if not self._values:
+            return
+        value = self._value
+        if direction < 0:
+            candidates = [preset for preset in self._values if preset < value - 1e-12]
+            next_value = candidates[-1] if candidates else self._values[0]
+        else:
+            candidates = [preset for preset in self._values if preset > value + 1e-12]
+            next_value = candidates[0] if candidates else self._values[-1]
+        self.setValue(next_value, emit=True)
+
+    @staticmethod
+    def _clamp_value(value: float) -> float:
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            value = DEFAULT_DFT_REGULARIZATION
+        if not np.isfinite(value):
+            value = DEFAULT_DFT_REGULARIZATION
+        return max(0.0, min(value, 10.0))
+
+    @staticmethod
+    def _format_value(value: float) -> str:
+        return f"{float(value):.5f}"
 
 
 class FileImportDialog(QtWidgets.QDialog):
@@ -1147,6 +1484,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.custom_bjh_settings: dict[int, dict[str, object]] = {}
         self.custom_dh_settings: dict[int, dict[str, object]] = {}
         self.custom_hk_settings: dict[int, dict[str, object]] = {}
+        self.custom_dft_settings: dict[int, dict[str, object]] = {}
         self.bjh_pore_volume_range: tuple[float, float] = DEFAULT_BJH_PORE_VOLUME_RANGE
         self._updating_table = False
         self._updating_sample_checks = False
@@ -1192,6 +1530,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self._hk_selection_items = []
         self._hk_width_log_bounds: tuple[float, float] | None = None
         self.hk_pore_volume_range: tuple[float, float] = DEFAULT_HK_PORE_VOLUME_RANGE
+        self._dft_distribution_rows_by_index: dict[int, list[dict[str, float]]] = {}
+        self._dft_result_cache: dict[tuple[object, ...], object] = {}
+        self.dft_region = None
+        self._dft_selection_items = []
+        self._dft_width_log_bounds: tuple[float, float] | None = None
+        self.dft_pore_volume_range: tuple[float, float] = DEFAULT_DFT_PORE_VOLUME_RANGE
+        self._dft_diagnostic_line = None
         self._syncing_t_plot_controls = False
         self.t_plot_thickness_method = DEFAULT_T_PLOT_THICKNESS_METHOD
         self.t_plot_thickness_params_by_method = _default_t_plot_thickness_params_by_method()
@@ -1230,6 +1575,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self.hk_cheng_yang_correction = DEFAULT_HK_CHENG_YANG_CORRECTION
         self.hk_smooth_derivative = DEFAULT_HK_SMOOTH_DERIVATIVE
         self.hk_display_metric = DEFAULT_HK_DISPLAY_METRIC
+        self._syncing_dft_controls = False
+        self.dft_analysis_type = DEFAULT_DFT_ANALYSIS_TYPE
+        self.dft_geometry = DEFAULT_DFT_GEOMETRY
+        self.dft_model = DEFAULT_DFT_MODEL
+        self.dft_regularization = DEFAULT_DFT_REGULARIZATION
+        self.dft_regularization_apply_all = False
+        self._pending_dft_regularization_apply_all_value: float | None = None
+        self._dft_regularization_preview_active = False
+        self._dft_regularization_refresh_timer = QtCore.QTimer(self)
+        self._dft_regularization_refresh_timer.setSingleShot(True)
+        self._dft_regularization_refresh_timer.setInterval(40)
+        self._dft_regularization_refresh_timer.timeout.connect(self._preview_deferred_dft_regularization_refresh)
         self.reference_tables: dict[str, QtWidgets.QTableWidget] = {}
         self.reference_name_edits: dict[str, QtWidgets.QLineEdit] = {}
         self._syncing_reference_tables = False
@@ -1243,6 +1600,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._bjh_region_pending = False
         self._dh_region_pending = False
         self._hk_region_pending = False
+        self._dft_region_pending = False
         self._syncing_region_changes = False
         self._setting_bet_region = False
         self._setting_langmuir_region = False
@@ -1250,6 +1608,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._setting_bjh_region = False
         self._setting_dh_region = False
         self._setting_hk_region = False
+        self._setting_dft_region = False
         self._checking_for_updates = False
         self._update_thread: QtCore.QThread | None = None
         self._update_worker: UpdateCheckWorker | None = None
@@ -1342,6 +1701,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sample_table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self.sample_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.sample_table.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
+        self.sample_table.setHorizontalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
         self.sample_table.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
         self.sample_table.setMinimumHeight(70)
         self.sample_table.setColumnWidth(VISIBLE_COLUMN, 30)
@@ -1407,12 +1767,14 @@ class MainWindow(QtWidgets.QMainWindow):
             "BJH 孔径分布",
             bjh_display_axis_label(self.bjh_display_metrics),
             "孔径 (nm)",
+            legend_position="right",
         )
 
         self.dh_plot = make_plot(
             "Dollimore-Heal 孔径分布",
             bjh_display_axis_label(self.dh_display_metrics),
             "孔径 (nm)",
+            legend_position="right",
         )
 
         self.bet_default_button = QtWidgets.QPushButton("默认")
@@ -1421,7 +1783,21 @@ class MainWindow(QtWidgets.QMainWindow):
             "Horvath-Kawazoe 孔径分布",
             hk_display_axis_label(self.hk_display_metric),
             "孔宽 W (nm)",
+            legend_position="right",
         )
+
+        self.dft_plot = make_plot(
+            "DFT 孔径分布",
+            "dV/dlogW (cm3/g)",
+            "孔宽 W (nm)",
+            legend_position="right",
+        )
+        self.dft_diagnostic_plot = make_plot(
+            "拟合误差 vs 正则化",
+            "RMS 拟合误差 (mmol/g)",
+            "正则化",
+        )
+        self.dft_diagnostic_plot.setMinimumWidth(360)
 
         self.bet_default_button.setMinimumWidth(76)
         self.bet_default_button.clicked.connect(self.reset_bet_fit_to_default)
@@ -1503,6 +1879,19 @@ class MainWindow(QtWidgets.QMainWindow):
         hk_tab_layout.addWidget(self.hk_options_panel)
         hk_tab_layout.addWidget(hk_plot_panel, 1)
 
+        dft_plot_panel = QtWidgets.QWidget()
+        dft_plot_layout = QtWidgets.QVBoxLayout(dft_plot_panel)
+        dft_plot_layout.setContentsMargins(0, 0, 0, 0)
+        dft_plot_layout.setSpacing(0)
+        dft_plot_layout.addWidget(self.dft_plot, 1)
+        self.dft_options_panel = self._make_dft_options_panel()
+        self.dft_tab = QtWidgets.QWidget()
+        dft_tab_layout = QtWidgets.QHBoxLayout(self.dft_tab)
+        dft_tab_layout.setContentsMargins(0, 0, 0, 0)
+        dft_tab_layout.setSpacing(0)
+        dft_tab_layout.addWidget(self.dft_options_panel)
+        dft_tab_layout.addWidget(dft_plot_panel, 1)
+
         self.plot_tabs = QtWidgets.QTabWidget()
         self.plot_tabs.addTab(self.bet_tab, "BET")
         self.plot_tabs.addTab(self.langmuir_tab, "Langmuir")
@@ -1510,6 +1899,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.plot_tabs.addTab(self.bjh_tab, "BJH")
         self.plot_tabs.addTab(self.dh_tab, "DH")
         self.plot_tabs.addTab(self.hk_tab, "HK")
+        self.plot_tabs.addTab(self.dft_tab, "DFT")
         self.plot_tabs.currentChanged.connect(self.on_plot_tab_changed)
 
         self.isotherm_table = self._make_table(
@@ -1575,9 +1965,23 @@ class MainWindow(QtWidgets.QMainWindow):
         side_layout.addLayout(button_row)
         side_layout.addWidget(self.left_splitter, 1)
 
+        self.dft_diagnostic_plot = make_plot(
+            "拟合误差 vs 正则化",
+            "RMS 拟合误差 (mmol/g)",
+            "正则化",
+        )
+        self.dft_diagnostic_plot.setMinimumWidth(360)
+        self.dft_diagnostic_plot.hide()
+        bottom_plot_panel = QtWidgets.QWidget()
+        bottom_plot_layout = QtWidgets.QHBoxLayout(bottom_plot_panel)
+        bottom_plot_layout.setContentsMargins(0, 0, 0, 0)
+        bottom_plot_layout.setSpacing(6)
+        bottom_plot_layout.addWidget(self.isotherm_plot, 2)
+        bottom_plot_layout.addWidget(self.dft_diagnostic_plot, 1)
+
         right_splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
         right_splitter.addWidget(self.plot_tabs)
-        right_splitter.addWidget(self.isotherm_plot)
+        right_splitter.addWidget(bottom_plot_panel)
         right_splitter.setChildrenCollapsible(False)
         right_splitter.setHandleWidth(8)
         right_splitter.setStretchFactor(0, 3)
@@ -2178,6 +2582,89 @@ class MainWindow(QtWidgets.QMainWindow):
         panel_layout.addLayout(default_button_row)
         panel_layout.addStretch(1)
         self._update_hk_interaction_controls()
+        return panel
+
+    def _make_dft_options_panel(self) -> QtWidgets.QWidget:
+        panel = QtWidgets.QWidget()
+        panel.setFixedWidth(DFT_PANEL_WIDTH)
+        panel_layout = QtWidgets.QVBoxLayout(panel)
+        panel_layout.setContentsMargins(6, 6, 6, 6)
+        panel_layout.setSpacing(8)
+
+        method_group = QtWidgets.QGroupBox("模型设置")
+        method_layout = QtWidgets.QFormLayout(method_group)
+        method_layout.setContentsMargins(8, 8, 8, 8)
+        method_layout.setHorizontalSpacing(8)
+        method_layout.setVerticalSpacing(6)
+
+        self.dft_type_combo = QtWidgets.QComboBox()
+        self.dft_type_combo.addItem("DFT 孔径", "dft_pore")
+        self.dft_type_combo.addItem("典型", "typical")
+        self.dft_type_combo.currentIndexChanged.connect(self._on_dft_option_changed)
+        method_layout.addRow("类型", self.dft_type_combo)
+
+        self.dft_geometry_combo = QtWidgets.QComboBox()
+        self.dft_geometry_combo.addItem("狭缝", "slit")
+        self.dft_geometry_combo.addItem("圆柱", "cylinder")
+        self.dft_geometry_combo.currentIndexChanged.connect(self._on_dft_option_changed)
+        method_layout.addRow("结构", self.dft_geometry_combo)
+
+        self.dft_model_combo = QtWidgets.QComboBox()
+        for key, label in dft_model_options():
+            if key == DEFAULT_DFT_MODEL:
+                self.dft_model_combo.addItem(label, key)
+        if self.dft_model_combo.count() == 0:
+            self.dft_model_combo.addItem("N2 - DFT Model", DEFAULT_DFT_MODEL)
+        self.dft_model_combo.currentIndexChanged.connect(self._on_dft_option_changed)
+        method_layout.addRow("模型", self.dft_model_combo)
+
+        regularization_group = QtWidgets.QGroupBox("正则化")
+        regularization_layout = QtWidgets.QVBoxLayout(regularization_group)
+        regularization_layout.setContentsMargins(8, 8, 8, 8)
+        regularization_layout.setSpacing(4)
+        self.dft_regularization_slider = RegularizationSlider(
+            DFT_REGULARIZATION_VALUES,
+            self.dft_regularization,
+            regularization_group,
+        )
+        self.dft_regularization_slider.valueChanged.connect(self._on_dft_regularization_changed)
+        self.dft_regularization_slider.valueChangeFinished.connect(self._finish_deferred_dft_regularization_refresh)
+        regularization_layout.addWidget(self.dft_regularization_slider)
+        self.dft_regularization_apply_all_checkbox = QtWidgets.QCheckBox("应用全部")
+        self.dft_regularization_apply_all_checkbox.setToolTip("勾选后，拖动正则化会同步到所有样品")
+        self.dft_regularization_apply_all_checkbox.toggled.connect(self._on_dft_regularization_apply_all_toggled)
+        regularization_layout.addWidget(self.dft_regularization_apply_all_checkbox)
+
+        self.dft_default_button = QtWidgets.QPushButton("默认")
+        self.dft_default_button.setToolTip("恢复当前样品的 DFT 默认设置")
+        self.dft_default_button.clicked.connect(self.reset_dft_to_default)
+        self.dft_apply_all_button = QtWidgets.QPushButton("全部应用")
+        self.dft_apply_all_button.setToolTip("把当前 DFT 设置应用到所有样品")
+        self.dft_apply_all_button.clicked.connect(self.apply_dft_settings_to_all)
+        self.dft_all_default_button = QtWidgets.QPushButton("全部默认")
+        self.dft_all_default_button.setToolTip("让所有样品恢复各自默认 DFT 设置")
+        self.dft_all_default_button.clicked.connect(self.reset_all_dft_to_default)
+        button_row = QtWidgets.QHBoxLayout()
+        button_row.setContentsMargins(0, 0, 0, 0)
+        button_row.addWidget(self.dft_default_button)
+        button_row.addWidget(self.dft_apply_all_button)
+        button_row.addWidget(self.dft_all_default_button)
+        button_row.addStretch(1)
+
+        self.dft_diagnostic_plot = make_plot(
+            "拟合误差 vs 正则化",
+            "RMS 拟合误差 (mmol/g)",
+            "正则化",
+        )
+        self.dft_diagnostic_plot.setMinimumHeight(190)
+        self.dft_diagnostic_plot.setMaximumHeight(260)
+
+        panel_layout.addWidget(method_group)
+        panel_layout.addWidget(regularization_group)
+        panel_layout.addLayout(button_row)
+        self.dft_diagnostic_plot.setVisible(False)
+        panel_layout.addWidget(self.dft_diagnostic_plot)
+        panel_layout.addStretch(1)
         return panel
 
     def _make_thickness_method_row(self, key: str, label: str, enabled: bool, *, context: str = "t_plot") -> QtWidgets.QWidget:
@@ -3812,6 +4299,259 @@ class MainWindow(QtWidgets.QMainWindow):
         finally:
             self._syncing_hk_controls = False
 
+    def _default_dft_settings(self) -> dict[str, object]:
+        return {
+            "analysis_type": DEFAULT_DFT_ANALYSIS_TYPE,
+            "geometry": DEFAULT_DFT_GEOMETRY,
+            "model": DEFAULT_DFT_MODEL,
+            "regularization": DEFAULT_DFT_REGULARIZATION,
+        }
+
+    def _dft_default_settings_for_result(self, result) -> dict[str, object]:
+        settings = self._default_dft_settings()
+        if result is None:
+            return settings
+        vendor_model = result.method_options.get("vendor_dft_model")
+        if vendor_model:
+            settings["model"] = str(vendor_model)
+        vendor_regularization = result.method_options.get("vendor_dft_regularization")
+        if vendor_regularization is not None:
+            try:
+                settings["regularization"] = float(vendor_regularization)
+            except (TypeError, ValueError):
+                pass
+        return settings
+
+    def _dft_settings_for_result(self, result) -> dict[str, object]:
+        settings = self._dft_default_settings_for_result(result)
+        custom = self.custom_dft_settings.get(id(result))
+        if custom:
+            settings.update(custom)
+        return settings
+
+    def _apply_dft_settings(self, settings: dict[str, object]) -> None:
+        self.dft_analysis_type = str(settings.get("analysis_type", DEFAULT_DFT_ANALYSIS_TYPE))
+        if self.dft_analysis_type not in {"dft_pore", "typical"}:
+            self.dft_analysis_type = DEFAULT_DFT_ANALYSIS_TYPE
+        self.dft_geometry = str(settings.get("geometry", DEFAULT_DFT_GEOMETRY))
+        if self.dft_geometry not in {"slit", "cylinder"}:
+            self.dft_geometry = DEFAULT_DFT_GEOMETRY
+        self.dft_model = str(settings.get("model", DEFAULT_DFT_MODEL))
+        try:
+            regularization = float(settings.get("regularization", DEFAULT_DFT_REGULARIZATION))
+        except (TypeError, ValueError):
+            regularization = DEFAULT_DFT_REGULARIZATION
+        if not np.isfinite(regularization):
+            regularization = DEFAULT_DFT_REGULARIZATION
+        self.dft_regularization = max(0.0, min(regularization, 10.0))
+
+    def _sync_dft_controls_from_state(self) -> None:
+        self._set_combo_data(getattr(self, "dft_type_combo", None), self.dft_analysis_type)
+        self._set_combo_data(getattr(self, "dft_geometry_combo", None), self.dft_geometry)
+        self._set_combo_data(getattr(self, "dft_model_combo", None), self.dft_model)
+        slider = getattr(self, "dft_regularization_slider", None)
+        if slider is not None:
+            slider.setValue(self.dft_regularization, emit=False)
+
+    @staticmethod
+    def _set_combo_data(combo: QtWidgets.QComboBox | None, value: object) -> None:
+        if combo is None:
+            return
+        target = str(value)
+        for index in range(combo.count()):
+            if str(combo.itemData(index)) == target:
+                combo.setCurrentIndex(index)
+                return
+
+    def _save_dft_settings_for_active(self) -> None:
+        active = self.active_result()
+        if active is None:
+            return
+        self._store_dft_settings_for_result(active, self._current_dft_settings_snapshot())
+
+    def _store_dft_settings_for_result(self, result, settings: dict[str, object]) -> None:
+        defaults = self._dft_default_settings_for_result(result)
+        if _settings_mapping_equal(settings, defaults):
+            self.custom_dft_settings.pop(id(result), None)
+        else:
+            self.custom_dft_settings[id(result)] = copy.deepcopy(settings)
+
+    def _apply_dft_regularization_to_all(self, value: float) -> None:
+        for result in self.results:
+            settings = self._dft_settings_for_result(result)
+            settings["regularization"] = float(value)
+            self._store_dft_settings_for_result(result, settings)
+
+    def _on_dft_regularization_apply_all_toggled(self, checked: bool) -> None:
+        self.dft_regularization_apply_all = bool(checked)
+        if not checked:
+            self._pending_dft_regularization_apply_all_value = None
+            self._dft_regularization_preview_active = False
+            self._dft_regularization_refresh_timer.stop()
+
+    def _sync_dft_diagnostic_line_to_regularization(self) -> None:
+        line = getattr(self, "_dft_diagnostic_line", None)
+        if line is None:
+            return
+        try:
+            position = math.log10(max(float(self.dft_regularization), 1e-6))
+        except (TypeError, ValueError):
+            return
+        try:
+            line.blockSignals(True)
+            line.setValue(position)
+        finally:
+            line.blockSignals(False)
+
+    def _refresh_dft_regularization_dependents(self, *, preview: bool = False) -> None:
+        self._sync_dft_diagnostic_line_to_regularization()
+        self.refresh_dft_plot(refresh_diagnostics=not preview, refresh_pore_cells=not preview)
+        if not preview and self._is_dft_tab_active():
+            self.refresh_isotherm_plot()
+        if not preview and self._active_pore_volume_method() == PORE_VOLUME_METHOD_DFT:
+            self._refresh_all_sample_bjh_pore_cells()
+
+    def _schedule_deferred_dft_regularization_refresh(self) -> None:
+        if not self._dft_regularization_refresh_timer.isActive():
+            self._dft_regularization_refresh_timer.start()
+
+    def _preview_deferred_dft_regularization_refresh(self) -> None:
+        if self._pending_dft_regularization_apply_all_value is None:
+            return
+        value = float(self._pending_dft_regularization_apply_all_value)
+        self._pending_dft_regularization_apply_all_value = None
+        self.dft_regularization = max(0.0, min(value, 10.0))
+        self._sync_dft_diagnostic_line_to_regularization()
+        self._apply_dft_regularization_to_all(value)
+        self._dft_regularization_preview_active = True
+        self._refresh_dft_regularization_dependents(preview=True)
+
+    def _finish_deferred_dft_regularization_refresh(self, *_args) -> None:
+        if not getattr(self, "dft_regularization_apply_all", False):
+            return
+        self._dft_regularization_refresh_timer.stop()
+        if self._pending_dft_regularization_apply_all_value is None and not self._dft_regularization_preview_active:
+            return
+        if self._pending_dft_regularization_apply_all_value is not None:
+            value = float(self._pending_dft_regularization_apply_all_value)
+            self._pending_dft_regularization_apply_all_value = None
+            self.dft_regularization = max(0.0, min(value, 10.0))
+            self._sync_dft_diagnostic_line_to_regularization()
+            self._apply_dft_regularization_to_all(value)
+        self._dft_regularization_preview_active = False
+        self._refresh_dft_regularization_dependents(preview=False)
+
+    def _load_dft_settings_for_active(self) -> None:
+        active = self.active_result()
+        settings = self._default_dft_settings() if active is None else self._dft_settings_for_result(active)
+        self._syncing_dft_controls = True
+        try:
+            self._apply_dft_settings(settings)
+            self._sync_dft_controls_from_state()
+        finally:
+            self._syncing_dft_controls = False
+
+    def _current_dft_settings_snapshot(self) -> dict[str, object]:
+        return {
+            "analysis_type": self.dft_analysis_type,
+            "geometry": self.dft_geometry,
+            "model": self.dft_model,
+            "regularization": float(self.dft_regularization),
+        }
+
+    def _on_dft_option_changed(self, *_args) -> None:
+        if self._syncing_dft_controls:
+            return
+        self.dft_analysis_type = str(self.dft_type_combo.currentData())
+        self.dft_geometry = str(self.dft_geometry_combo.currentData())
+        self.dft_model = str(self.dft_model_combo.currentData())
+        self._save_dft_settings_for_active()
+        self.refresh_dft_plot()
+        if self._is_dft_tab_active():
+            self.refresh_isotherm_plot()
+        if self._active_pore_volume_method() == PORE_VOLUME_METHOD_DFT:
+            self._refresh_all_sample_bjh_pore_cells()
+
+    def _on_dft_regularization_changed(self, value: float) -> None:
+        if self._syncing_dft_controls:
+            return
+        self.dft_regularization = max(0.0, min(float(value), 10.0))
+        self._sync_dft_diagnostic_line_to_regularization()
+        if getattr(self, "dft_regularization_apply_all", False):
+            slider = getattr(self, "dft_regularization_slider", None)
+            if slider is not None and slider.isDragging():
+                self._pending_dft_regularization_apply_all_value = self.dft_regularization
+                self._schedule_deferred_dft_regularization_refresh()
+                return
+            self._pending_dft_regularization_apply_all_value = None
+            self._dft_regularization_preview_active = False
+            self._dft_regularization_refresh_timer.stop()
+            self._apply_dft_regularization_to_all(self.dft_regularization)
+        else:
+            self._save_dft_settings_for_active()
+        self._refresh_dft_regularization_dependents()
+
+    def _on_dft_diagnostic_line_changed(self) -> None:
+        if self._syncing_dft_controls or self._dft_diagnostic_line is None:
+            return
+        try:
+            value = 10.0 ** float(self._dft_diagnostic_line.value())
+        except (TypeError, ValueError):
+            return
+        if value <= 1e-6:
+            value = 0.0
+        self._syncing_dft_controls = True
+        try:
+            self.dft_regularization = max(0.0, min(value, 10.0))
+            if hasattr(self, "dft_regularization_slider"):
+                self.dft_regularization_slider.setValue(self.dft_regularization, emit=False)
+        finally:
+            self._syncing_dft_controls = False
+        if getattr(self, "dft_regularization_apply_all", False):
+            self._apply_dft_regularization_to_all(self.dft_regularization)
+        else:
+            self._save_dft_settings_for_active()
+        self._refresh_dft_regularization_dependents()
+
+    def apply_dft_settings_to_all(self) -> None:
+        if not self.results:
+            return
+        settings = self._current_dft_settings_snapshot()
+        for result in self.results:
+            self._store_dft_settings_for_result(result, settings)
+        self.refresh_dft_plot()
+        if self._is_dft_tab_active():
+            self.refresh_isotherm_plot()
+        if self._active_pore_volume_method() == PORE_VOLUME_METHOD_DFT:
+            self._refresh_all_sample_bjh_pore_cells()
+        self.statusBar().showMessage("已将当前 DFT 设置应用到所有样品", 3000)
+
+    def reset_all_dft_to_default(self) -> None:
+        self.custom_dft_settings.clear()
+        self._dft_result_cache.clear()
+        self.reset_dft_to_default(reset_region=True)
+        self.statusBar().showMessage("所有样品已恢复默认 DFT 设置", 3000)
+
+    def reset_dft_to_default(self, *, reset_region: bool = False) -> None:
+        active = self.active_result()
+        if active is not None:
+            self.custom_dft_settings.pop(id(active), None)
+        settings = self._default_dft_settings() if active is None else self._dft_default_settings_for_result(active)
+        self._syncing_dft_controls = True
+        try:
+            self._apply_dft_settings(settings)
+            self._sync_dft_controls_from_state()
+        finally:
+            self._syncing_dft_controls = False
+        if reset_region:
+            self.dft_pore_volume_range = DEFAULT_DFT_PORE_VOLUME_RANGE
+            self._remove_dft_region()
+        self.refresh_dft_plot()
+        if self._is_dft_tab_active():
+            self.refresh_isotherm_plot()
+        if self._active_pore_volume_method() == PORE_VOLUME_METHOD_DFT:
+            self._refresh_all_sample_bjh_pore_cells()
+
     def _read_directory_setting(self, key: str) -> Path:
         value = self.settings.value(key, "")
         if value:
@@ -3916,10 +4656,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.custom_bjh_settings.pop(id(result), None)
         self.custom_dh_settings.pop(id(result), None)
         self.custom_hk_settings.pop(id(result), None)
+        self.custom_dft_settings.pop(id(result), None)
         self._discard_fit_analysis_cache_for_result(result)
         self._discard_bjh_distribution_cache_for_result(result)
         self._discard_dh_distribution_cache_for_result(result)
         self._discard_hk_distribution_cache_for_result(result)
+        self._discard_dft_result_cache_for_result(result)
 
     def load_files(self, paths: Iterable[str], *, replace: bool) -> None:
         parsed = []
@@ -3951,15 +4693,19 @@ class MainWindow(QtWidgets.QMainWindow):
             self.custom_bjh_settings.clear()
             self.custom_dh_settings.clear()
             self.custom_hk_settings.clear()
+            self.custom_dft_settings.clear()
             self._fit_analysis_cache.clear()
             self._bjh_distribution_cache.clear()
             self._dh_distribution_cache.clear()
             self._hk_distribution_cache.clear()
+            self._dft_result_cache.clear()
             self.bjh_pore_volume_range = DEFAULT_BJH_PORE_VOLUME_RANGE
             self.hk_pore_volume_range = DEFAULT_HK_PORE_VOLUME_RANGE
+            self.dft_pore_volume_range = DEFAULT_DFT_PORE_VOLUME_RANGE
             self._remove_bjh_region()
             self._remove_dh_region()
             self._remove_hk_region()
+            self._remove_dft_region()
             self._isotherm_region_custom = False
         else:
             self.results.extend(parsed)
@@ -4027,6 +4773,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._load_bjh_settings_for_active()
         self._load_dh_settings_for_active()
         self._load_hk_settings_for_active()
+        self._load_dft_settings_for_active()
         self.refresh_isotherm_plot()
         self.refresh_active_views()
         self.refresh_analysis_plots()
@@ -4191,12 +4938,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self._load_bjh_settings_for_active()
         self._load_dh_settings_for_active()
         self._load_hk_settings_for_active()
+        self._load_dft_settings_for_active()
         self.refresh_isotherm_plot()
         self.refresh_sample_table()
         self.refresh_active_views()
         self.refresh_analysis_plots()
 
     def refresh_sample_table(self) -> None:
+        horizontal_scroll_bar = self.sample_table.horizontalScrollBar()
+        horizontal_scroll_value = horizontal_scroll_bar.value()
         self._updating_table = True
         try:
             self.sample_table.setRowCount(len(self.results))
@@ -4247,6 +4997,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.sample_table.selectRow(min(self.active_index, len(self.results) - 1))
             self._sync_select_all_state()
             self._resize_sample_columns()
+            horizontal_scroll_bar.setValue(
+                max(horizontal_scroll_bar.minimum(), min(horizontal_scroll_value, horizontal_scroll_bar.maximum()))
+            )
+            self._position_header_controls()
         finally:
             self._updating_table = False
 
@@ -4318,6 +5072,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _style_sample_bjh_pore_item(self, item: QtWidgets.QTableWidgetItem, result) -> None:
         label = self._pore_volume_method_label()
+        if self._active_pore_volume_method() == PORE_VOLUME_METHOD_DFT and self._has_custom_dft_settings(result):
+            item.setForeground(QtGui.QBrush(QtGui.QColor(CUSTOM_BET_COLOR)))
+            item.setToolTip("DFT 模型、结构或正则化参数已人工调整")
+            return
         if self._is_hk_tab_active() and self._has_custom_hk_settings(result):
             item.setForeground(QtGui.QBrush(QtGui.QColor(CUSTOM_BET_COLOR)))
             item.setToolTip("HK 孔型、物性、作用参数或平滑选项已人工调整")
@@ -4347,9 +5105,15 @@ class MainWindow(QtWidgets.QMainWindow):
     def on_plot_tab_changed(self, _index: int) -> None:
         if not self._isotherm_region_custom:
             self.refresh_isotherm_plot()
+        self._update_dft_diagnostic_visibility()
         self._update_pore_volume_header()
         self._refresh_all_sample_bjh_pore_cells()
         self.refresh_analysis_plots()
+
+    def _update_dft_diagnostic_visibility(self) -> None:
+        plot = getattr(self, "dft_diagnostic_plot", None)
+        if plot is not None:
+            plot.setVisible(self._is_dft_tab_active())
 
     def refresh_isotherm_plot(self) -> None:
         raw_region = self._current_pressure_region() if self._isotherm_region_custom else None
@@ -4359,8 +5123,19 @@ class MainWindow(QtWidgets.QMainWindow):
             selected_range = self._clamp_pressure_region(raw_region or self._default_isotherm_region(pressure), pressure)
         self._remove_region()
         self._remove_isotherm_selection()
-        plot_isotherm_multi(self.isotherm_plot, self.results, self.visible_results, self.sample_colors, active_index=self.active_index)
-        if selected_range is not None:
+        dft_active = self._is_dft_tab_active()
+        dft_fit_rows = self._active_dft_fit_rows() if dft_active else None
+        plot_isotherm_multi(
+            self.isotherm_plot,
+            self.results,
+            self.visible_results,
+            self.sample_colors,
+            active_index=self.active_index,
+            fade_inactive=dft_active,
+            active_fit_rows=dft_fit_rows,
+            x_log=dft_active,
+        )
+        if selected_range is not None and not dft_active:
             self._add_region(selected_range, pressure)
             self._refresh_isotherm_selection(selected_range)
 
@@ -4385,6 +5160,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.refresh_dh_plot()
         elif current_tab is self.hk_tab:
             self.refresh_hk_plot()
+        elif current_tab is self.dft_tab:
+            self.refresh_dft_plot()
         else:
             self._refresh_bet_plot(active, p_min, p_max, reset_region=reset_region)
 
@@ -4523,6 +5300,72 @@ class MainWindow(QtWidgets.QMainWindow):
             self.hk_pore_volume_range = tuple(sorted((float(target_width_range[0]), float(target_width_range[1]))))
             self._refresh_hk_selection(self.hk_pore_volume_range)
         self._refresh_all_sample_bjh_pore_cells()
+
+    def refresh_dft_plot(self, *, refresh_diagnostics: bool = True, refresh_pore_cells: bool = True) -> None:
+        target_width_range = self.dft_pore_volume_range
+        self._remove_dft_region()
+        self._remove_dft_selection()
+        self._dft_distribution_rows_by_index = {}
+        self._dft_width_log_bounds = None
+        if not self.results:
+            self.dft_plot.clear()
+            if hasattr(self, "dft_diagnostic_plot"):
+                self.dft_diagnostic_plot.clear()
+            return
+        dft_settings_by_index = {
+            index: self._dft_settings_for_result(result)
+            for index, result in enumerate(self.results)
+        }
+        self._dft_distribution_rows_by_index = plot_dft_distribution_multi(
+            self.dft_plot,
+            self.results,
+            self.visible_results,
+            self.sample_colors,
+            active_index=self.active_index,
+            analysis_type=self.dft_analysis_type,
+            geometry=self.dft_geometry,
+            model=self.dft_model,
+            regularization=self.dft_regularization,
+            dft_settings_by_index=dft_settings_by_index,
+            result_provider=self._cached_dft_result,
+        )
+        self._dft_width_log_bounds = self._dft_log_bounds_from_rows(self._dft_distribution_rows_by_index)
+        self._sync_dft_region_to_width_range(target_width_range)
+        current_range = self._current_dft_width_range()
+        if current_range is not None:
+            self.dft_pore_volume_range = tuple(sorted((float(target_width_range[0]), float(target_width_range[1]))))
+            self._refresh_dft_selection(self.dft_pore_volume_range)
+
+        if refresh_diagnostics:
+            self._refresh_dft_diagnostics()
+        if refresh_pore_cells and self._active_pore_volume_method() == PORE_VOLUME_METHOD_DFT:
+            self._refresh_all_sample_bjh_pore_cells()
+
+    def _refresh_dft_diagnostics(self) -> None:
+        plot = getattr(self, "dft_diagnostic_plot", None)
+        if plot is None:
+            return
+        active = self.active_result()
+        self._dft_diagnostic_line = None
+        if active is None:
+            plot.clear()
+            return
+        settings = self._dft_settings_for_result(active)
+        dft_result = self._cached_dft_result(
+            active,
+            analysis_type=str(settings["analysis_type"]),
+            geometry=str(settings["geometry"]),
+            model=str(settings["model"]),
+            regularization=float(settings["regularization"]),
+            include_diagnostics=True,
+        )
+        self._dft_diagnostic_line = plot_dft_diagnostics(
+            plot,
+            list(getattr(dft_result, "diagnostic_rows", [])),
+            float(settings["regularization"]),
+        )
+        if self._dft_diagnostic_line is not None:
+            self._dft_diagnostic_line.sigPositionChangeFinished.connect(self._on_dft_diagnostic_line_changed)
 
     def _bjh_pressure_range(self) -> tuple[float, float] | None:
         if not self._isotherm_region_custom:
@@ -5442,6 +6285,103 @@ class MainWindow(QtWidgets.QMainWindow):
         lo, hi = sorted((float(log_lo), float(log_hi)))
         return (10.0**lo, 10.0**hi)
 
+    def _remove_dft_selection(self) -> None:
+        for item in self._dft_selection_items:
+            try:
+                self.dft_plot.removeItem(item)
+            except RuntimeError:
+                pass
+        self._dft_selection_items = []
+
+    def _refresh_dft_selection(self, width_range=None) -> None:
+        self._remove_dft_selection()
+        width_range = width_range or self._current_dft_width_range()
+        if width_range is None or not self._dft_distribution_rows_by_index:
+            return
+        self._dft_selection_items = plot_dft_selection(
+            self.dft_plot,
+            self._dft_distribution_rows_by_index,
+            self.sample_colors,
+            width_range,
+            active_index=self.active_index,
+        )
+
+    def _remove_dft_region(self) -> None:
+        if self.dft_region is None:
+            return
+        try:
+            self.dft_region.sigRegionChanged.disconnect(self.on_dft_region_changed)
+        except (RuntimeError, TypeError):
+            pass
+        try:
+            self.dft_plot.removeItem(self.dft_region)
+        except RuntimeError:
+            pass
+        self.dft_region = None
+
+    def _add_dft_region(self, values: list[float], bounds: list[float]) -> None:
+        region = self._make_selection_region(
+            values,
+            bounds=bounds,
+            movable=True,
+            line_color=BJH_REGION_LINE_COLOR,
+            hover_line_color=BJH_REGION_LINE_HOVER_COLOR,
+            fill_color=BJH_REGION_FILL_COLOR,
+            hover_fill_color=BJH_REGION_FILL_HOVER_COLOR,
+        )
+        region.sigRegionChanged.connect(self.on_dft_region_changed)
+        self.dft_plot.addItem(region, ignoreBounds=True)
+        self.dft_region = region
+
+    def on_dft_region_changed(self) -> None:
+        if self._syncing_region_changes or self._setting_dft_region:
+            return
+        if not self._dft_region_pending:
+            self._dft_region_pending = True
+            QtCore.QTimer.singleShot(25, self._update_dft_pore_volume_from_region)
+
+    def _update_dft_pore_volume_from_region(self) -> None:
+        self._dft_region_pending = False
+        width_range = self._current_dft_width_range()
+        if width_range is None:
+            return
+        self.dft_pore_volume_range = width_range
+        self._refresh_dft_selection(width_range)
+        self._refresh_all_sample_bjh_pore_cells()
+
+    def _sync_dft_region_to_width_range(self, width_range: tuple[float, float]) -> None:
+        if self._setting_dft_region or self._dft_width_log_bounds is None:
+            return
+        values = self._diameter_range_to_log_region(width_range)
+        if values is None:
+            return
+        bounds = list(self._dft_width_log_bounds)
+        values = [max(bounds[0], min(value, bounds[1])) for value in values]
+        if values[0] >= values[1]:
+            values = list(bounds)
+        if values[0] >= values[1]:
+            return
+        self._setting_dft_region = True
+        try:
+            if self.dft_region is None:
+                self._add_dft_region(values, bounds)
+            else:
+                if hasattr(self.dft_region, "setBounds"):
+                    self.dft_region.setBounds(bounds)
+                self.dft_region.setRegion(values)
+        finally:
+            self._setting_dft_region = False
+
+    def _current_dft_width_range(self) -> tuple[float, float] | None:
+        if self.dft_region is None:
+            return None
+        try:
+            log_lo, log_hi = self.dft_region.getRegion()
+        except RuntimeError:
+            return None
+        lo, hi = sorted((float(log_lo), float(log_hi)))
+        return (10.0**lo, 10.0**hi)
+
     def _pressure_for_dh_diameter(self, diameter_nm: float) -> float | None:
         try:
             target = float(diameter_nm)
@@ -5540,6 +6480,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self._hk_distribution_cache = {
             key: rows
             for key, rows in self._hk_distribution_cache.items()
+            if key[0] != result_id
+        }
+
+    def _discard_dft_result_cache_for_result(self, result) -> None:
+        result_id = id(result)
+        self._dft_result_cache = {
+            key: value
+            for key, value in self._dft_result_cache.items()
             if key[0] != result_id
         }
 
@@ -5717,6 +6665,64 @@ class MainWindow(QtWidgets.QMainWindow):
         self._store_hk_distribution_cache(cache_key, rows)
         return rows
 
+    def _dft_result_cache_key(
+        self,
+        result,
+        *,
+        analysis_type: str,
+        geometry: str,
+        model: str,
+        regularization: float,
+        include_diagnostics: bool,
+    ) -> tuple[object, ...]:
+        return (
+            id(result),
+            str(getattr(getattr(result, "header", None), "file_path", "")),
+            int(getattr(result, "point_count", 0)),
+            str(analysis_type),
+            str(geometry),
+            str(model),
+            round(float(regularization), 10),
+            bool(include_diagnostics),
+        )
+
+    def _store_dft_result_cache(self, cache_key: tuple[object, ...], result) -> None:
+        self._dft_result_cache[cache_key] = result
+        while len(self._dft_result_cache) > BJH_DISTRIBUTION_CACHE_LIMIT:
+            self._dft_result_cache.pop(next(iter(self._dft_result_cache)))
+
+    def _cached_dft_result(
+        self,
+        result,
+        *,
+        analysis_type: str,
+        geometry: str,
+        model: str,
+        regularization: float,
+        include_diagnostics: bool = False,
+    ):
+        cache_key = self._dft_result_cache_key(
+            result,
+            analysis_type=analysis_type,
+            geometry=geometry,
+            model=model,
+            regularization=regularization,
+            include_diagnostics=include_diagnostics,
+        )
+        cached = self._dft_result_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        distribution = dft_pore_distribution(
+            result,
+            analysis_type=analysis_type,
+            geometry=geometry,
+            model=model,
+            regularization=regularization,
+            include_diagnostics=include_diagnostics,
+        )
+        self._store_dft_result_cache(cache_key, distribution)
+        return distribution
+
     def _active_bjh_distribution_rows(self) -> list[dict[str, float]]:
         active = self.active_result()
         if active is None:
@@ -5754,6 +6760,34 @@ class MainWindow(QtWidgets.QMainWindow):
                 smooth=bool(settings["smooth_derivative"]),
             )
         )
+
+    def _active_dft_distribution_rows(self) -> list[dict[str, float]]:
+        active = self.active_result()
+        if active is None:
+            return []
+        settings = self._dft_settings_for_result(active)
+        distribution = self._cached_dft_result(
+            active,
+            analysis_type=str(settings["analysis_type"]),
+            geometry=str(settings["geometry"]),
+            model=str(settings["model"]),
+            regularization=float(settings["regularization"]),
+        )
+        return list(getattr(distribution, "rows", []))
+
+    def _active_dft_fit_rows(self) -> list[dict[str, float]]:
+        active = self.active_result()
+        if active is None:
+            return []
+        settings = self._dft_settings_for_result(active)
+        distribution = self._cached_dft_result(
+            active,
+            analysis_type=str(settings["analysis_type"]),
+            geometry=str(settings["geometry"]),
+            model=str(settings["model"]),
+            regularization=float(settings["regularization"]),
+        )
+        return list(getattr(distribution, "fit_rows", []))
 
     @staticmethod
     def _bjh_log_bounds_from_rows(rows_by_key: dict[tuple[int, str], list[dict[str, float]]]) -> tuple[float, float] | None:
@@ -5795,6 +6829,26 @@ class MainWindow(QtWidgets.QMainWindow):
             log_max += 0.01
         return (log_min, log_max)
 
+    @staticmethod
+    def _dft_log_bounds_from_rows(rows_by_index: dict[int, list[dict[str, float]]]) -> tuple[float, float] | None:
+        widths = []
+        for rows in rows_by_index.values():
+            for row in rows:
+                try:
+                    width = float(row.get("pore_width_nm", row.get("pore_diameter_nm")))
+                except (TypeError, ValueError):
+                    continue
+                if np.isfinite(width) and width > 0.0:
+                    widths.append(width)
+        if not widths:
+            return None
+        log_min = math.log10(min(widths))
+        log_max = math.log10(max(widths))
+        if log_min == log_max:
+            log_min -= 0.01
+            log_max += 0.01
+        return (log_min, log_max)
+
     def _reset_all_fit_regions(self) -> None:
         self._remove_bet_region()
         self._remove_bet_selection()
@@ -5808,6 +6862,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._remove_dh_selection()
         self._remove_hk_region()
         self._remove_hk_selection()
+        self._remove_dft_region()
+        self._remove_dft_selection()
         self._bet_fit_line = None
         self._bet_x_range = None
         self._bet_plot_p_range = None
@@ -5823,6 +6879,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._dh_diameter_log_bounds = None
         self._hk_distribution_rows_by_key = {}
         self._hk_width_log_bounds = None
+        self._dft_distribution_rows_by_index = {}
+        self._dft_width_log_bounds = None
 
     def refresh_metrics(self) -> None:
         active = self.active_result()
@@ -5984,11 +7042,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _pore_volume_method_label(self) -> str:
         method = self._active_pore_volume_method()
+        if method == PORE_VOLUME_METHOD_DFT:
+            return "DFT"
         if method == PORE_VOLUME_METHOD_HK:
             return "HK"
         return "DH" if method == PORE_VOLUME_METHOD_DH else "BJH"
 
     def _active_pore_volume_method(self) -> str:
+        if self._is_dft_tab_active():
+            return PORE_VOLUME_METHOD_DFT
         if self._is_hk_tab_active():
             return PORE_VOLUME_METHOD_HK
         return PORE_VOLUME_METHOD_DH if self._is_dh_tab_active() else PORE_VOLUME_METHOD_BJH
@@ -6030,6 +7092,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._remove_dh_selection()
         self._remove_hk_region()
         self._remove_hk_selection()
+        self._remove_dft_region()
+        self._remove_dft_selection()
         self._bet_plot_p_range = None
         self._langmuir_plot_p_range = None
         self._t_plot_p_range = None
@@ -6039,8 +7103,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._dh_diameter_log_bounds = None
         self._hk_distribution_rows_by_key = {}
         self._hk_width_log_bounds = None
-        for plot in (self.bet_plot, self.langmuir_plot, self.t_plot, self.pore_plot, self.dh_plot, self.hk_plot):
+        self._dft_distribution_rows_by_index = {}
+        self._dft_width_log_bounds = None
+        for plot in (self.bet_plot, self.langmuir_plot, self.t_plot, self.pore_plot, self.dh_plot, self.hk_plot, self.dft_plot):
             plot.clear()
+        if hasattr(self, "dft_diagnostic_plot"):
+            self.dft_diagnostic_plot.clear()
 
     def _all_pressure_values(self) -> np.ndarray:
         values = []
@@ -6080,6 +7148,8 @@ class MainWindow(QtWidgets.QMainWindow):
             if dh_pressure_range is not None:
                 return self._clamp_pressure_region(dh_pressure_range, pressure)
             return self._full_pressure_region(pressure)
+        if self._is_dft_tab_active():
+            return self._full_pressure_region(pressure)
         return self._default_pressure_region(pressure)
 
     @staticmethod
@@ -6098,6 +7168,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _is_hk_tab_active(self) -> bool:
         return getattr(self, "plot_tabs", None) is not None and self.plot_tabs.currentWidget() is self.hk_tab
+
+    def _is_dft_tab_active(self) -> bool:
+        return getattr(self, "plot_tabs", None) is not None and self.plot_tabs.currentWidget() is self.dft_tab
 
     def _clamp_pressure_region(self, raw_region: list[float] | tuple[float, float], pressure: np.ndarray) -> list[float]:
         data_min = float(np.nanmin(pressure))
@@ -6253,6 +7326,10 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         if self._is_hk_tab_active():
             self.refresh_hk_plot()
+            self.refresh_metrics()
+            return
+        if self._is_dft_tab_active():
+            self.refresh_dft_plot()
             self.refresh_metrics()
             return
         self.refresh_sample_table()
@@ -6528,6 +7605,8 @@ class MainWindow(QtWidgets.QMainWindow):
         diameter_range: tuple[float, float] | None = None,
     ) -> float | None:
         method = self._active_pore_volume_method()
+        if method == PORE_VOLUME_METHOD_DFT:
+            return self._dft_pore_volume_for_result(result, width_range=diameter_range)
         if method == PORE_VOLUME_METHOD_HK:
             return self._hk_pore_volume_for_result(result, width_range=diameter_range)
         if method == PORE_VOLUME_METHOD_DH:
@@ -6598,6 +7677,23 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         return self._hk_pore_volume_from_rows(rows, (w_min, w_max))
 
+    def _dft_pore_volume_for_result(
+        self,
+        result,
+        width_range: tuple[float, float] | None = None,
+    ) -> float | None:
+        settings = self._dft_settings_for_result(result)
+        width_range = width_range or self.dft_pore_volume_range
+        w_min, w_max = sorted((float(width_range[0]), float(width_range[1])))
+        distribution = self._cached_dft_result(
+            result,
+            analysis_type=str(settings["analysis_type"]),
+            geometry=str(settings["geometry"]),
+            model=str(settings["model"]),
+            regularization=float(settings["regularization"]),
+        )
+        return self._hk_pore_volume_from_rows(list(getattr(distribution, "rows", [])), (w_min, w_max))
+
     @staticmethod
     def _bjh_pore_volume_from_rows(
         rows: list[dict[str, float]],
@@ -6640,6 +7736,8 @@ class MainWindow(QtWidgets.QMainWindow):
         return self.bjh_pore_volume_range
 
     def _selected_pore_volume_range(self) -> tuple[float, float]:
+        if self._active_pore_volume_method() == PORE_VOLUME_METHOD_DFT:
+            return self.dft_pore_volume_range
         if self._active_pore_volume_method() == PORE_VOLUME_METHOD_HK:
             return self.hk_pore_volume_range
         return self.bjh_pore_volume_range
@@ -6714,6 +7812,18 @@ class MainWindow(QtWidgets.QMainWindow):
         if bool(settings["cheng_yang_correction"]) != bool(defaults["cheng_yang_correction"]):
             return True
         if bool(settings["smooth_derivative"]) != bool(defaults["smooth_derivative"]):
+            return True
+        return False
+
+    def _has_custom_dft_settings(self, result) -> bool:
+        if id(result) not in self.custom_dft_settings:
+            return False
+        settings = self._dft_settings_for_result(result)
+        defaults = self._dft_default_settings_for_result(result)
+        for key in ("analysis_type", "geometry", "model"):
+            if str(settings.get(key)) != str(defaults.get(key)):
+                return True
+        if not _float_equal(settings.get("regularization"), defaults.get("regularization")):
             return True
         return False
 
