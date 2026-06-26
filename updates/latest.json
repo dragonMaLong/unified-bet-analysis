@@ -1,17 +1,17 @@
 {
-  "version": "1.0.13",
-  "release_name": "v1.0.13",
-  "release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.0.13",
-  "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.0.13/BET-DragonScience.exe",
+  "version": "1.0.14",
+  "release_name": "v1.0.14",
+  "release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.0.14",
+  "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.0.14/BET-DragonScience.exe",
   "gitee_source_name": "Gitee",
-  "gitee_release_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/tag/v1.0.13",
-  "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.0.13/BET-DragonScience.exe",
+  "gitee_release_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/tag/v1.0.14",
+  "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.0.14/BET-DragonScience.exe",
   "github_source_name": "GitHub",
-  "github_release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.0.13",
-  "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.0.13/BET-DragonScience.exe",
+  "github_release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.0.14",
+  "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.0.14/BET-DragonScience.exe",
   "asset_name": "BET-DragonScience.exe",
-  "sha256": "7ff184d62fff0f6fffb057ee1230df0d04fd430b4e2e084f7a7b0b30f3327e0c",
+  "sha256": "a42eef83f06fd2cf7d1ef6ec87cbbfb9c6e1b21693620a792924a736233e17fb",
   "published_at": "2026-06-26",
-  "release_notes": "v1.0.13 adds the DFT page, improves DFT regularization interaction, fixes drag-and-drop on frozen sample columns, makes sample-table horizontal scrolling smoother, and fixes DFT isotherm refresh after changing other tabs' blue pressure ranges."
+  "release_notes": "v1.0.14 adds curve hover highlighting and double-click sample selection, fades inactive isotherm curves across analysis tabs, and improves the updater confirmation/restart flow for PyInstaller onefile builds."
 }
 

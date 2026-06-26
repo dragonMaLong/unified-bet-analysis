@@ -219,6 +219,49 @@ function Try-UnblockFile($Path) {{
     }}
 }}
 
+function Show-UpdateMessage($Message, $Title, $IconName) {{
+    try {{
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
+        $icon = [System.Windows.Forms.MessageBoxIcon]::Information
+        if ($IconName -eq "Warning") {{
+            $icon = [System.Windows.Forms.MessageBoxIcon]::Warning
+        }} elseif ($IconName -eq "Error") {{
+            $icon = [System.Windows.Forms.MessageBoxIcon]::Error
+        }}
+        [System.Windows.Forms.MessageBox]::Show(
+            $Message,
+            $Title,
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            $icon
+        ) | Out-Null
+    }} catch {{
+        Write-UpdateLog "message box failed: $($_.Exception.Message)"
+        try {{
+            msg * $Message 2>$null
+        }} catch {{}}
+    }}
+}}
+
+function Set-PyInstallerRestartEnvironment() {{
+    try {{
+        $env:PYINSTALLER_RESET_ENVIRONMENT = "1"
+        Get-ChildItem Env: | Where-Object {{ $_.Name -like "_PYI_*" }} | ForEach-Object {{
+            try {{
+                Remove-Item -LiteralPath ("Env:" + $_.Name) -ErrorAction SilentlyContinue
+            }} catch {{}}
+        }}
+        Write-UpdateLog "prepared clean PyInstaller restart environment"
+    }} catch {{
+        Write-UpdateLog "prepare PyInstaller restart environment failed: $($_.Exception.Message)"
+    }}
+}}
+
+function Start-UpdatedExecutable($Path, $WorkingDir) {{
+    Set-PyInstallerRestartEnvironment
+    Start-Sleep -Milliseconds 1200
+    Start-Process -FilePath $Path -WorkingDirectory $WorkingDir
+}}
+
 Write-UpdateLog "apply update started; old=$OldPath new=$NewPath pid=$OldProcessId"
 
 try {{
@@ -248,10 +291,12 @@ for ($i = 0; $i -lt 120; $i++) {{
         Try-UnblockFile $OldPath
         Write-UpdateLog "replacement succeeded"
         try {{
-            Start-Process -FilePath $OldPath -WorkingDirectory $TargetDir
-            Write-UpdateLog "replacement launch started"
+            Show-UpdateMessage "更新成功！立即重启软件" "软件更新" "Information"
+            Write-UpdateLog "success restart message confirmed"
+            Start-UpdatedExecutable $OldPath $TargetDir
+            Write-UpdateLog "replacement launch started after confirmation"
         }} catch {{
-            Write-UpdateLog "replacement launch failed: $($_.Exception.Message)"
+            Write-UpdateLog "confirmed launch failed: $($_.Exception.Message)"
             throw
         }}
         Remove-Item -LiteralPath $BackupPath -Force -ErrorAction SilentlyContinue
@@ -268,13 +313,16 @@ for ($i = 0; $i -lt 120; $i++) {{
     }}
 }}
 
-Write-UpdateLog "replacement failed; launching downloaded exe without replacing old file"
+Write-UpdateLog "replacement failed; asking user to run downloaded exe manually"
 Try-UnblockFile $NewPath
 try {{
-    Start-Process -FilePath $NewPath -WorkingDirectory $NewDir
-    Write-UpdateLog "fallback launch started"
+    Show-UpdateMessage "自动更新失败，请手动运行已下载的更新文件：`n$NewPath" "软件更新失败" "Warning"
+    Write-UpdateLog "fallback message shown"
+    try {{
+        Start-Process -FilePath explorer.exe -ArgumentList "/select,`"$NewPath`""
+    }} catch {{}}
 }} catch {{
-    Write-UpdateLog "fallback launch failed: $($_.Exception.Message)"
+    Write-UpdateLog "fallback message failed: $($_.Exception.Message)"
     try {{
         Start-Process -FilePath explorer.exe -ArgumentList "/select,`"$NewPath`""
     }} catch {{}}

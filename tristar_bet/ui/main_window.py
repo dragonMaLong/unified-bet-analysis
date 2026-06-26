@@ -1799,6 +1799,8 @@ class MainWindow(QtWidgets.QMainWindow):
             "正则化",
         )
         self.dft_diagnostic_plot.setMinimumWidth(360)
+        for plot in (self.isotherm_plot, self.pore_plot, self.dh_plot, self.hk_plot, self.dft_plot):
+            setattr(plot, "_sample_curve_selected_callback", self._select_sample_from_curve)
 
         self.bet_default_button.setMinimumWidth(76)
         self.bet_default_button.clicked.connect(self.reset_bet_fit_to_default)
@@ -2177,8 +2179,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if dialog is not None:
             dialog.setRange(0, 100)
             dialog.setValue(100)
-            dialog.setLabelText("下载完成，正在重启...")
-        self.statusBar().showMessage(f"已下载 v{info.latest_version}，正在重启...", 3000)
+            dialog.setLabelText("下载完成，正在安装更新...")
+        self.statusBar().showMessage(f"已下载 v{info.latest_version}，正在安装更新，请稍后重新打开软件。", 3000)
         QtCore.QTimer.singleShot(800, lambda: self._launch_downloaded_update(path))
 
     def _on_update_download_failed(self, message: str) -> None:
@@ -4780,6 +4782,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self.refresh_active_views()
         self.refresh_analysis_plots()
 
+    def _select_sample_from_curve(self, row: int) -> None:
+        if row < 0 or row >= len(self.results):
+            return
+        current_column = self.sample_table.currentColumn()
+        if current_column < 0:
+            current_column = FILE_COLUMN
+        self.sample_table.setCurrentCell(int(row), int(current_column))
+        self.sample_table.selectRow(int(row))
+        try:
+            self.sample_table.scrollToItem(self.sample_table.item(int(row), FILE_COLUMN), QtWidgets.QAbstractItemView.PositionAtCenter)
+        except Exception:
+            pass
+        self.statusBar().showMessage(f"已切换到样品：{_display_file_name(self.results[int(row)])}", 2200)
+
     def on_sample_header_clicked(self, section: int) -> None:
         if len(self.results) < 2:
             return
@@ -5132,7 +5148,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.visible_results,
             self.sample_colors,
             active_index=self.active_index,
-            fade_inactive=dft_active,
+            fade_inactive=True,
             active_fit_rows=dft_fit_rows,
             x_log=dft_active,
         )
@@ -7231,6 +7247,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.sample_colors,
             pressure_range,
             active_index=self.active_index,
+            fade_inactive=True,
         )
 
     def _add_region(self, raw_region: list[float] | tuple[float, float], pressure: np.ndarray) -> None:
