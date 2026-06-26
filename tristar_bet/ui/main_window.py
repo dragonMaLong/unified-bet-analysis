@@ -1592,6 +1592,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._syncing_reference_tables = False
         self.region_is_log = False
         self._isotherm_region_custom = False
+        self._last_isotherm_region_range: tuple[float, float] | None = None
         self._setting_isotherm_region = False
         self._metrics_pending = False
         self._bet_region_pending = False
@@ -4707,6 +4708,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._remove_hk_region()
             self._remove_dft_region()
             self._isotherm_region_custom = False
+            self._last_isotherm_region_range = None
         else:
             self.results.extend(parsed)
             self.visible_results.extend([True] * len(parsed))
@@ -5103,8 +5105,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.refresh_analysis_plots()
 
     def on_plot_tab_changed(self, _index: int) -> None:
-        if not self._isotherm_region_custom:
-            self.refresh_isotherm_plot()
+        self.refresh_isotherm_plot()
         self._update_dft_diagnostic_visibility()
         self._update_pore_volume_header()
         self._refresh_all_sample_bjh_pore_cells()
@@ -7273,6 +7274,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if pressure.size == 0:
             return
         region = self._clamp_pressure_region(pressure_range, pressure)
+        self._last_isotherm_region_range = tuple(region)
         self._syncing_region_changes = True
         self._setting_isotherm_region = True
         try:
@@ -7338,12 +7340,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _current_pressure_region(self) -> tuple[float, float] | None:
         if self.region is None:
-            return None
+            return self._last_isotherm_region_range if self._isotherm_region_custom else None
         try:
             region_min, region_max = self.region.getRegion()
         except RuntimeError:
-            return None
+            return self._last_isotherm_region_range if self._isotherm_region_custom else None
         lo, hi = sorted((float(region_min), float(region_max)))
+        self._last_isotherm_region_range = (lo, hi)
         return (lo, hi)
 
     def _analysis_bundle_for_range(self, result, pressure_range: tuple[float, float] | None):
