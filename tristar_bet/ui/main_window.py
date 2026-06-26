@@ -67,6 +67,7 @@ from tristar_bet.ui.plots import (
     bjh_display_metric_label,
     hk_display_axis_label,
     hk_display_metric_label,
+    link_sample_curve_hover_plots,
     make_plot,
     normalize_hk_display_metric,
     plot_bet_multi,
@@ -111,6 +112,37 @@ def _qt_enum_int(value) -> int:
         return int(value)
     except TypeError:
         return int(value.value)
+
+
+def _make_update_available_icon(size: int = 28) -> QtGui.QIcon:
+    pixmap = QtGui.QPixmap(size, size)
+    pixmap.fill(QtCore.Qt.transparent)
+    painter = QtGui.QPainter(pixmap)
+    painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+    scale = size / 28.0
+
+    def s(value: float) -> float:
+        return float(value) * scale
+
+    cloud = QtGui.QPainterPath()
+    cloud.addEllipse(QtCore.QRectF(s(3.0), s(12.2), s(11.5), s(10.0)))
+    cloud.addEllipse(QtCore.QRectF(s(8.2), s(5.2), s(14.8), s(15.0)))
+    cloud.addEllipse(QtCore.QRectF(s(17.0), s(10.2), s(9.0), s(9.8)))
+    cloud.addRoundedRect(QtCore.QRectF(s(4.2), s(16.2), s(21.5), s(8.0)), s(4.0), s(4.0))
+    painter.setPen(QtCore.Qt.NoPen)
+    painter.setBrush(QtGui.QColor("#2563eb"))
+    painter.drawPath(cloud.simplified())
+
+    arrow = QtGui.QPainterPath()
+    arrow.addRoundedRect(QtCore.QRectF(s(13.0), s(10.5), s(3.0), s(8.5)), s(1.4), s(1.4))
+    arrow.moveTo(s(8.9), s(17.0))
+    arrow.lineTo(s(14.5), s(22.5))
+    arrow.lineTo(s(20.1), s(17.0))
+    arrow.closeSubpath()
+    painter.setBrush(QtGui.QColor("#ffffff"))
+    painter.drawPath(arrow)
+    painter.end()
+    return QtGui.QIcon(pixmap)
 
 
 class UpdateCheckWorker(QtCore.QObject):
@@ -544,6 +576,7 @@ LANGMUIR_DEFAULT_RANGE = (0.05, 0.30)
 LANGMUIR_PLOT_RANGE = (0.0, 1.0)
 T_PLOT_DEFAULT_PRESSURE_RANGE = (0.20, 0.50)
 T_PLOT_PLOT_RANGE = (0.0, 1.0)
+HK_DEFAULT_PRESSURE_RANGE = (0.0, 0.05)
 CM3_STP_PER_MMOL = 22.414
 SURFACE_AREA_CORRECTION_FACTOR = 1.0
 CUSTOM_BET_COLOR = "#2563eb"
@@ -1616,6 +1649,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_download_thread: QtCore.QThread | None = None
         self._update_download_worker: UpdateDownloadWorker | None = None
         self._update_progress_dialog: QtWidgets.QProgressDialog | None = None
+        self._available_update_info: UpdateInfo | None = None
         self.settings = QtCore.QSettings("UnifiedBET", "TriStarBetAppZh")
         self.settings.remove("bjh_differential_mode")
         self.settings.remove("bjh_display_metrics")
@@ -1637,6 +1671,15 @@ class MainWindow(QtWidgets.QMainWindow):
         open_button.clicked.connect(self.open_files)
         export_button = QtWidgets.QPushButton("导出文件")
         export_button.clicked.connect(self.export_xlsx)
+        self.update_available_button = QtWidgets.QToolButton()
+        self.update_available_button.setIcon(_make_update_available_icon(28))
+        self.update_available_button.setIconSize(QtCore.QSize(24, 24))
+        self.update_available_button.setFixedSize(32, 32)
+        self.update_available_button.setAutoRaise(True)
+        self.update_available_button.setCursor(QtCore.Qt.PointingHandCursor)
+        self.update_available_button.setToolTip("发现新版本，点击更新")
+        self.update_available_button.clicked.connect(self._show_pending_update_dialog)
+        self.update_available_button.hide()
         self.update_button = QtWidgets.QPushButton("软件更新")
         self.update_button.setToolTip("联网检查 Gitee/GitHub 更新源中是否有新版")
         self.update_button.clicked.connect(self.check_for_updates)
@@ -1799,8 +1842,27 @@ class MainWindow(QtWidgets.QMainWindow):
             "正则化",
         )
         self.dft_diagnostic_plot.setMinimumWidth(360)
-        for plot in (self.isotherm_plot, self.pore_plot, self.dh_plot, self.hk_plot, self.dft_plot):
+        for plot in (
+            self.isotherm_plot,
+            self.bet_plot,
+            self.langmuir_plot,
+            self.t_plot,
+            self.pore_plot,
+            self.dh_plot,
+            self.hk_plot,
+            self.dft_plot,
+        ):
             setattr(plot, "_sample_curve_selected_callback", self._select_sample_from_curve)
+        link_sample_curve_hover_plots(
+            self.isotherm_plot,
+            self.bet_plot,
+            self.langmuir_plot,
+            self.t_plot,
+            self.pore_plot,
+            self.dh_plot,
+            self.hk_plot,
+            self.dft_plot,
+        )
 
         self.bet_default_button.setMinimumWidth(76)
         self.bet_default_button.clicked.connect(self.reset_bet_fit_to_default)
@@ -1964,6 +2026,7 @@ class MainWindow(QtWidgets.QMainWindow):
         button_row.addWidget(open_button)
         button_row.addWidget(export_button)
         button_row.addStretch(1)
+        button_row.addWidget(self.update_available_button)
         button_row.addWidget(self.update_button)
         side_layout.addLayout(button_row)
         side_layout.addWidget(self.left_splitter, 1)
@@ -2017,9 +2080,6 @@ class MainWindow(QtWidgets.QMainWindow):
         QtCore.QTimer.singleShot(AUTO_UPDATE_CHECK_DELAY_MS, self._auto_check_for_updates)
 
     def _auto_check_for_updates(self) -> None:
-        today = datetime.now().date().isoformat()
-        if str(self.settings.value("updates/last_auto_check_date", "")) == today:
-            return
         self.check_for_updates(manual=False)
 
     def check_for_updates(self, _checked: bool = False, *, manual: bool = True) -> None:
@@ -2054,22 +2114,37 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_update_check_finished(self, info: UpdateInfo, manual: bool) -> None:
         self._finish_update_check(manual)
         if not info.update_available:
+            self._set_update_available_indicator(None)
             message = f"当前已是最新版本 v{info.current_version}"
             if manual:
                 QtWidgets.QMessageBox.information(self, "软件更新", message)
-            else:
-                self.statusBar().showMessage(message, 5000)
             return
 
+        self._set_update_available_indicator(info)
+        if not manual:
+            self.statusBar().showMessage(f"发现新版本 v{info.latest_version}，点击软件更新左侧图标即可更新。", 8000)
+            return
+
+        self._show_update_available_dialog(info)
+
+    def _show_pending_update_dialog(self) -> None:
+        info = self._available_update_info
+        if info is None:
+            self.check_for_updates(manual=True)
+            return
+        self._show_update_available_dialog(info)
+
+    def _show_update_available_dialog(self, info: UpdateInfo) -> None:
         title = f"发现新版本 v{info.latest_version}"
         download_hint = f"安装包: {info.asset_name}" if info.asset_name else "安装包: 自动选择"
-        source_hint = f"更新源: {info.source_name}" if info.source_name else "更新源: 默认"
-        checksum_hint = f"\nSHA256: {info.sha256}" if info.sha256 else ""
+        release_notes = str(info.release_notes or "").strip()
+        notes_hint = f"\n\n本次更新内容:\n{release_notes}" if release_notes else "\n\n本次更新内容:\n暂无更新说明。"
         message = (
             f"当前版本: v{info.current_version}\n"
             f"最新版本: v{info.latest_version}\n\n"
-            f"{source_hint}\n"
-            f"{download_hint}{checksum_hint}\n\n"
+            f"来源: DragonScience\n"
+            f"{download_hint}"
+            f"{notes_hint}\n\n"
             "是否现在下载并重启到新版本？"
         )
         box = QtWidgets.QMessageBox(self)
@@ -2077,14 +2152,25 @@ class MainWindow(QtWidgets.QMainWindow):
         box.setWindowTitle("软件更新")
         box.setText(title)
         box.setInformativeText(message)
-        if info.release_notes:
-            box.setDetailedText(info.release_notes)
         update_button = box.addButton("更新", QtWidgets.QMessageBox.AcceptRole)
         box.addButton("稍后", QtWidgets.QMessageBox.RejectRole)
         exec_func = getattr(box, "exec", box.exec_)
         exec_func()
         if box.clickedButton() == update_button:
             self._download_and_install_update(info)
+
+    def _set_update_available_indicator(self, info: UpdateInfo | None, *, enabled: bool = True) -> None:
+        self._available_update_info = info
+        button = getattr(self, "update_available_button", None)
+        if button is None:
+            return
+        has_update = info is not None and bool(info.update_available)
+        button.setVisible(has_update)
+        button.setEnabled(bool(enabled))
+        if has_update:
+            button.setToolTip(f"发现新版本 v{info.latest_version}，点击更新")
+        else:
+            button.setToolTip("发现新版本，点击更新")
 
     def _on_update_check_failed(self, message: str, manual: bool) -> None:
         self._finish_update_check(manual)
@@ -2117,6 +2203,7 @@ class MainWindow(QtWidgets.QMainWindow):
         update_button = getattr(self, "update_button", None)
         if update_button is not None:
             update_button.setEnabled(False)
+        self._set_update_available_indicator(info, enabled=False)
 
         thread = QtCore.QThread(self)
         worker = UpdateDownloadWorker(info)
@@ -2191,6 +2278,8 @@ class MainWindow(QtWidgets.QMainWindow):
         update_button = getattr(self, "update_button", None)
         if update_button is not None:
             update_button.setEnabled(True)
+        if self._available_update_info is not None:
+            self._set_update_available_indicator(self._available_update_info, enabled=True)
         QtWidgets.QMessageBox.warning(self, "软件更新失败", message)
 
     def _clear_update_download_worker(self) -> None:
@@ -2208,6 +2297,8 @@ class MainWindow(QtWidgets.QMainWindow):
             update_button = getattr(self, "update_button", None)
             if update_button is not None:
                 update_button.setEnabled(True)
+            if self._available_update_info is not None:
+                self._set_update_available_indicator(self._available_update_info, enabled=True)
             return
         if self._update_progress_dialog is not None:
             self._update_progress_dialog.close()
@@ -5148,9 +5239,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self.visible_results,
             self.sample_colors,
             active_index=self.active_index,
-            fade_inactive=True,
+            fade_inactive=dft_active,
             active_fit_rows=dft_fit_rows,
             x_log=dft_active,
+            hollow_base_points=not dft_active,
         )
         if selected_range is not None and not dft_active:
             self._add_region(selected_range, pressure)
@@ -5290,6 +5382,7 @@ class MainWindow(QtWidgets.QMainWindow):
             index: self._hk_settings_for_result(result)
             for index, result in enumerate(self.results)
         }
+        pressure_range = self._hk_pressure_range()
         self._hk_distribution_rows_by_key = plot_hk_distribution_multi(
             self.hk_plot,
             self.results,
@@ -5305,12 +5398,14 @@ class MainWindow(QtWidgets.QMainWindow):
             interaction_parameter_mode=self.hk_interaction_parameter_mode,
             cheng_yang_correction=self.hk_cheng_yang_correction,
             smooth=self.hk_smooth_derivative,
-            pressure_range=self._current_pressure_region() if self._isotherm_region_custom else None,
+            pressure_range=pressure_range,
             hk_settings_by_index=hk_settings_by_index,
             distribution_provider=self._cached_hk_distribution_rows,
             display_metric=self.hk_display_metric,
         )
         self._hk_width_log_bounds = self._hk_log_bounds_from_rows(self._hk_distribution_rows_by_key)
+        if self._is_hk_default_region_active() and pressure_range is not None:
+            self._set_default_isotherm_region(pressure_range)
         self._sync_hk_region_to_width_range(target_width_range)
         current_range = self._current_hk_width_range()
         if current_range is not None:
@@ -5399,6 +5494,17 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _is_dh_default_region_active(self) -> bool:
         return self._is_dh_tab_active() and not self._isotherm_region_custom
+
+    def _hk_pressure_range(self) -> tuple[float, float] | None:
+        if not self._isotherm_region_custom:
+            pressure = self._all_pressure_values()
+            if pressure.size == 0:
+                return None
+            return tuple(self._clamp_pressure_region(HK_DEFAULT_PRESSURE_RANGE, pressure))
+        return self._current_pressure_region()
+
+    def _is_hk_default_region_active(self) -> bool:
+        return self._is_hk_tab_active() and not self._isotherm_region_custom
 
     def _default_bjh_pressure_range(self) -> tuple[float, float] | None:
         pressure = self._all_pressure_values()
@@ -7165,6 +7271,8 @@ class MainWindow(QtWidgets.QMainWindow):
             if dh_pressure_range is not None:
                 return self._clamp_pressure_region(dh_pressure_range, pressure)
             return self._full_pressure_region(pressure)
+        if self._is_hk_tab_active():
+            return self._clamp_pressure_region(HK_DEFAULT_PRESSURE_RANGE, pressure)
         if self._is_dft_tab_active():
             return self._full_pressure_region(pressure)
         return self._default_pressure_region(pressure)
@@ -7247,7 +7355,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.sample_colors,
             pressure_range,
             active_index=self.active_index,
-            fade_inactive=True,
+            fade_inactive=False,
         )
 
     def _add_region(self, raw_region: list[float] | tuple[float, float], pressure: np.ndarray) -> None:
@@ -8408,9 +8516,11 @@ def math_isfinite(value: float) -> bool:
 
 
 def run(argv: list[str] | None = None) -> int:
+    QtCore.QCoreApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps, True)
     app = QtWidgets.QApplication(argv or sys.argv)
     app.setApplicationName("UnifiedBET")
     app.setApplicationDisplayName("")
+    app.setStyle("windowsvista")
     if APP_ICON_PATH.exists():
         app.setWindowIcon(QtGui.QIcon(str(APP_ICON_PATH)))
     app.setFont(QtGui.QFont("Microsoft YaHei UI", 9))

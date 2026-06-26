@@ -747,6 +747,7 @@ class SampleCurveInteractionController(QtCore.QObject):
         self.view_box = self.plot_item.getViewBox()
         self.entries: list[dict[str, object]] = []
         self.hovered_entry: dict[str, object] | None = None
+        self.hovered_sample_index: int | None = None
         self.pending_scene_pos: QtCore.QPointF | None = None
         self.hover_timer = QtCore.QTimer(self)
         self.hover_timer.setSingleShot(True)
@@ -777,6 +778,7 @@ class SampleCurveInteractionController(QtCore.QObject):
         self.entries = []
         self.pending_scene_pos = None
         self.hovered_entry = None
+        self.hovered_sample_index = None
         self.tooltip.hide()
 
     def register(
@@ -915,49 +917,105 @@ class SampleCurveInteractionController(QtCore.QObject):
         return x_view, y_view
 
     def _set_hover(self, entry: dict[str, object], view_point: QtCore.QPointF | None) -> None:
-        if self.hovered_entry is entry:
+        sample_index = int(entry.get("sample_index", -1))
+        if self.hovered_entry is entry and self.hovered_sample_index == sample_index:
             self._move_tooltip(entry, view_point)
             return
         self._restore_all()
         self.hovered_entry = entry
+        self.hovered_sample_index = sample_index
         for other in self.entries:
             item = other.get("item")
             if item is None:
                 continue
             try:
-                item.setOpacity(1.0 if other is entry else 0.22)
+                item.setOpacity(1.0 if int(other.get("sample_index", -1)) == sample_index else 0.22)
             except Exception:
                 pass
-        item = entry.get("item")
-        if item is not None:
-            base_pen = entry.get("base_pen")
-            if isinstance(base_pen, QtGui.QPen):
-                highlight_pen = QtGui.QPen(base_pen)
-                highlight_pen.setWidthF(max(float(base_pen.widthF()) + 2.5, 5.0))
-                item.setPen(highlight_pen)
-                glow_pen = QtGui.QPen(base_pen)
-                glow_pen.setColor(QtGui.QColor("#fbbf24"))
-                glow_pen.setWidthF(max(float(base_pen.widthF()) + 8.0, 10.0))
-                item.setShadowPen(glow_pen)
-            base_symbol_size = entry.get("base_symbol_size")
-            if base_symbol_size is not None:
-                try:
-                    item.setSymbolSize(float(base_symbol_size) + 3.0)
-                except Exception:
-                    pass
-            try:
-                item.setZValue(15_000)
-            except Exception:
-                pass
+        for highlighted in self.entries:
+            if int(highlighted.get("sample_index", -1)) != sample_index:
+                continue
+            self._highlight_entry_item(highlighted)
         self._move_tooltip(entry, view_point)
         _refresh_legend_layout(self.plot)
+        self._propagate_hover(sample_index)
 
-    def clear_hover(self) -> None:
+    def set_linked_hover(self, sample_index: int | None) -> None:
+        if sample_index is None:
+            self.clear_hover(propagate=False)
+            return
+        for entry in self.entries:
+            if int(entry.get("sample_index", -1)) == int(sample_index):
+                self._set_linked_entry_hover(entry)
+                return
+        self.clear_hover(propagate=False)
+
+    def _set_linked_entry_hover(self, entry: dict[str, object]) -> None:
+        sample_index = int(entry.get("sample_index", -1))
+        if self.hovered_sample_index == sample_index:
+            return
+        self._restore_all()
+        self.hovered_entry = entry
+        self.hovered_sample_index = sample_index
+        for other in self.entries:
+            item = other.get("item")
+            if item is None:
+                continue
+            try:
+                item.setOpacity(1.0 if int(other.get("sample_index", -1)) == sample_index else 0.22)
+            except Exception:
+                pass
+        for highlighted in self.entries:
+            if int(highlighted.get("sample_index", -1)) == sample_index:
+                self._highlight_entry_item(highlighted)
+        self.tooltip.hide()
+        _refresh_legend_layout(self.plot)
+
+    def _highlight_entry_item(self, entry: dict[str, object]) -> None:
+        item = entry.get("item")
+        if item is None:
+            return
+        base_pen = entry.get("base_pen")
+        if isinstance(base_pen, QtGui.QPen):
+            highlight_pen = QtGui.QPen(base_pen)
+            highlight_pen.setWidthF(max(float(base_pen.widthF()) + 2.5, 5.0))
+            item.setPen(highlight_pen)
+            glow_pen = QtGui.QPen(base_pen)
+            glow_pen.setColor(QtGui.QColor("#fbbf24"))
+            glow_pen.setWidthF(max(float(base_pen.widthF()) + 8.0, 10.0))
+            item.setShadowPen(glow_pen)
+        base_symbol_size = entry.get("base_symbol_size")
+        if base_symbol_size is not None:
+            try:
+                item.setSymbolSize(float(base_symbol_size) + 3.0)
+            except Exception:
+                pass
+        try:
+            item.setZValue(15_000)
+        except Exception:
+            pass
+
+    def _propagate_hover(self, sample_index: int | None) -> None:
+        for peer_plot in getattr(self.plot, "_linked_sample_curve_hover_plots", []):
+            if peer_plot is self.plot:
+                continue
+            controller = getattr(peer_plot, "_sample_curve_interaction_controller", None)
+            if controller is None:
+                continue
+            try:
+                controller.set_linked_hover(sample_index)
+            except Exception:
+                pass
+
+    def clear_hover(self, *, propagate: bool = True) -> None:
         self.hover_timer.stop()
         self.pending_scene_pos = None
         self._restore_all()
         self.hovered_entry = None
+        self.hovered_sample_index = None
         self.tooltip.hide()
+        if propagate:
+            self._propagate_hover(None)
 
     def _restore_all(self) -> None:
         for entry in self.entries:
@@ -1025,6 +1083,15 @@ def _sample_curve_controller(plot: pg.PlotWidget) -> SampleCurveInteractionContr
             plot.clear = clear_with_sample_curve_reset
             setattr(plot, "_sample_curve_clear_patched", True)
     return controller
+
+
+def link_sample_curve_hover_plots(*plots: pg.PlotWidget) -> None:
+    unique_plots = []
+    for plot in plots:
+        if plot is not None and plot not in unique_plots:
+            unique_plots.append(plot)
+    for plot in unique_plots:
+        setattr(plot, "_linked_sample_curve_hover_plots", [peer for peer in unique_plots if peer is not plot])
 
 
 def _copy_pen_option(value) -> QtGui.QPen | None:
@@ -1100,6 +1167,7 @@ def plot_isotherm_multi(
     fade_inactive: bool = False,
     active_fit_rows: list[dict[str, float]] | None = None,
     x_log: bool = False,
+    hollow_base_points: bool = False,
 ) -> None:
     plot.clear()
     plot.setTitle("吸附/脱附等温线")
@@ -1126,6 +1194,7 @@ def plot_isotherm_multi(
         is_active = index == active_index
         base_color = _analysis_color(colors, index, active_index)
         color = _color_with_alpha(base_color, 46) if fade_inactive and not is_active else base_color
+        base_point_filled = False if hollow_base_points else not is_active
         width = ACTIVE_LINE_WIDTH if is_active else DEFAULT_LINE_WIDTH
         symbol_size = ACTIVE_SYMBOL_SIZE if is_active else DEFAULT_SYMBOL_SIZE
         symbol_pen_width = ACTIVE_SYMBOL_PEN_WIDTH if is_active else DEFAULT_SYMBOL_PEN_WIDTH
@@ -1141,7 +1210,7 @@ def plot_isotherm_multi(
             width=width,
             symbol_size=symbol_size,
             symbol_pen_width=symbol_pen_width,
-            filled=not is_active,
+            filled=base_point_filled,
         )
         if item is not None:
             legend_entries.append((index, item, name))
@@ -1211,9 +1280,31 @@ def plot_isotherm_selection(
         result = results[index]
         is_active = index == active_index
         base_color = _analysis_color(colors, index, active_index)
-        color = _color_with_alpha(base_color, 64) if fade_inactive and not is_active else base_color
-        items.append(_plot_selected_isotherm_points(plot, adsorption_points(result), color, lo, hi))
-        items.append(_plot_selected_isotherm_points(plot, desorption_points(result), color, lo, hi))
+        color = _color_with_alpha(base_color, 110) if fade_inactive and not is_active else base_color
+        symbol_size = SELECTED_SYMBOL_SIZE if is_active else DEFAULT_SYMBOL_SIZE
+        symbol_pen_width = SELECTED_SYMBOL_PEN_WIDTH if is_active else DEFAULT_SYMBOL_PEN_WIDTH
+        items.append(
+            _plot_selected_isotherm_points(
+                plot,
+                adsorption_points(result),
+                color,
+                lo,
+                hi,
+                symbol_size=symbol_size,
+                symbol_pen_width=symbol_pen_width,
+            )
+        )
+        items.append(
+            _plot_selected_isotherm_points(
+                plot,
+                desorption_points(result),
+                color,
+                lo,
+                hi,
+                symbol_size=symbol_size,
+                symbol_pen_width=symbol_pen_width,
+            )
+        )
     return [item for item in items if item is not None]
 
 
@@ -1296,6 +1387,14 @@ def plot_bet_multi(
         color = _analysis_color(colors, index, active_index)
         item = _plot_analysis_xy(plot, x, y, color, _legend_name(results[index]), index == active_index)
         _append_sample_legend_entry(plot, index, item, _legend_name(results[index]))
+        _register_sample_curve(
+            plot,
+            item,
+            sample_index=index,
+            label=f"{_legend_name(results[index])} BET",
+            x_values=x,
+            y_values=y,
+        )
         x_by_index[index] = x
         all_x.extend(x.tolist())
         all_y.extend(y.tolist())
@@ -1476,6 +1575,14 @@ def plot_langmuir_points_multi(
         color = _analysis_color(colors, index, active_index)
         item = _plot_analysis_xy(plot, x, y, color, _legend_name(results[index]), index == active_index)
         _append_sample_legend_entry(plot, index, item, _legend_name(results[index]))
+        _register_sample_curve(
+            plot,
+            item,
+            sample_index=index,
+            label=f"{_legend_name(results[index])} Langmuir",
+            x_values=x,
+            y_values=y,
+        )
         x_by_index[index] = x
         all_x.extend(x.tolist())
         all_y.extend(y.tolist())
@@ -1624,6 +1731,14 @@ def plot_t_plot_points_multi(
         color = _analysis_color(colors, index, active_index)
         item = _plot_analysis_xy(plot, x, y, color, _legend_name(results[index]), index == active_index)
         _append_sample_legend_entry(plot, index, item, _legend_name(results[index]))
+        _register_sample_curve(
+            plot,
+            item,
+            sample_index=index,
+            label=f"{_legend_name(results[index])} t-Plot",
+            x_values=x,
+            y_values=y,
+        )
         x_by_index[index] = x
         all_x.extend(x.tolist())
         all_y.extend(y.tolist())
@@ -2772,6 +2887,9 @@ def _plot_selected_isotherm_points(
     color: str,
     pressure_min: float,
     pressure_max: float,
+    *,
+    symbol_size: int = SELECTED_SYMBOL_SIZE,
+    symbol_pen_width: int = SELECTED_SYMBOL_PEN_WIDTH,
 ):
     selected_x = []
     selected_y = []
@@ -2791,6 +2909,8 @@ def _plot_selected_isotherm_points(
         np.asarray(selected_x, dtype=float),
         np.asarray(selected_y, dtype=float),
         color,
+        symbol_size=symbol_size,
+        symbol_pen_width=symbol_pen_width,
     )
 
 
