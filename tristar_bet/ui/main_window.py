@@ -93,6 +93,7 @@ from tristar_bet.ui.plots import (
     replace_bet_fit_line,
     replace_langmuir_fit_line,
     replace_t_plot_fit_line,
+    set_sample_curve_hover_plots,
 )
 from tristar_bet.version import __version__
 
@@ -125,19 +126,30 @@ def _make_update_available_icon(size: int = 28) -> QtGui.QIcon:
         return float(value) * scale
 
     cloud = QtGui.QPainterPath()
-    cloud.addEllipse(QtCore.QRectF(s(3.0), s(12.2), s(11.5), s(10.0)))
-    cloud.addEllipse(QtCore.QRectF(s(8.2), s(5.2), s(14.8), s(15.0)))
-    cloud.addEllipse(QtCore.QRectF(s(17.0), s(10.2), s(9.0), s(9.8)))
-    cloud.addRoundedRect(QtCore.QRectF(s(4.2), s(16.2), s(21.5), s(8.0)), s(4.0), s(4.0))
+    cloud.moveTo(s(6.4), s(22.0))
+    cloud.cubicTo(s(3.3), s(22.0), s(1.4), s(19.8), s(1.4), s(17.1))
+    cloud.cubicTo(s(1.4), s(14.4), s(3.4), s(12.3), s(6.0), s(12.2))
+    cloud.cubicTo(s(6.8), s(8.6), s(9.9), s(5.9), s(13.8), s(5.9))
+    cloud.cubicTo(s(17.0), s(5.9), s(19.7), s(7.8), s(21.0), s(10.8))
+    cloud.cubicTo(s(24.2), s(11.1), s(26.6), s(13.5), s(26.6), s(16.6))
+    cloud.cubicTo(s(26.6), s(19.6), s(24.2), s(22.0), s(21.0), s(22.0))
+    cloud.lineTo(s(6.4), s(22.0))
+    cloud.closeSubpath()
     painter.setPen(QtCore.Qt.NoPen)
     painter.setBrush(QtGui.QColor("#2563eb"))
-    painter.drawPath(cloud.simplified())
+    painter.drawPath(cloud)
 
     arrow = QtGui.QPainterPath()
-    arrow.addRoundedRect(QtCore.QRectF(s(13.0), s(10.5), s(3.0), s(8.5)), s(1.4), s(1.4))
-    arrow.moveTo(s(8.9), s(17.0))
-    arrow.lineTo(s(14.5), s(22.5))
-    arrow.lineTo(s(20.1), s(17.0))
+    arrow.setFillRule(QtCore.Qt.WindingFill)
+    arrow.moveTo(s(14.0), s(8.6))
+    arrow.cubicTo(s(12.9), s(8.6), s(12.0), s(9.5), s(12.0), s(10.6))
+    arrow.lineTo(s(12.0), s(15.4))
+    arrow.lineTo(s(8.4), s(15.4))
+    arrow.lineTo(s(14.0), s(21.0))
+    arrow.lineTo(s(19.6), s(15.4))
+    arrow.lineTo(s(16.0), s(15.4))
+    arrow.lineTo(s(16.0), s(10.6))
+    arrow.cubicTo(s(16.0), s(9.5), s(15.1), s(8.6), s(14.0), s(8.6))
     arrow.closeSubpath()
     painter.setBrush(QtGui.QColor("#ffffff"))
     painter.drawPath(arrow)
@@ -193,18 +205,28 @@ class SelectAllCheckBox(QtWidgets.QCheckBox):
             self.setCheckState(QtCore.Qt.Checked)
 
 
+class ShrinkableScrollArea(QtWidgets.QScrollArea):
+    def sizeHint(self) -> QtCore.QSize:
+        return QtCore.QSize(0, 0)
+
+    def minimumSizeHint(self) -> QtCore.QSize:
+        return QtCore.QSize(0, 0)
+
+
 class CollapsibleOptionsPane(QtWidgets.QFrame):
     COLLAPSED_WIDTH = 38
+    MIN_EXPANDED_WIDTH = 128
 
     def __init__(self, title: str, content: QtWidgets.QWidget, parent=None) -> None:
         super().__init__(parent)
         self.content = content
         self._collapsed = False
+        self._expanded_width = 0
 
         self.setObjectName("CollapsibleOptionsPane")
         self.setFrameShape(QtWidgets.QFrame.NoFrame)
         self.setMinimumHeight(0)
-        self.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Expanding)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Expanding)
 
         self.toggle_button = QtWidgets.QToolButton(self)
         self.toggle_button.setArrowType(QtCore.Qt.LeftArrow)
@@ -214,12 +236,14 @@ class CollapsibleOptionsPane(QtWidgets.QFrame):
         self.toggle_button.setToolTip("隐藏参数栏")
         self.toggle_button.clicked.connect(self.toggle_collapsed)
 
-        self.scroll_area = QtWidgets.QScrollArea()
+        self.scroll_area = ShrinkableScrollArea()
         self.scroll_area.setFrameShape(QtWidgets.QFrame.NoFrame)
-        self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.scroll_area.setWidgetResizable(False)
+        self.scroll_area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
         self.scroll_area.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        self.scroll_area.setMinimumWidth(0)
         self.scroll_area.setMinimumHeight(0)
+        self.scroll_area.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Expanding)
         self.scroll_area.setWidget(content)
 
         layout = QtWidgets.QVBoxLayout(self)
@@ -234,15 +258,27 @@ class CollapsibleOptionsPane(QtWidgets.QFrame):
 
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
         super().resizeEvent(event)
+        self.sync_scroll_area_geometry()
         self._position_toggle_button()
 
     def showEvent(self, event: QtGui.QShowEvent) -> None:
         super().showEvent(event)
+        self.sync_scroll_area_geometry()
         self._position_toggle_button()
 
     def sync_width(self) -> None:
+        content_layout = self.content.layout()
+        if content_layout is not None:
+            content_layout.invalidate()
+            content_layout.activate()
+        self.content.adjustSize()
+        previous_width = int(self._expanded_width or 0)
+        was_at_full_width = previous_width > 0 and abs(int(self.width() or 0) - previous_width) <= 4
         if self._collapsed:
-            self.setFixedWidth(self.COLLAPSED_WIDTH)
+            self.setMinimumWidth(self.COLLAPSED_WIDTH)
+            self.setMaximumWidth(self.COLLAPSED_WIDTH)
+            self._request_splitter_width(self.COLLAPSED_WIDTH)
+            self.sync_scroll_area_geometry()
             self._position_toggle_button()
             return
         min_width = int(self.content.minimumWidth() or 0)
@@ -257,7 +293,14 @@ class CollapsibleOptionsPane(QtWidgets.QFrame):
         if content_width <= 0:
             content_width = 360
         scrollbar_width = self.scroll_area.verticalScrollBar().sizeHint().width()
-        self.setFixedWidth(content_width + scrollbar_width + 6)
+        self._expanded_width = max(self.MIN_EXPANDED_WIDTH, content_width + scrollbar_width + 6)
+        self.setMinimumWidth(min(self.MIN_EXPANDED_WIDTH, self._expanded_width))
+        self.setMaximumWidth(self._expanded_width)
+        current_width = int(self.width() or 0)
+        if current_width <= self.COLLAPSED_WIDTH + 2 or current_width > self._expanded_width or was_at_full_width:
+            self._request_splitter_width(self._expanded_width)
+        self.updateGeometry()
+        self.sync_scroll_area_geometry()
         self._position_toggle_button()
 
     def toggle_collapsed(self) -> None:
@@ -269,9 +312,12 @@ class CollapsibleOptionsPane(QtWidgets.QFrame):
         self.toggle_button.setArrowType(QtCore.Qt.RightArrow if self._collapsed else QtCore.Qt.LeftArrow)
         self.toggle_button.setToolTip("显示参数栏" if self._collapsed else "隐藏参数栏")
         if self._collapsed:
-            self.setFixedWidth(self.COLLAPSED_WIDTH)
+            self.setMinimumWidth(self.COLLAPSED_WIDTH)
+            self.setMaximumWidth(self.COLLAPSED_WIDTH)
+            self._request_splitter_width(self.COLLAPSED_WIDTH)
         else:
             self.sync_width()
+            self._request_splitter_width(self._expanded_width)
         self._position_toggle_button()
 
     def _position_toggle_button(self) -> None:
@@ -281,10 +327,74 @@ class CollapsibleOptionsPane(QtWidgets.QFrame):
         self.toggle_button.move(x, 6)
         self.toggle_button.raise_()
 
+    def _request_splitter_width(self, target_width: int) -> None:
+        target_width = max(0, int(target_width))
+        parent = self.parentWidget()
+        if isinstance(parent, QtWidgets.QSplitter):
+            index = parent.indexOf(self)
+            sizes = parent.sizes()
+            if 0 <= index < len(sizes):
+                total = sum(sizes)
+                if total > 0 and len(sizes) >= 2:
+                    target_width = min(target_width, max(0, total - 1))
+                    delta = target_width - sizes[index]
+                    sizes[index] = target_width
+                    for other in range(len(sizes)):
+                        if other != index:
+                            sizes[other] = max(1, sizes[other] - delta)
+                            break
+                    parent.setSizes(sizes)
+                    self.sync_scroll_area_geometry()
+                    return
+        self.resize(target_width, self.height())
+        self.sync_scroll_area_geometry()
+
+    def expanded_width(self) -> int:
+        if self._expanded_width <= 0:
+            self.sync_width()
+        return int(self._expanded_width or self.width() or self.MIN_EXPANDED_WIDTH)
+
+    def sync_scroll_area_geometry(self) -> None:
+        layout = self.layout()
+        if layout is not None:
+            layout.invalidate()
+            layout.activate()
+        size = self.scroll_area.size()
+        QtWidgets.QApplication.sendEvent(self.scroll_area, QtGui.QResizeEvent(size, size))
+        widget = self.scroll_area.widget()
+        if widget is None:
+            return
+        viewport = self.scroll_area.viewport()
+        viewport_width = max(0, viewport.width())
+        viewport_height = max(0, viewport.height())
+        hbar = self.scroll_area.horizontalScrollBar()
+        vbar = self.scroll_area.verticalScrollBar()
+        h_range = max(0, widget.width() - viewport_width)
+        v_range = max(0, widget.height() - viewport_height)
+        h_policy = QtCore.Qt.ScrollBarAlwaysOn if h_range > 0 else QtCore.Qt.ScrollBarAlwaysOff
+        v_policy = QtCore.Qt.ScrollBarAlwaysOn if v_range > 0 else QtCore.Qt.ScrollBarAlwaysOff
+        if self.scroll_area.horizontalScrollBarPolicy() != h_policy:
+            self.scroll_area.setHorizontalScrollBarPolicy(h_policy)
+        if self.scroll_area.verticalScrollBarPolicy() != v_policy:
+            self.scroll_area.setVerticalScrollBarPolicy(v_policy)
+        QtWidgets.QApplication.sendEvent(self.scroll_area, QtGui.QResizeEvent(size, size))
+        viewport = self.scroll_area.viewport()
+        viewport_width = max(0, viewport.width())
+        viewport_height = max(0, viewport.height())
+        h_range = max(0, widget.width() - viewport_width)
+        v_range = max(0, widget.height() - viewport_height)
+        hbar.setPageStep(max(1, viewport_width))
+        vbar.setPageStep(max(1, viewport_height))
+        hbar.setRange(0, h_range)
+        vbar.setRange(0, v_range)
+        hbar.setValue(min(hbar.value(), hbar.maximum()))
+        vbar.setValue(min(vbar.value(), vbar.maximum()))
+
 
 class SampleTableWidget(QtWidgets.QTableWidget):
     rowMoveRequested = Signal(int, int)
     smpFilesDropped = Signal(list)
+    rowHovered = Signal(int)
     LONG_PRESS_MS = 220
     FROZEN_COLUMN_COUNT = 2
 
@@ -292,11 +402,14 @@ class SampleTableWidget(QtWidgets.QTableWidget):
         super().__init__(*args, **kwargs)
         self.setAcceptDrops(True)
         self.viewport().setAcceptDrops(True)
+        self.setMouseTracking(True)
+        self.viewport().setMouseTracking(True)
         self._syncing_frozen_columns = False
         self._drag_source_row = -1
         self._drag_start_pos = QtCore.QPoint()
         self._drag_timer = QtCore.QElapsedTimer()
         self._dragging_row = False
+        self._hovered_row = -1
         self._drop_indicator = QtWidgets.QFrame(self.viewport())
         self._drop_indicator.setFixedHeight(2)
         self._drop_indicator.setStyleSheet("background: #2563eb;")
@@ -322,6 +435,8 @@ class SampleTableWidget(QtWidgets.QTableWidget):
         self._frozen_table.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
         self._frozen_table.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self._frozen_table.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self._frozen_table.setMouseTracking(True)
+        self._frozen_table.viewport().setMouseTracking(True)
         self._frozen_table.setStyleSheet(
             """
             QTableView {
@@ -364,6 +479,7 @@ class SampleTableWidget(QtWidgets.QTableWidget):
         frozen_header.setHighlightSections(False)
         frozen_header.setDefaultAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
         frozen_header.setSectionResizeMode(QtWidgets.QHeaderView.Interactive)
+        self.viewport().installEventFilter(self)
         self._frozen_table.viewport().installEventFilter(self)
 
         for column in range(self.model().columnCount()):
@@ -391,7 +507,15 @@ class SampleTableWidget(QtWidgets.QTableWidget):
 
     def eventFilter(self, obj, event) -> bool:
         frozen_table = getattr(self, "_frozen_table", None)
+        if obj is self.viewport():
+            if event.type() == QtCore.QEvent.MouseMove:
+                self._set_hovered_row(self.rowAt(event.pos().y()))
+            elif event.type() in (QtCore.QEvent.Leave, QtCore.QEvent.Hide):
+                self._set_hovered_row(-1)
+            return super().eventFilter(obj, event)
         if frozen_table is not None and obj is frozen_table.viewport():
+            if event.type() == QtCore.QEvent.MouseMove:
+                self._set_hovered_row(self._frozen_table.rowAt(event.pos().y()))
             if event.type() in (QtCore.QEvent.DragEnter, QtCore.QEvent.DragMove):
                 if self._accept_file_drag_event(event):
                     return True
@@ -416,7 +540,18 @@ class SampleTableWidget(QtWidgets.QTableWidget):
                 if event.button() == QtCore.Qt.LeftButton:
                     self._reset_row_drag()
                 return False
+            if event.type() in (QtCore.QEvent.Leave, QtCore.QEvent.Hide):
+                self._set_hovered_row(-1)
         return super().eventFilter(obj, event)
+
+    def _set_hovered_row(self, row: int) -> None:
+        row = int(row) if row is not None else -1
+        if row < 0 or row >= self.rowCount():
+            row = -1
+        if row == self._hovered_row:
+            return
+        self._hovered_row = row
+        self.rowHovered.emit(row)
 
     def _frozen_to_main_viewport_pos(self, position: QtCore.QPoint) -> QtCore.QPoint:
         return self.viewport().mapFromGlobal(self._frozen_table.viewport().mapToGlobal(position))
@@ -488,6 +623,7 @@ class SampleTableWidget(QtWidgets.QTableWidget):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
+        self._set_hovered_row(self.rowAt(event.pos().y()))
         if not self._update_row_drag(event.pos(), event.buttons()):
             super().mouseMoveEvent(event)
             return
@@ -538,6 +674,7 @@ class SampleTableWidget(QtWidgets.QTableWidget):
         return True
 
     def leaveEvent(self, event) -> None:
+        self._set_hovered_row(-1)
         if not self._dragging_row:
             self._drop_indicator.hide()
         super().leaveEvent(event)
@@ -1739,6 +1876,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_download_worker: UpdateDownloadWorker | None = None
         self._update_progress_dialog: QtWidgets.QProgressDialog | None = None
         self._available_update_info: UpdateInfo | None = None
+        self._hovered_sample_row = -1
         self.settings = QtCore.QSettings("UnifiedBET", "TriStarBetAppZh")
         self.settings.remove("bjh_differential_mode")
         self.settings.remove("bjh_display_metrics")
@@ -1850,6 +1988,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sample_table.currentCellChanged.connect(self.on_active_cell_changed)
         self.sample_table.rowMoveRequested.connect(self.move_sample_row)
         self.sample_table.smpFilesDropped.connect(self.append_files)
+        self.sample_table.rowHovered.connect(self._on_sample_table_row_hovered)
         self.sample_table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.sample_table.customContextMenuRequested.connect(self.show_sample_context_menu)
         self.sample_table.horizontalScrollBar().valueChanged.connect(self._position_header_controls)
@@ -1942,6 +2081,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.dft_plot,
         ):
             setattr(plot, "_sample_curve_selected_callback", self._select_sample_from_curve)
+            setattr(plot, "_sample_curve_hovered_callback", self._set_hovered_sample_row)
         link_sample_curve_hover_plots(
             self.isotherm_plot,
             self.bet_plot,
@@ -1988,12 +2128,10 @@ class MainWindow(QtWidgets.QMainWindow):
         t_plot_plot_layout.addWidget(self.t_plot, 1)
         self.t_plot_options_panel = self._make_t_plot_options_panel()
         self.t_plot_options_pane = CollapsibleOptionsPane("t-Plot 参数", self.t_plot_options_panel)
-        self.t_plot_tab = QtWidgets.QWidget()
-        t_plot_tab_layout = QtWidgets.QHBoxLayout(self.t_plot_tab)
-        t_plot_tab_layout.setContentsMargins(0, 0, 0, 0)
-        t_plot_tab_layout.setSpacing(0)
-        t_plot_tab_layout.addWidget(self.t_plot_options_pane)
-        t_plot_tab_layout.addWidget(t_plot_plot_panel, 1)
+        self.t_plot_tab, self.t_plot_options_splitter = self._make_resizable_options_tab(
+            self.t_plot_options_pane,
+            t_plot_plot_panel,
+        )
 
         bjh_plot_panel = QtWidgets.QWidget()
         bjh_plot_layout = QtWidgets.QVBoxLayout(bjh_plot_panel)
@@ -2002,12 +2140,10 @@ class MainWindow(QtWidgets.QMainWindow):
         bjh_plot_layout.addWidget(self.pore_plot, 1)
         self.bjh_options_panel = self._make_bjh_options_panel()
         self.bjh_options_pane = CollapsibleOptionsPane("BJH 参数", self.bjh_options_panel)
-        self.bjh_tab = QtWidgets.QWidget()
-        bjh_tab_layout = QtWidgets.QHBoxLayout(self.bjh_tab)
-        bjh_tab_layout.setContentsMargins(0, 0, 0, 0)
-        bjh_tab_layout.setSpacing(0)
-        bjh_tab_layout.addWidget(self.bjh_options_pane)
-        bjh_tab_layout.addWidget(bjh_plot_panel, 1)
+        self.bjh_tab, self.bjh_options_splitter = self._make_resizable_options_tab(
+            self.bjh_options_pane,
+            bjh_plot_panel,
+        )
 
         dh_plot_panel = QtWidgets.QWidget()
         dh_plot_layout = QtWidgets.QVBoxLayout(dh_plot_panel)
@@ -2016,12 +2152,10 @@ class MainWindow(QtWidgets.QMainWindow):
         dh_plot_layout.addWidget(self.dh_plot, 1)
         self.dh_options_panel = self._make_dh_options_panel()
         self.dh_options_pane = CollapsibleOptionsPane("DH 参数", self.dh_options_panel)
-        self.dh_tab = QtWidgets.QWidget()
-        dh_tab_layout = QtWidgets.QHBoxLayout(self.dh_tab)
-        dh_tab_layout.setContentsMargins(0, 0, 0, 0)
-        dh_tab_layout.setSpacing(0)
-        dh_tab_layout.addWidget(self.dh_options_pane)
-        dh_tab_layout.addWidget(dh_plot_panel, 1)
+        self.dh_tab, self.dh_options_splitter = self._make_resizable_options_tab(
+            self.dh_options_pane,
+            dh_plot_panel,
+        )
 
         hk_plot_panel = QtWidgets.QWidget()
         hk_plot_layout = QtWidgets.QVBoxLayout(hk_plot_panel)
@@ -2030,12 +2164,10 @@ class MainWindow(QtWidgets.QMainWindow):
         hk_plot_layout.addWidget(self.hk_plot, 1)
         self.hk_options_panel = self._make_hk_options_panel()
         self.hk_options_pane = CollapsibleOptionsPane("HK 参数", self.hk_options_panel)
-        self.hk_tab = QtWidgets.QWidget()
-        hk_tab_layout = QtWidgets.QHBoxLayout(self.hk_tab)
-        hk_tab_layout.setContentsMargins(0, 0, 0, 0)
-        hk_tab_layout.setSpacing(0)
-        hk_tab_layout.addWidget(self.hk_options_pane)
-        hk_tab_layout.addWidget(hk_plot_panel, 1)
+        self.hk_tab, self.hk_options_splitter = self._make_resizable_options_tab(
+            self.hk_options_pane,
+            hk_plot_panel,
+        )
 
         dft_plot_panel = QtWidgets.QWidget()
         dft_plot_layout = QtWidgets.QVBoxLayout(dft_plot_panel)
@@ -2044,12 +2176,10 @@ class MainWindow(QtWidgets.QMainWindow):
         dft_plot_layout.addWidget(self.dft_plot, 1)
         self.dft_options_panel = self._make_dft_options_panel()
         self.dft_options_pane = CollapsibleOptionsPane("DFT 参数", self.dft_options_panel)
-        self.dft_tab = QtWidgets.QWidget()
-        dft_tab_layout = QtWidgets.QHBoxLayout(self.dft_tab)
-        dft_tab_layout.setContentsMargins(0, 0, 0, 0)
-        dft_tab_layout.setSpacing(0)
-        dft_tab_layout.addWidget(self.dft_options_pane)
-        dft_tab_layout.addWidget(dft_plot_panel, 1)
+        self.dft_tab, self.dft_options_splitter = self._make_resizable_options_tab(
+            self.dft_options_pane,
+            dft_plot_panel,
+        )
 
         self.plot_tabs = QtWidgets.QTabWidget()
         self.plot_tabs.addTab(self.bet_tab, "BET")
@@ -2411,6 +2541,69 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         QtGui.QDesktopServices.openUrl(QtCore.QUrl(url))
 
+    def _make_resizable_options_tab(
+        self,
+        options_pane: CollapsibleOptionsPane,
+        plot_panel: QtWidgets.QWidget,
+    ) -> tuple[QtWidgets.QWidget, QtWidgets.QSplitter]:
+        tab = QtWidgets.QWidget()
+        tab_layout = QtWidgets.QHBoxLayout(tab)
+        tab_layout.setContentsMargins(0, 0, 0, 0)
+        tab_layout.setSpacing(0)
+
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        splitter.addWidget(options_pane)
+        splitter.addWidget(plot_panel)
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(7)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([options_pane.expanded_width(), 900])
+        splitter.splitterMoved.connect(
+            lambda _pos, _index, pane=options_pane: self._enforce_options_pane_width(pane)
+        )
+        splitter.setStyleSheet(
+            """
+            QSplitter::handle:horizontal {
+                background: #e5e7eb;
+                margin: 0 2px;
+            }
+            QSplitter::handle:horizontal:hover {
+                background: #93c5fd;
+            }
+            """
+        )
+        tab_layout.addWidget(splitter, 1)
+        return tab, splitter
+
+    @staticmethod
+    def _enforce_options_pane_width(options_pane: CollapsibleOptionsPane) -> None:
+        splitter = options_pane.parentWidget()
+        if not isinstance(splitter, QtWidgets.QSplitter):
+            options_pane.sync_scroll_area_geometry()
+            return
+        index = splitter.indexOf(options_pane)
+        sizes = splitter.sizes()
+        if not (0 <= index < len(sizes)):
+            options_pane.sync_scroll_area_geometry()
+            return
+        max_width = (
+            options_pane.COLLAPSED_WIDTH
+            if getattr(options_pane, "_collapsed", False)
+            else options_pane.expanded_width()
+        )
+        if sizes[index] <= max_width:
+            options_pane.sync_scroll_area_geometry()
+            return
+        excess = sizes[index] - max_width
+        sizes[index] = max_width
+        for other in range(len(sizes)):
+            if other != index:
+                sizes[other] = max(1, sizes[other] + excess)
+                break
+        splitter.setSizes(sizes)
+        options_pane.sync_scroll_area_geometry()
+
     def _make_t_plot_options_panel(self) -> QtWidgets.QWidget:
         panel = QtWidgets.QWidget()
         panel.setFixedWidth(T_PLOT_PANEL_COLLAPSED_WIDTH)
@@ -2431,10 +2624,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.t_plot_formula_expanded = {}
         thickness_methods = [
             ("reference", "参比", True),
-            ("kjs", "Kruk-Jaroniec-Sayari E", True),
+            ("kjs", "Kruk-Jaroniec-Sayari", True),
             ("halsey", "Halsey", True),
-            ("harkins_jura", "Harkins and Jura 厚度", True),
-            ("broekhoff_de_boer", "Broekhoff-De Boer 厚度", True),
+            ("harkins_jura", "Harkins and Jura", True),
+            ("broekhoff_de_boer", "Broekhoff-De Boer", True),
             ("carbon_black_stsa", "碳黑STSA", True),
         ]
         for key, label, enabled in thickness_methods:
@@ -2507,10 +2700,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.bjh_formula_expanded = {}
         thickness_methods = [
             ("reference", "参比", True),
-            ("kjs", "Kruk-Jaroniec-Sayari E", True),
+            ("kjs", "Kruk-Jaroniec-Sayari", True),
             ("halsey", "Halsey", True),
-            ("harkins_jura", "Harkins and Jura 厚度", True),
-            ("broekhoff_de_boer", "Broekhoff-De Boer 厚度", True),
+            ("harkins_jura", "Harkins and Jura", True),
+            ("broekhoff_de_boer", "Broekhoff-De Boer", True),
             ("carbon_black_stsa", "碳黑STSA", True),
         ]
         for key, label, enabled in thickness_methods:
@@ -2521,8 +2714,8 @@ class MainWindow(QtWidgets.QMainWindow):
         correction_layout.setContentsMargins(8, 8, 8, 8)
         correction_layout.setSpacing(6)
         self.bjh_standard_radio = QtWidgets.QRadioButton("标准的")
-        self.bjh_kjs_correction_radio = QtWidgets.QRadioButton("Kruk-Jaroniec-Sayari E")
-        self.bjh_faas_correction_radio = QtWidgets.QRadioButton("Faas 校正")
+        self.bjh_kjs_correction_radio = QtWidgets.QRadioButton("Kruk-Jaroniec-Sayari")
+        self.bjh_faas_correction_radio = QtWidgets.QRadioButton("Faas")
         self.bjh_standard_radio.setChecked(True)
         for radio in (self.bjh_standard_radio, self.bjh_kjs_correction_radio, self.bjh_faas_correction_radio):
             radio.toggled.connect(self._on_bjh_option_changed)
@@ -2608,10 +2801,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.dh_formula_expanded = {}
         thickness_methods = [
             ("reference", "参比", True),
-            ("kjs", "Kruk-Jaroniec-Sayari E", True),
+            ("kjs", "Kruk-Jaroniec-Sayari", True),
             ("halsey", "Halsey", True),
-            ("harkins_jura", "Harkins and Jura 厚度", True),
-            ("broekhoff_de_boer", "Broekhoff-De Boer 厚度", True),
+            ("harkins_jura", "Harkins and Jura", True),
+            ("broekhoff_de_boer", "Broekhoff-De Boer", True),
             ("carbon_black_stsa", "碳黑STSA", True),
         ]
         for key, label, enabled in thickness_methods:
@@ -4990,6 +5183,71 @@ class MainWindow(QtWidgets.QMainWindow):
             pass
         self.statusBar().showMessage(f"已切换到样品：{_display_file_name(self.results[int(row)])}", 2200)
 
+    def _sample_hover_plots(self) -> tuple[object, ...]:
+        return (
+            self.isotherm_plot,
+            self.bet_plot,
+            self.langmuir_plot,
+            self.t_plot,
+            self.pore_plot,
+            self.dh_plot,
+            self.hk_plot,
+            self.dft_plot,
+        )
+
+    def _on_sample_table_row_hovered(self, row: int) -> None:
+        sample_index = int(row) if 0 <= int(row) < len(self.results) else None
+        self._set_hovered_sample_row(sample_index)
+        set_sample_curve_hover_plots(sample_index, *self._sample_hover_plots())
+
+    def _set_hovered_sample_row(self, row: int | None) -> None:
+        target = int(row) if row is not None and 0 <= int(row) < len(self.results) else -1
+        if target == self._hovered_sample_row:
+            return
+        previous = self._hovered_sample_row
+        self._hovered_sample_row = target
+        self._apply_sample_row_hover(previous, False)
+        self._apply_sample_row_hover(target, True)
+
+    def _apply_sample_row_hover(self, row: int, hovered: bool) -> None:
+        if row < 0 or row >= self.sample_table.rowCount():
+            return
+        was_updating = self._updating_table
+        self._updating_table = True
+        self.sample_table.blockSignals(True)
+        try:
+            for column in range(self.sample_table.columnCount()):
+                if column == VISIBLE_COLUMN:
+                    continue
+                item = self.sample_table.item(row, column)
+                if item is None:
+                    continue
+                base_font = item.data(QtCore.Qt.UserRole + 301)
+                base_foreground = item.data(QtCore.Qt.UserRole + 302)
+                if hovered:
+                    if not isinstance(base_font, QtGui.QFont):
+                        item.setData(QtCore.Qt.UserRole + 301, QtGui.QFont(item.font()))
+                    if not isinstance(base_foreground, QtGui.QBrush):
+                        item.setData(QtCore.Qt.UserRole + 302, QtGui.QBrush(item.foreground()))
+                    font = QtGui.QFont(item.font())
+                    font.setBold(True)
+                    item.setFont(font)
+                    item.setForeground(QtGui.QBrush(QtGui.QColor("#111827")))
+                else:
+                    if isinstance(base_font, QtGui.QFont):
+                        item.setFont(QtGui.QFont(base_font))
+                        item.setData(QtCore.Qt.UserRole + 301, None)
+                    if isinstance(base_foreground, QtGui.QBrush):
+                        item.setForeground(QtGui.QBrush(base_foreground))
+                        item.setData(QtCore.Qt.UserRole + 302, None)
+        finally:
+            self.sample_table.blockSignals(False)
+            self._updating_table = was_updating
+        self.sample_table.viewport().update()
+        frozen = getattr(self.sample_table, "_frozen_table", None)
+        if frozen is not None:
+            frozen.viewport().update()
+
     def on_sample_header_clicked(self, section: int) -> None:
         if len(self.results) < 2:
             return
@@ -5159,6 +5417,9 @@ class MainWindow(QtWidgets.QMainWindow):
     def refresh_sample_table(self) -> None:
         horizontal_scroll_bar = self.sample_table.horizontalScrollBar()
         horizontal_scroll_value = horizontal_scroll_bar.value()
+        self._hovered_sample_row = -1
+        if hasattr(self.sample_table, "_hovered_row"):
+            self.sample_table._hovered_row = -1
         self._updating_table = True
         try:
             self.sample_table.setRowCount(len(self.results))

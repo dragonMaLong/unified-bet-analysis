@@ -1,16 +1,16 @@
 {
-  "version": "1.0.16",
-  "release_name": "v1.0.16",
-  "release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.0.16",
-  "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.0.16/BET-DragonScience.exe",
+  "version": "1.1.0",
+  "release_name": "v1.1.0",
+  "release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.1.0",
+  "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.0/BET-DragonScience.exe",
   "gitee_source_name": "Gitee",
-  "gitee_release_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/tag/v1.0.16",
-  "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.0.16/BET-DragonScience.exe",
+  "gitee_release_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/tag/v1.1.0",
+  "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.1.0/BET-DragonScience.exe",
   "github_source_name": "GitHub",
-  "github_release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.0.16",
-  "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.0.16/BET-DragonScience.exe",
+  "github_release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.1.0",
+  "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.0/BET-DragonScience.exe",
   "asset_name": "BET-DragonScience.exe",
-  "sha256": "190640d9cd4b6ef56917ac4a562f81bb4c42ab8e580ac1b6d599635cb8dc05e3",
+  "sha256": "bcfe0863c30f117c4e9b90bdc16fbd4b5b77e37e4d7627c8a5b8dd7a0ba51bf7",
   "published_at": "2026-06-27",
-  "release_notes": "1. 优化 t-Plot、BJH、DH、HK、DFT 标签页左侧参数栏，在小屏幕上可滚动并可一键收起。\n2. 去掉参数栏外层的重复标题，让折叠箭头直接贴近原有参数区域，减少纵向占用。\n3. 修复厚度曲线公式展开后参数栏宽度不回收的问题，收起公式后宽度会恢复正常。\n4. 调整图表上下分区的默认比例，让吸附等温线在小屏幕上更容易被拉高查看。"
+  "release_notes": "1. 优化曲线、图例和样品栏的联动高亮：悬停曲线/图例/样品行会同步加粗并突出对应样品。\n2. 支持单击图例条目切换到对应样品；曲线单击继续显示十字坐标，双击曲线切换样品并清除坐标。\n3. 优化 hover 性能，减少多样品场景下鼠标移动导致的卡顿，并修复若干 pyqtgraph 生命周期报错。\n4. 修正 t-Plot、BJH、DH 面板中的厚度曲线和 BJH 校正显示名称。"
 }

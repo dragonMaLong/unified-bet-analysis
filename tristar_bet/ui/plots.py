@@ -388,6 +388,67 @@ def _refresh_legend_layout(plot) -> None:
                 pass
 
 
+def _legend_contains_scene_pos(plot, scene_pos: QtCore.QPointF) -> bool:
+    legend = getattr(plot.plotItem, "legend", None)
+    if legend is None or not legend.isVisible():
+        return False
+    try:
+        return bool(legend.sceneBoundingRect().contains(scene_pos))
+    except Exception:
+        return False
+
+
+def _legend_sample_at_scene_pos(plot, scene_pos: QtCore.QPointF) -> int | None:
+    if not _legend_contains_scene_pos(plot, scene_pos):
+        return None
+    for entry in getattr(plot, "_sample_legend_graphics_entries", []):
+        sample_index = entry.get("sample_index")
+        for key in ("sample_item", "label_item"):
+            item = entry.get(key)
+            if item is None:
+                continue
+            try:
+                if item.sceneBoundingRect().adjusted(-3, -3, 3, 3).contains(scene_pos):
+                    return int(sample_index)
+            except Exception:
+                continue
+    return None
+
+
+def _set_legend_sample_hover(plot, sample_index: int | None) -> None:
+    normalized_index = int(sample_index) if sample_index is not None else None
+    current_index = getattr(plot, "_sample_legend_hover_index", None)
+    if current_index == normalized_index:
+        return
+    setattr(plot, "_sample_legend_hover_index", normalized_index)
+    entries = getattr(plot, "_sample_legend_graphics_entries", [])
+    changed = False
+    for entry in entries:
+        label_item = entry.get("label_item")
+        if label_item is None:
+            continue
+        try:
+            base_font = entry.get("base_font")
+            if not isinstance(base_font, QtGui.QFont):
+                item = getattr(label_item, "item", None)
+                base_font = item.font() if item is not None and hasattr(item, "font") else label_item.font()
+                entry["base_font"] = QtGui.QFont(base_font)
+            font = QtGui.QFont(base_font)
+            target_bold = normalized_index is not None and int(entry.get("sample_index", -1)) == normalized_index
+            font.setBold(target_bold)
+            if hasattr(label_item, "setFont"):
+                label_item.setFont(font)
+                changed = True
+            item = getattr(label_item, "item", None)
+            if item is not None and hasattr(item, "setFont"):
+                item.setFont(font)
+                changed = True
+        except Exception:
+            pass
+    if changed:
+        _refresh_legend_layout(plot)
+
+
 def _legend_is_inside_plot(plot) -> bool:
     rect = _legend_rect_in_plot(plot)
     if rect is None:
@@ -651,6 +712,10 @@ class ClickProjectionCursor:
     def _on_mouse_clicked(self, event) -> None:
         if event.button() != QtCore.Qt.LeftButton:
             return
+        if _legend_contains_scene_pos(self.plot, event.scenePos()):
+            if hasattr(event, "accept"):
+                event.accept()
+            return
         double_click = getattr(event, "double", False)
         is_double_click = double_click() if callable(double_click) else bool(double_click)
         if is_double_click:
@@ -753,20 +818,44 @@ class SampleCurveInteractionController(QtCore.QObject):
         self.hover_timer.setSingleShot(True)
         self.hover_timer.setInterval(self.HOVER_DELAY_MS)
         self.hover_timer.timeout.connect(self._resolve_hover)
-        self.tooltip = pg.TextItem(
+        self.tooltip = self._create_tooltip()
+        self.plot.scene().sigMouseMoved.connect(self._on_mouse_moved)
+        self.plot.scene().sigMouseClicked.connect(self._on_mouse_clicked)
+        self.plot.installEventFilter(self)
+        viewport = getattr(self.plot, "viewport", lambda: None)()
+        if viewport is not None:
+            viewport.installEventFilter(self)
+
+    def _create_tooltip(self):
+        tooltip = pg.TextItem(
             text="",
             color="#111827",
             anchor=(0.0, 1.0),
             fill=pg.mkBrush(255, 255, 255, 238),
             border=pg.mkPen("#2563eb"),
         )
-        self.tooltip.setZValue(20_000)
-        self.tooltip.hide()
-        self.plot.scene().sigMouseMoved.connect(self._on_mouse_moved)
-        self.plot.installEventFilter(self)
-        viewport = getattr(self.plot, "viewport", lambda: None)()
-        if viewport is not None:
-            viewport.installEventFilter(self)
+        tooltip.setZValue(20_000)
+        tooltip.hide()
+        return tooltip
+
+    def _ensure_tooltip(self):
+        try:
+            self.tooltip.isVisible()
+        except RuntimeError:
+            self.tooltip = self._create_tooltip()
+        return self.tooltip
+
+    def _hide_tooltip(self) -> None:
+        try:
+            self.tooltip.hide()
+        except RuntimeError:
+            pass
+
+    def _tooltip_is_visible(self) -> bool:
+        try:
+            return bool(self.tooltip.isVisible())
+        except RuntimeError:
+            return False
 
     def eventFilter(self, obj, event) -> bool:
         if event.type() in {QtCore.QEvent.Leave, QtCore.QEvent.Hide}:
@@ -779,7 +868,8 @@ class SampleCurveInteractionController(QtCore.QObject):
         self.pending_scene_pos = None
         self.hovered_entry = None
         self.hovered_sample_index = None
-        self.tooltip.hide()
+        self._hide_tooltip()
+        _set_legend_sample_hover(self.plot, None)
 
     def register(
         self,
@@ -829,6 +919,16 @@ class SampleCurveInteractionController(QtCore.QObject):
             pass
 
     def _on_mouse_moved(self, scene_pos) -> None:
+        legend_sample_index = _legend_sample_at_scene_pos(self.plot, scene_pos)
+        if legend_sample_index is not None:
+            self.pending_scene_pos = None
+            self.hover_timer.stop()
+            self._hide_tooltip()
+            self.set_hover_sample(int(legend_sample_index), propagate=True)
+            return
+        if _legend_contains_scene_pos(self.plot, scene_pos):
+            self.clear_hover()
+            return
         if not self.view_box.sceneBoundingRect().contains(scene_pos):
             self.clear_hover()
             return
@@ -838,6 +938,25 @@ class SampleCurveInteractionController(QtCore.QObject):
         else:
             self.hover_timer.start()
 
+    def _on_mouse_clicked(self, event) -> None:
+        if event.button() != QtCore.Qt.LeftButton:
+            return
+        scene_pos = event.scenePos()
+        sample_index = _legend_sample_at_scene_pos(self.plot, scene_pos)
+        if sample_index is None:
+            return
+        double_click = getattr(event, "double", False)
+        is_double_click = double_click() if callable(double_click) else bool(double_click)
+        if is_double_click:
+            return
+        if hasattr(event, "accept"):
+            event.accept()
+        cursor = getattr(self.plot, "_click_projection_cursor", None)
+        if cursor is not None and hasattr(cursor, "clear"):
+            cursor.clear()
+        self.set_hover_sample(int(sample_index), propagate=True)
+        self._select_sample_later(int(sample_index))
+
     def _resolve_hover(self) -> None:
         scene_pos = self.pending_scene_pos
         if scene_pos is None or not self.entries:
@@ -846,11 +965,15 @@ class SampleCurveInteractionController(QtCore.QObject):
         if not self.view_box.sceneBoundingRect().contains(scene_pos):
             self.clear_hover()
             return
+        transform_context = self._scene_transform_context()
+        if transform_context is None:
+            self.clear_hover()
+            return
         best_entry = None
         best_distance = math.inf
         best_view_point = None
         for entry in self.entries:
-            distance, view_point = self._distance_to_entry(scene_pos, entry)
+            distance, view_point = self._distance_to_entry(scene_pos, entry, transform_context)
             if distance < best_distance:
                 best_distance = distance
                 best_entry = entry
@@ -860,7 +983,54 @@ class SampleCurveInteractionController(QtCore.QObject):
             return
         self._set_hover(best_entry, best_view_point)
 
-    def _distance_to_entry(self, scene_pos: QtCore.QPointF, entry: dict[str, object]) -> tuple[float, QtCore.QPointF | None]:
+    def _scene_transform_context(self):
+        try:
+            (x_min, x_max), (y_min, y_max) = self.view_box.viewRange()
+            x_min = float(x_min)
+            x_max = float(x_max)
+            y_min = float(y_min)
+            y_max = float(y_max)
+            if not all(np.isfinite(value) for value in (x_min, x_max, y_min, y_max)):
+                return None
+            if abs(x_max - x_min) <= 1e-15 or abs(y_max - y_min) <= 1e-15:
+                return None
+            origin = self.view_box.mapViewToScene(QtCore.QPointF(x_min, y_min))
+            x_ref = self.view_box.mapViewToScene(QtCore.QPointF(x_max, y_min))
+            y_ref = self.view_box.mapViewToScene(QtCore.QPointF(x_min, y_max))
+            x_scale = 1.0 / (x_max - x_min)
+            y_scale = 1.0 / (y_max - y_min)
+            return (
+                x_min,
+                y_min,
+                float(origin.x()),
+                float(origin.y()),
+                (float(x_ref.x()) - float(origin.x())) * x_scale,
+                (float(x_ref.y()) - float(origin.y())) * x_scale,
+                (float(y_ref.x()) - float(origin.x())) * y_scale,
+                (float(y_ref.y()) - float(origin.y())) * y_scale,
+            )
+        except Exception:
+            return None
+
+    @staticmethod
+    def _view_to_scene_arrays(
+        x_view: np.ndarray,
+        y_view: np.ndarray,
+        transform_context,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        x_min, y_min, origin_x, origin_y, x_axis_x, x_axis_y, y_axis_x, y_axis_y = transform_context
+        dx = x_view - x_min
+        dy = y_view - y_min
+        scene_x = origin_x + dx * x_axis_x + dy * y_axis_x
+        scene_y = origin_y + dx * x_axis_y + dy * y_axis_y
+        return scene_x, scene_y
+
+    def _distance_to_entry(
+        self,
+        scene_pos: QtCore.QPointF,
+        entry: dict[str, object],
+        transform_context,
+    ) -> tuple[float, QtCore.QPointF | None]:
         x = np.asarray(entry["x"], dtype=float)
         y = np.asarray(entry["y"], dtype=float)
         x_view, y_view = self._data_to_view_coordinates(x, y)
@@ -869,41 +1039,43 @@ class SampleCurveInteractionController(QtCore.QObject):
             return (math.inf, None)
         x_view = x_view[mask]
         y_view = y_view[mask]
-        scene_points = [
-            self.view_box.mapViewToScene(QtCore.QPointF(float(xi), float(yi)))
-            for xi, yi in zip(x_view, y_view)
-        ]
-        if not scene_points:
+        scene_x, scene_y = self._view_to_scene_arrays(x_view, y_view, transform_context)
+        mask = np.isfinite(scene_x) & np.isfinite(scene_y)
+        if not np.any(mask):
             return (math.inf, None)
+        x_view = x_view[mask]
+        y_view = y_view[mask]
+        scene_x = scene_x[mask]
+        scene_y = scene_y[mask]
         px = float(scene_pos.x())
         py = float(scene_pos.y())
-        if len(scene_points) == 1:
-            point = scene_points[0]
-            return (math.hypot(float(point.x()) - px, float(point.y()) - py), QtCore.QPointF(x_view[0], y_view[0]))
+        if scene_x.size == 1:
+            return (
+                math.hypot(float(scene_x[0]) - px, float(scene_y[0]) - py),
+                QtCore.QPointF(float(x_view[0]), float(y_view[0])),
+            )
 
-        best_distance = math.inf
-        best_view_point = None
-        for idx in range(len(scene_points) - 1):
-            p1 = scene_points[idx]
-            p2 = scene_points[idx + 1]
-            x1, y1 = float(p1.x()), float(p1.y())
-            x2, y2 = float(p2.x()), float(p2.y())
-            dx = x2 - x1
-            dy = y2 - y1
-            denom = dx * dx + dy * dy
-            if denom <= 1e-12:
-                t = 0.0
-            else:
-                t = max(0.0, min(1.0, ((px - x1) * dx + (py - y1) * dy) / denom))
-            nearest_x = x1 + t * dx
-            nearest_y = y1 + t * dy
-            distance = math.hypot(nearest_x - px, nearest_y - py)
-            if distance < best_distance:
-                best_distance = distance
-                view_x = float(x_view[idx]) + t * (float(x_view[idx + 1]) - float(x_view[idx]))
-                view_y = float(y_view[idx]) + t * (float(y_view[idx + 1]) - float(y_view[idx]))
-                best_view_point = QtCore.QPointF(view_x, view_y)
-        return (best_distance, best_view_point)
+        x1 = scene_x[:-1]
+        y1 = scene_y[:-1]
+        x2 = scene_x[1:]
+        y2 = scene_y[1:]
+        dx = x2 - x1
+        dy = y2 - y1
+        denom = dx * dx + dy * dy
+        with np.errstate(divide="ignore", invalid="ignore"):
+            t = ((px - x1) * dx + (py - y1) * dy) / denom
+        t = np.where(denom > 1e-12, np.clip(t, 0.0, 1.0), 0.0)
+        nearest_x = x1 + t * dx
+        nearest_y = y1 + t * dy
+        distances_sq = (nearest_x - px) ** 2 + (nearest_y - py) ** 2
+        if distances_sq.size == 0 or not np.any(np.isfinite(distances_sq)):
+            return (math.inf, None)
+        idx = int(np.nanargmin(distances_sq))
+        distance = math.sqrt(float(distances_sq[idx]))
+        segment_t = float(t[idx])
+        view_x = float(x_view[idx]) + segment_t * (float(x_view[idx + 1]) - float(x_view[idx]))
+        view_y = float(y_view[idx]) + segment_t * (float(y_view[idx + 1]) - float(y_view[idx]))
+        return (distance, QtCore.QPointF(view_x, view_y))
 
     def _data_to_view_coordinates(self, x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         x_view = np.asarray(x, dtype=float).copy()
@@ -937,18 +1109,34 @@ class SampleCurveInteractionController(QtCore.QObject):
                 continue
             self._highlight_entry_item(highlighted)
         self._move_tooltip(entry, view_point)
-        _refresh_legend_layout(self.plot)
+        _set_legend_sample_hover(self.plot, sample_index)
         self._propagate_hover(sample_index)
+        self._notify_hover(sample_index)
 
     def set_linked_hover(self, sample_index: int | None) -> None:
         if sample_index is None:
             self.clear_hover(propagate=False)
             return
+        self.set_hover_sample(int(sample_index), propagate=False)
+
+    def set_hover_sample(self, sample_index: int | None, *, propagate: bool = True) -> None:
+        if sample_index is None:
+            self.clear_hover(propagate=propagate)
+            return
+        sample_index = int(sample_index)
+        if self.hovered_sample_index == sample_index:
+            return
         for entry in self.entries:
-            if int(entry.get("sample_index", -1)) == int(sample_index):
+            if int(entry.get("sample_index", -1)) == sample_index:
                 self._set_linked_entry_hover(entry)
+                if propagate:
+                    self._propagate_hover(sample_index)
+                    self._notify_hover(sample_index)
                 return
         self.clear_hover(propagate=False)
+        if propagate:
+            self._propagate_hover(None)
+            self._notify_hover(None)
 
     def _set_linked_entry_hover(self, entry: dict[str, object]) -> None:
         sample_index = int(entry.get("sample_index", -1))
@@ -968,8 +1156,8 @@ class SampleCurveInteractionController(QtCore.QObject):
         for highlighted in self.entries:
             if int(highlighted.get("sample_index", -1)) == sample_index:
                 self._highlight_entry_item(highlighted)
-        self.tooltip.hide()
-        _refresh_legend_layout(self.plot)
+        self._hide_tooltip()
+        _set_legend_sample_hover(self.plot, sample_index)
 
     def _highlight_entry_item(self, entry: dict[str, object]) -> None:
         item = entry.get("item")
@@ -999,6 +1187,12 @@ class SampleCurveInteractionController(QtCore.QObject):
         for peer_plot in getattr(self.plot, "_linked_sample_curve_hover_plots", []):
             if peer_plot is self.plot:
                 continue
+            if sample_index is not None:
+                try:
+                    if not peer_plot.isVisible():
+                        continue
+                except Exception:
+                    pass
             controller = getattr(peer_plot, "_sample_curve_interaction_controller", None)
             if controller is None:
                 continue
@@ -1007,15 +1201,32 @@ class SampleCurveInteractionController(QtCore.QObject):
             except Exception:
                 pass
 
+    def _notify_hover(self, sample_index: int | None) -> None:
+        callback = getattr(self.plot, "_sample_curve_hovered_callback", None)
+        if callable(callback):
+            try:
+                callback(sample_index)
+            except Exception:
+                pass
+
     def clear_hover(self, *, propagate: bool = True) -> None:
         self.hover_timer.stop()
         self.pending_scene_pos = None
+        if (
+            self.hovered_entry is None
+            and self.hovered_sample_index is None
+            and getattr(self.plot, "_sample_legend_hover_index", None) is None
+            and not self._tooltip_is_visible()
+        ):
+            return
         self._restore_all()
         self.hovered_entry = None
         self.hovered_sample_index = None
-        self.tooltip.hide()
+        self._hide_tooltip()
+        _set_legend_sample_hover(self.plot, None)
         if propagate:
             self._propagate_hover(None)
+            self._notify_hover(None)
 
     def _restore_all(self) -> None:
         for entry in self.entries:
@@ -1041,12 +1252,13 @@ class SampleCurveInteractionController(QtCore.QObject):
     def _move_tooltip(self, entry: dict[str, object], view_point: QtCore.QPointF | None) -> None:
         if view_point is None:
             return
+        tooltip = self._ensure_tooltip()
         added_items = getattr(self.view_box, "addedItems", [])
-        if self.tooltip not in added_items:
-            self.view_box.addItem(self.tooltip, ignoreBounds=True)
-        self.tooltip.setText(str(entry.get("label", "")))
-        self.tooltip.setPos(float(view_point.x()), float(view_point.y()))
-        self.tooltip.show()
+        if tooltip not in added_items:
+            self.view_box.addItem(tooltip, ignoreBounds=True)
+        tooltip.setText(str(entry.get("label", "")))
+        tooltip.setPos(float(view_point.x()), float(view_point.y()))
+        tooltip.show()
 
     def _on_curve_clicked(self, sample_index: int, event) -> None:
         if event.button() != QtCore.Qt.LeftButton:
@@ -1059,12 +1271,22 @@ class SampleCurveInteractionController(QtCore.QObject):
                 cursor.clear()
             if hasattr(event, "accept"):
                 event.accept()
-            callback = getattr(self.plot, "_sample_curve_selected_callback", None)
-            if callable(callback):
-                callback(int(sample_index))
+            self._select_sample_later(int(sample_index))
             return
         if cursor is not None and hasattr(cursor, "set_scene_position"):
             cursor.set_scene_position(event.scenePos())
+
+    def _select_sample_later(self, sample_index: int) -> None:
+        callback = getattr(self.plot, "_sample_curve_selected_callback", None)
+        if not callable(callback):
+            return
+        # Defer redraw-heavy sample switching until pyqtgraph finishes
+        # dispatching the current click event. Otherwise the scene can still
+        # hold deleted ScatterPlotItem references during release.
+        QtCore.QTimer.singleShot(
+            0,
+            lambda index=int(sample_index), selected_callback=callback: selected_callback(index),
+        )
 
 
 def _sample_curve_controller(plot: pg.PlotWidget) -> SampleCurveInteractionController:
@@ -1092,6 +1314,24 @@ def link_sample_curve_hover_plots(*plots: pg.PlotWidget) -> None:
             unique_plots.append(plot)
     for plot in unique_plots:
         setattr(plot, "_linked_sample_curve_hover_plots", [peer for peer in unique_plots if peer is not plot])
+
+
+def set_sample_curve_hover_plots(sample_index: int | None, *plots: pg.PlotWidget) -> None:
+    for plot in plots:
+        if sample_index is not None:
+            try:
+                if not plot.isVisible():
+                    continue
+            except Exception:
+                pass
+        controller = getattr(plot, "_sample_curve_interaction_controller", None)
+        if controller is None:
+            _set_legend_sample_hover(plot, sample_index)
+            continue
+        try:
+            controller.set_linked_hover(sample_index)
+        except Exception:
+            pass
 
 
 def _copy_pen_option(value) -> QtGui.QPen | None:
@@ -2835,6 +3075,8 @@ def _analysis_color(colors: list[str], index: int, active_index: int) -> str:
 def _clear_manual_legend_entries(plot: pg.PlotWidget) -> None:
     _reset_sample_curve_interactions(plot)
     setattr(plot, "_manual_sample_legend_entries", [])
+    setattr(plot, "_sample_legend_graphics_entries", [])
+    setattr(plot, "_sample_legend_hover_index", None)
     legend = getattr(plot.plotItem, "legend", None)
     if legend is not None:
         legend.clear()
@@ -2855,8 +3097,34 @@ def _set_sample_legend_entries(plot: pg.PlotWidget, entries) -> None:
     if legend is None:
         return
     legend.clear()
-    for _index, item, name in sorted(entries, key=lambda entry: entry[0]):
+    sorted_entries = sorted(entries, key=lambda entry: entry[0])
+    for _index, item, name in sorted_entries:
         legend.addItem(item, name)
+    graphics_entries = []
+    for source_entry, legend_entry in zip(sorted_entries, list(getattr(legend, "items", []))):
+        try:
+            index, item, name = source_entry
+            sample_item, label_item = legend_entry
+            label_graphics_item = getattr(label_item, "item", None)
+            base_font = (
+                label_graphics_item.font()
+                if label_graphics_item is not None and hasattr(label_graphics_item, "font")
+                else label_item.font()
+            )
+            graphics_entries.append(
+                {
+                    "sample_index": int(index),
+                    "curve_item": item,
+                    "name": str(name),
+                    "sample_item": sample_item,
+                    "label_item": label_item,
+                    "base_font": QtGui.QFont(base_font),
+                }
+            )
+        except Exception:
+            continue
+    setattr(plot, "_sample_legend_graphics_entries", graphics_entries)
+    setattr(plot, "_sample_legend_hover_index", None)
     _apply_default_legend_position(plot)
     _sync_plot_legend_visibility(plot)
 
