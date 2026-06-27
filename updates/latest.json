@@ -1,17 +1,16 @@
 {
-  "version": "1.0.15",
-  "release_name": "v1.0.15",
-  "release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.0.15",
-  "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.0.15/BET-DragonScience.exe",
+  "version": "1.0.16",
+  "release_name": "v1.0.16",
+  "release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.0.16",
+  "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.0.16/BET-DragonScience.exe",
   "gitee_source_name": "Gitee",
-  "gitee_release_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/tag/v1.0.15",
-  "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.0.15/BET-DragonScience.exe",
+  "gitee_release_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/tag/v1.0.16",
+  "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.0.16/BET-DragonScience.exe",
   "github_source_name": "GitHub",
-  "github_release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.0.15",
-  "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.0.15/BET-DragonScience.exe",
+  "github_release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.0.16",
+  "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.0.16/BET-DragonScience.exe",
   "asset_name": "BET-DragonScience.exe",
-  "sha256": "ecba8ac0b9dd509e6d61cd2570c6d28d67ae9f7e0c74f0f0403c35d5c5f2d9d0",
-  "published_at": "2026-06-26",
-  "release_notes": "1. 新增启动后静默检查更新，有新版本时在“软件更新”左侧显示蓝色下载提示图标。\n2. 优化更新弹窗，直接展示本次更新内容，来源显示为 DragonScience。\n3. 优化多样品曲线 hover 联动，等温线与 BET/Langmuir/t-plot/BJH/DH/HK/DFT 曲线可同步高亮。\n4. 调整等温线蓝框选区显示逻辑，非当前样品不再被整体淡化，蓝框内用实心点提示选区。\n5. HK 默认等温线选区改为相对压力 0-0.05。"
+  "sha256": "190640d9cd4b6ef56917ac4a562f81bb4c42ab8e580ac1b6d599635cb8dc05e3",
+  "published_at": "2026-06-27",
+  "release_notes": "1. 优化 t-Plot、BJH、DH、HK、DFT 标签页左侧参数栏，在小屏幕上可滚动并可一键收起。\n2. 去掉参数栏外层的重复标题，让折叠箭头直接贴近原有参数区域，减少纵向占用。\n3. 修复厚度曲线公式展开后参数栏宽度不回收的问题，收起公式后宽度会恢复正常。\n4. 调整图表上下分区的默认比例，让吸附等温线在小屏幕上更容易被拉高查看。"
 }
-

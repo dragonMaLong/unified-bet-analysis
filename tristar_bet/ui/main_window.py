@@ -193,6 +193,95 @@ class SelectAllCheckBox(QtWidgets.QCheckBox):
             self.setCheckState(QtCore.Qt.Checked)
 
 
+class CollapsibleOptionsPane(QtWidgets.QFrame):
+    COLLAPSED_WIDTH = 38
+
+    def __init__(self, title: str, content: QtWidgets.QWidget, parent=None) -> None:
+        super().__init__(parent)
+        self.content = content
+        self._collapsed = False
+
+        self.setObjectName("CollapsibleOptionsPane")
+        self.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.setMinimumHeight(0)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Expanding)
+
+        self.toggle_button = QtWidgets.QToolButton(self)
+        self.toggle_button.setArrowType(QtCore.Qt.LeftArrow)
+        self.toggle_button.setAutoRaise(True)
+        self.toggle_button.setFixedSize(24, 24)
+        self.toggle_button.setCursor(QtCore.Qt.PointingHandCursor)
+        self.toggle_button.setToolTip("隐藏参数栏")
+        self.toggle_button.clicked.connect(self.toggle_collapsed)
+
+        self.scroll_area = QtWidgets.QScrollArea()
+        self.scroll_area.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.scroll_area.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        self.scroll_area.setMinimumHeight(0)
+        self.scroll_area.setWidget(content)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(self.scroll_area, 1)
+
+        content.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Preferred)
+        setattr(content, "_options_pane", self)
+        self.sync_width()
+        self.toggle_button.raise_()
+
+    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._position_toggle_button()
+
+    def showEvent(self, event: QtGui.QShowEvent) -> None:
+        super().showEvent(event)
+        self._position_toggle_button()
+
+    def sync_width(self) -> None:
+        if self._collapsed:
+            self.setFixedWidth(self.COLLAPSED_WIDTH)
+            self._position_toggle_button()
+            return
+        min_width = int(self.content.minimumWidth() or 0)
+        max_width = int(self.content.maximumWidth() or 0)
+        if min_width > 0 and max_width == min_width:
+            content_width = min_width
+        else:
+            content_width = max(
+                int(self.content.sizeHint().width() or 0),
+                min_width,
+            )
+        if content_width <= 0:
+            content_width = 360
+        scrollbar_width = self.scroll_area.verticalScrollBar().sizeHint().width()
+        self.setFixedWidth(content_width + scrollbar_width + 6)
+        self._position_toggle_button()
+
+    def toggle_collapsed(self) -> None:
+        self.set_collapsed(not self._collapsed)
+
+    def set_collapsed(self, collapsed: bool) -> None:
+        self._collapsed = bool(collapsed)
+        self.scroll_area.setVisible(not self._collapsed)
+        self.toggle_button.setArrowType(QtCore.Qt.RightArrow if self._collapsed else QtCore.Qt.LeftArrow)
+        self.toggle_button.setToolTip("显示参数栏" if self._collapsed else "隐藏参数栏")
+        if self._collapsed:
+            self.setFixedWidth(self.COLLAPSED_WIDTH)
+        else:
+            self.sync_width()
+        self._position_toggle_button()
+
+    def _position_toggle_button(self) -> None:
+        x = max(4, self.width() - self.toggle_button.width() - 6)
+        if self._collapsed:
+            x = max(0, (self.COLLAPSED_WIDTH - self.toggle_button.width()) // 2)
+        self.toggle_button.move(x, 6)
+        self.toggle_button.raise_()
+
+
 class SampleTableWidget(QtWidgets.QTableWidget):
     rowMoveRequested = Signal(int, int)
     smpFilesDropped = Signal(list)
@@ -1898,11 +1987,12 @@ class MainWindow(QtWidgets.QMainWindow):
         t_plot_plot_layout.setSpacing(0)
         t_plot_plot_layout.addWidget(self.t_plot, 1)
         self.t_plot_options_panel = self._make_t_plot_options_panel()
+        self.t_plot_options_pane = CollapsibleOptionsPane("t-Plot 参数", self.t_plot_options_panel)
         self.t_plot_tab = QtWidgets.QWidget()
         t_plot_tab_layout = QtWidgets.QHBoxLayout(self.t_plot_tab)
         t_plot_tab_layout.setContentsMargins(0, 0, 0, 0)
         t_plot_tab_layout.setSpacing(0)
-        t_plot_tab_layout.addWidget(self.t_plot_options_panel)
+        t_plot_tab_layout.addWidget(self.t_plot_options_pane)
         t_plot_tab_layout.addWidget(t_plot_plot_panel, 1)
 
         bjh_plot_panel = QtWidgets.QWidget()
@@ -1911,11 +2001,12 @@ class MainWindow(QtWidgets.QMainWindow):
         bjh_plot_layout.setSpacing(0)
         bjh_plot_layout.addWidget(self.pore_plot, 1)
         self.bjh_options_panel = self._make_bjh_options_panel()
+        self.bjh_options_pane = CollapsibleOptionsPane("BJH 参数", self.bjh_options_panel)
         self.bjh_tab = QtWidgets.QWidget()
         bjh_tab_layout = QtWidgets.QHBoxLayout(self.bjh_tab)
         bjh_tab_layout.setContentsMargins(0, 0, 0, 0)
         bjh_tab_layout.setSpacing(0)
-        bjh_tab_layout.addWidget(self.bjh_options_panel)
+        bjh_tab_layout.addWidget(self.bjh_options_pane)
         bjh_tab_layout.addWidget(bjh_plot_panel, 1)
 
         dh_plot_panel = QtWidgets.QWidget()
@@ -1924,11 +2015,12 @@ class MainWindow(QtWidgets.QMainWindow):
         dh_plot_layout.setSpacing(0)
         dh_plot_layout.addWidget(self.dh_plot, 1)
         self.dh_options_panel = self._make_dh_options_panel()
+        self.dh_options_pane = CollapsibleOptionsPane("DH 参数", self.dh_options_panel)
         self.dh_tab = QtWidgets.QWidget()
         dh_tab_layout = QtWidgets.QHBoxLayout(self.dh_tab)
         dh_tab_layout.setContentsMargins(0, 0, 0, 0)
         dh_tab_layout.setSpacing(0)
-        dh_tab_layout.addWidget(self.dh_options_panel)
+        dh_tab_layout.addWidget(self.dh_options_pane)
         dh_tab_layout.addWidget(dh_plot_panel, 1)
 
         hk_plot_panel = QtWidgets.QWidget()
@@ -1937,11 +2029,12 @@ class MainWindow(QtWidgets.QMainWindow):
         hk_plot_layout.setSpacing(0)
         hk_plot_layout.addWidget(self.hk_plot, 1)
         self.hk_options_panel = self._make_hk_options_panel()
+        self.hk_options_pane = CollapsibleOptionsPane("HK 参数", self.hk_options_panel)
         self.hk_tab = QtWidgets.QWidget()
         hk_tab_layout = QtWidgets.QHBoxLayout(self.hk_tab)
         hk_tab_layout.setContentsMargins(0, 0, 0, 0)
         hk_tab_layout.setSpacing(0)
-        hk_tab_layout.addWidget(self.hk_options_panel)
+        hk_tab_layout.addWidget(self.hk_options_pane)
         hk_tab_layout.addWidget(hk_plot_panel, 1)
 
         dft_plot_panel = QtWidgets.QWidget()
@@ -1950,11 +2043,12 @@ class MainWindow(QtWidgets.QMainWindow):
         dft_plot_layout.setSpacing(0)
         dft_plot_layout.addWidget(self.dft_plot, 1)
         self.dft_options_panel = self._make_dft_options_panel()
+        self.dft_options_pane = CollapsibleOptionsPane("DFT 参数", self.dft_options_panel)
         self.dft_tab = QtWidgets.QWidget()
         dft_tab_layout = QtWidgets.QHBoxLayout(self.dft_tab)
         dft_tab_layout.setContentsMargins(0, 0, 0, 0)
         dft_tab_layout.setSpacing(0)
-        dft_tab_layout.addWidget(self.dft_options_panel)
+        dft_tab_layout.addWidget(self.dft_options_pane)
         dft_tab_layout.addWidget(dft_plot_panel, 1)
 
         self.plot_tabs = QtWidgets.QTabWidget()
@@ -2050,9 +2144,9 @@ class MainWindow(QtWidgets.QMainWindow):
         right_splitter.addWidget(bottom_plot_panel)
         right_splitter.setChildrenCollapsible(False)
         right_splitter.setHandleWidth(8)
-        right_splitter.setStretchFactor(0, 3)
-        right_splitter.setStretchFactor(1, 2)
-        right_splitter.setSizes([480, 300])
+        right_splitter.setStretchFactor(0, 11)
+        right_splitter.setStretchFactor(1, 9)
+        right_splitter.setSizes([430, 350])
         right_splitter.setStyleSheet(
             """
             QSplitter::handle:vertical {
@@ -3384,6 +3478,12 @@ class MainWindow(QtWidgets.QMainWindow):
         spin.setMaximumWidth(width)
         return spin
 
+    @staticmethod
+    def _sync_options_pane_width(panel: QtWidgets.QWidget | None) -> None:
+        pane = getattr(panel, "_options_pane", None)
+        if pane is not None and hasattr(pane, "sync_width"):
+            pane.sync_width()
+
     def _toggle_t_plot_formula(self, key: str) -> None:
         widget = self.t_plot_formula_widgets.get(key)
         button = self.t_plot_formula_buttons.get(key)
@@ -3401,6 +3501,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         expanded = any(self.t_plot_formula_expanded.values())
         panel.setFixedWidth(T_PLOT_PANEL_EXPANDED_WIDTH if expanded else T_PLOT_PANEL_COLLAPSED_WIDTH)
+        self._sync_options_pane_width(panel)
 
     def _toggle_bjh_formula(self, key: str) -> None:
         widget = self.bjh_formula_widgets.get(key)
@@ -3419,6 +3520,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         expanded = any(self.bjh_formula_expanded.values())
         panel.setFixedWidth(BJH_PANEL_EXPANDED_WIDTH if expanded else BJH_PANEL_COLLAPSED_WIDTH)
+        self._sync_options_pane_width(panel)
 
     def _toggle_dh_formula(self, key: str) -> None:
         widget = self.dh_formula_widgets.get(key)
@@ -3437,6 +3539,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         expanded = any(self.dh_formula_expanded.values())
         panel.setFixedWidth(BJH_PANEL_EXPANDED_WIDTH if expanded else BJH_PANEL_COLLAPSED_WIDTH)
+        self._sync_options_pane_width(panel)
 
     def _thickness_method_for_context(self, context: str) -> str:
         if context == "bjh":
