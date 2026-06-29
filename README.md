@@ -29,7 +29,7 @@
 | MicrotracBEL BELSORP（BELMaster） | BELMaster DAT / Excel 导出 | `DAT`、`XLS`、`XLSX`、`XLSM` | 支持 BELMaster 等温线导入，并进入统一 BET / Langmuir / t-Plot / BJH 分析流程。 |
 | Quantachrome Autosorb iQ | Autosorb iQ / QuadraSorb；QPS、NovaWin `version 11.02` 文本型 Excel 报告已验证 | `QPS`、`XLSX` | 支持 QPS 原始等温线导入；支持 NovaWin 文本型 Excel 报告读取等温线，并在 Broekhoff-De Boer 厚度 + 标准修正下直接采用官方 BJH adsorption/desorption 表。 |
 | 贝士德 BSD-660 | BSD-660MC，软件 `V.9.1.15.0 Date 26.04.28` 已验证 | `XLS`、`XLSX`、`XLSM` | 支持官方 Excel 导出；BET、Langmuir、t-Plot 已按 BSD 报表口径复现，BJH 默认读取官方逐点表，孔容递推仍在反推中。 |
-| 精微高博 JWGB | `Info / Isotherm / BET Surface Area / Langmuir Surface Area / t-Plot / BJH` 多 sheet 官方 Excel 导出已验证 | `XLSX` | 支持官方 Excel 导入并读取等温线；BET、Langmuir、t-Plot 使用官方导出点号反推默认区间，t-Plot 厚度曲线为 Harkins-Jura，BJH 默认反推为 Halsey + standard + 不平滑，官方 BJH 表保存为校验数据。 |
+| 精微高博 | `Info / Isotherm / BET Surface Area / Langmuir Surface Area / t-Plot / BJH` 多 sheet 官方 Excel 导出已验证 | `XLSX` | 支持官方 Excel 导入并读取等温线；BET、Langmuir、t-Plot 使用官方导出点号反推默认区间，t-Plot 厚度曲线为 Harkins-Jura，BJH 默认反推为 Halsey + standard + 不平滑，官方 BJH 表保存为校验数据。 |
 
 不同来源在分析时会自动匹配对应的默认算法，例如 TriStar II 3020 沿用其历史阿伏伽德罗常数、BSD / JWGB t-Plot 以吸附量（STP）而非液体体积作纵轴、ASAP 2460 对存储区间下限做特定修正等。这样默认结果会贴近原软件，而统一重算时又能切换到一致规则。
 
