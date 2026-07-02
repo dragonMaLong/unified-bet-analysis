@@ -1,16 +1,16 @@
 {
-  "version": "1.1.0",
-  "release_name": "v1.1.0",
-  "release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.1.0",
-  "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.0/BET-DragonScience.exe",
+  "version": "1.1.1",
+  "release_name": "v1.1.1",
+  "release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.1.1",
+  "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.1/BET-DragonScience.exe",
   "gitee_source_name": "Gitee",
-  "gitee_release_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/tag/v1.1.0",
-  "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.1.0/BET-DragonScience.exe",
+  "gitee_release_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/tag/v1.1.1",
+  "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.1.1/BET-DragonScience.exe",
   "github_source_name": "GitHub",
-  "github_release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.1.0",
-  "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.0/BET-DragonScience.exe",
+  "github_release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.1.1",
+  "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.1/BET-DragonScience.exe",
   "asset_name": "BET-DragonScience.exe",
-  "sha256": "bcfe0863c30f117c4e9b90bdc16fbd4b5b77e37e4d7627c8a5b8dd7a0ba51bf7",
-  "published_at": "2026-06-27",
-  "release_notes": "1. 优化曲线、图例和样品栏的联动高亮：悬停曲线/图例/样品行会同步加粗并突出对应样品。\n2. 支持单击图例条目切换到对应样品；曲线单击继续显示十字坐标，双击曲线切换样品并清除坐标。\n3. 优化 hover 性能，减少多样品场景下鼠标移动导致的卡顿，并修复若干 pyqtgraph 生命周期报错。\n4. 修正 t-Plot、BJH、DH 面板中的厚度曲线和 BJH 校正显示名称。"
+  "sha256": "f563c39a429c91c383556dcfdf2d5dabe7034f04822438646f2fa2a20a9e46d4",
+  "published_at": "2026-07-02",
+  "release_notes": "1. 样品栏支持 Ctrl 多选和 Shift 连续选择。\n2. 右键删除可一次删除多个已选样品，冻结前两列同样支持多选操作。\n3. 删除后会自动保留当前样品或切换到邻近样品。"
 }
