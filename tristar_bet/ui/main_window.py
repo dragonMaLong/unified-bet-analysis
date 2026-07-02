@@ -430,7 +430,7 @@ class SampleTableWidget(QtWidgets.QTableWidget):
         self._frozen_table.setShowGrid(False)
         self._frozen_table.setAlternatingRowColors(False)
         self._frozen_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
-        self._frozen_table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self._frozen_table.setSelectionMode(self.selectionMode())
         self._frozen_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self._frozen_table.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
         self._frozen_table.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
@@ -525,7 +525,6 @@ class SampleTableWidget(QtWidgets.QTableWidget):
             if event.type() == QtCore.QEvent.ContextMenu:
                 row = self._frozen_table.rowAt(event.pos().y())
                 if row >= 0:
-                    self.selectRow(row)
                     self.customContextMenuRequested.emit(QtCore.QPoint(0, event.pos().y()))
                     return True
             if event.type() == QtCore.QEvent.MouseButtonPress and event.button() == QtCore.Qt.LeftButton:
@@ -572,6 +571,11 @@ class SampleTableWidget(QtWidgets.QTableWidget):
         if hasattr(self, "_frozen_table") and column < self.FROZEN_COLUMN_COUNT:
             self._frozen_table.setColumnWidth(column, width)
             self._update_frozen_geometry()
+
+    def setSelectionMode(self, mode) -> None:
+        super().setSelectionMode(mode)
+        if hasattr(self, "_frozen_table"):
+            self._frozen_table.setSelectionMode(mode)
 
     def setRowHeight(self, row: int, height: int) -> None:
         super().setRowHeight(row, height)
@@ -1969,7 +1973,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sample_table.sync_frozen_row_heights()
         self.sample_table.setShowGrid(False)
         self.sample_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
-        self.sample_table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.sample_table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         self.sample_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.sample_table.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
         self.sample_table.setHorizontalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
@@ -5277,35 +5281,65 @@ class MainWindow(QtWidgets.QMainWindow):
         row = self.sample_table.rowAt(position.y())
         if row < 0 or row >= len(self.results):
             return
-        self.sample_table.selectRow(row)
+        selected_rows = self._selected_sample_rows()
+        if row not in selected_rows:
+            self.sample_table.clearSelection()
+            self.sample_table.selectRow(row)
+            selected_rows = [row]
         menu = QtWidgets.QMenu(self.sample_table)
-        delete_action = menu.addAction("删除")
+        delete_text = f"删除选中的 {len(selected_rows)} 个样品" if len(selected_rows) > 1 else "删除"
+        delete_action = menu.addAction(delete_text)
         global_pos = self.sample_table.viewport().mapToGlobal(position)
         exec_menu = getattr(menu, "exec_", None) or getattr(menu, "exec")
         if exec_menu(global_pos) == delete_action:
-            self.delete_sample_row(row)
+            self.delete_sample_rows(selected_rows)
+
+    def _selected_sample_rows(self) -> list[int]:
+        selection_model = self.sample_table.selectionModel()
+        if selection_model is None:
+            return []
+        return sorted(
+            {
+                int(index.row())
+                for index in selection_model.selectedRows()
+                if 0 <= int(index.row()) < len(self.results)
+            }
+        )
 
     def delete_sample_row(self, row: int) -> None:
-        if row < 0 or row >= len(self.results):
+        self.delete_sample_rows([row])
+
+    def delete_sample_rows(self, rows: list[int]) -> None:
+        rows = sorted({int(row) for row in rows if 0 <= int(row) < len(self.results)})
+        if not rows:
             return
-        deleted = self.results.pop(row)
-        self.visible_results.pop(row)
-        self._discard_sample_settings(deleted)
+        active_result = self.results[self.active_index] if 0 <= self.active_index < len(self.results) else None
+        first_removed_row = rows[0]
+        for row in reversed(rows):
+            deleted = self.results.pop(row)
+            self.visible_results.pop(row)
+            self._discard_sample_settings(deleted)
 
         if not self.results:
             self.active_index = -1
             self._reset_all_fit_regions()
             self._isotherm_region_custom = False
             self.refresh_all()
-            self.statusBar().showMessage("已删除样品", 3000)
+            self.statusBar().showMessage(f"已删除 {len(rows)} 个样品", 3000)
             return
 
-        if row < self.active_index:
-            self.active_index -= 1
-        elif row == self.active_index:
-            self.active_index = min(row, len(self.results) - 1)
+        retained_active_index = -1
+        if active_result is not None:
+            for index, result in enumerate(self.results):
+                if result is active_result:
+                    retained_active_index = index
+                    break
+        if retained_active_index >= 0:
+            self.active_index = retained_active_index
+        else:
+            self.active_index = min(first_removed_row, len(self.results) - 1)
         self.refresh_all()
-        self.statusBar().showMessage("已删除样品", 3000)
+        self.statusBar().showMessage(f"已删除 {len(rows)} 个样品", 3000)
 
     def sort_samples_by_test_time(self, ascending: bool) -> None:
         active = self.active_result()
