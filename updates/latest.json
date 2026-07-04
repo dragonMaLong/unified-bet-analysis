@@ -11,6 +11,22 @@
   "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.1/BET-DragonScience.exe",
   "asset_name": "BET-DragonScience.exe",
   "sha256": "f563c39a429c91c383556dcfdf2d5dabe7034f04822438646f2fa2a20a9e46d4",
+  "platforms": {
+    "windows-x64": {
+      "asset_name": "BET-DragonScience.exe",
+      "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.1/BET-DragonScience.exe",
+      "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.1.1/BET-DragonScience.exe",
+      "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.1/BET-DragonScience.exe",
+      "sha256": "f563c39a429c91c383556dcfdf2d5dabe7034f04822438646f2fa2a20a9e46d4"
+    },
+    "macos-x64": {
+      "asset_name": "BET-DragonScience-macos-x64.dmg",
+      "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.1/BET-DragonScience-macos-x64.dmg",
+      "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.1.1/BET-DragonScience-macos-x64.dmg",
+      "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.1/BET-DragonScience-macos-x64.dmg",
+      "sha256": "5a76e9327f98272bbe762b334c0cdfe47678f1f9295c4ccf37089f105bcd8612"
+    }
+  },
   "published_at": "2026-07-02",
   "release_notes": "1. 样品栏支持 Ctrl 多选和 Shift 连续选择。\n2. 右键删除可一次删除多个已选样品，冻结前两列同样支持多选操作。\n3. 删除后会自动保留当前样品或切换到邻近样品。"
 }
