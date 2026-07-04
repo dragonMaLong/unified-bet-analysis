@@ -25,6 +25,13 @@
       "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.1.1/BET-DragonScience-macos-x64.dmg",
       "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.1/BET-DragonScience-macos-x64.dmg",
       "sha256": "5a76e9327f98272bbe762b334c0cdfe47678f1f9295c4ccf37089f105bcd8612"
+    },
+    "macos-arm64": {
+      "asset_name": "BET-DragonScience-macos-arm64.dmg",
+      "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.1/BET-DragonScience-macos-arm64.dmg",
+      "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.1.1/BET-DragonScience-macos-arm64.dmg",
+      "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.1/BET-DragonScience-macos-arm64.dmg",
+      "sha256": "4f8ec5e3d13b126d97086d07b65fa9cf0238d13467761e2833f5058796e02538"
     }
   },
   "published_at": "2026-07-02",
