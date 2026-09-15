@@ -1,0 +1,22 @@
+name: Sync v1.1.2 Release Asset
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download verified package from Gitee
+        shell: bash
+        run: |
+          curl -fL --retry 8 --retry-all-errors --output BET-DragonScience.exe 'https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.1.2/BET-DragonScience.exe'
+          echo '834246c3d351d227186e892b2b820773b5573789abb15f78f77135bcadbe80b3  BET-DragonScience.exe' | sha256sum --check --strict
+          echo '834246c3d351d227186e892b2b820773b5573789abb15f78f77135bcadbe80b3  BET-DragonScience.exe' > SHA256SUMS.txt
+      - name: Replace GitHub release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload v1.1.2 BET-DragonScience.exe SHA256SUMS.txt --clobber --repo dragonMaLong/unified-bet-analysis
