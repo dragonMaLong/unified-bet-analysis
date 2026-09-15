@@ -1797,6 +1797,17 @@ def dft_pore_distribution(
     if not _valid_number(lambda_value):
         lambda_value = DFT_DEFAULT_REGULARIZATION
     lambda_value = max(0.0, min(lambda_value, 10.0))
+    if model_key == "__no_matching_model__":
+        return DftPoreDistributionResult(
+            "DFT",
+            phase_key,
+            "model_not_available",
+            len(points),
+            regularization=lambda_value,
+            analysis_type=analysis_key,
+            geometry=geometry_key,
+            model=model_key,
+        )
 
     pressure = np.asarray([float(point.relative_pressure) for point in points], dtype=float)
     quantity_stp = np.asarray([float(point.quantity_adsorbed_cm3_g_stp or 0.0) for point in points], dtype=float)
@@ -1817,6 +1828,8 @@ def dft_pore_distribution(
 
     official_kernel = load_dft_model_kernel(model_key)
     if official_kernel is not None:
+        analysis_key = official_kernel.spec.analysis_type
+        geometry_key = official_kernel.spec.geometry
         pore_widths = np.asarray(official_kernel.pore_widths_nm, dtype=float)
         kernel = interpolate_dft_kernel(official_kernel, pressure)
     else:

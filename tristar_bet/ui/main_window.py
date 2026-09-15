@@ -47,7 +47,7 @@ from tristar_bet.analysis import (
     t_plot_analysis_by_thickness,
     thickness_nm,
 )
-from tristar_bet.dft_models import dft_model_options
+from tristar_bet.dft_models import dft_model_options, dft_model_spec
 from tristar_bet.reference_thickness import (
     DEFAULT_REFERENCE_DIR,
     normalize_reference_points,
@@ -855,6 +855,7 @@ DEFAULT_HK_DISPLAY_METRIC = HK_DIFFERENTIAL_LINEAR
 DEFAULT_HK_PORE_VOLUME_RANGE = (0.6, 1.0)
 DEFAULT_DFT_ANALYSIS_TYPE = DFT_DEFAULT_ANALYSIS_TYPE
 DEFAULT_DFT_GEOMETRY = DFT_DEFAULT_GEOMETRY
+DEFAULT_DFT_ADSORPTIVE = "n2"
 DEFAULT_DFT_MODEL = DFT_DEFAULT_MODEL
 DEFAULT_DFT_REGULARIZATION = DFT_DEFAULT_REGULARIZATION
 DEFAULT_DFT_PORE_VOLUME_RANGE = (0.6, 10.0)
@@ -1842,6 +1843,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._syncing_dft_controls = False
         self.dft_analysis_type = DEFAULT_DFT_ANALYSIS_TYPE
         self.dft_geometry = DEFAULT_DFT_GEOMETRY
+        self.dft_adsorptive = DEFAULT_DFT_ADSORPTIVE
         self.dft_model = DEFAULT_DFT_MODEL
         self.dft_regularization = DEFAULT_DFT_REGULARIZATION
         self.dft_regularization_apply_all = False
@@ -2987,23 +2989,36 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.dft_type_combo = QtWidgets.QComboBox()
         self.dft_type_combo.addItem("DFT 孔径", "dft_pore")
-        self.dft_type_combo.addItem("典型", "typical")
-        self.dft_type_combo.currentIndexChanged.connect(self._on_dft_option_changed)
+        self.dft_type_combo.addItem("经典法（Classical）", "typical")
+        self.dft_type_combo.addItem("全部", "all")
+        self.dft_type_combo.currentIndexChanged.connect(self._on_dft_filter_changed)
         method_layout.addRow("类型", self.dft_type_combo)
 
         self.dft_geometry_combo = QtWidgets.QComboBox()
         self.dft_geometry_combo.addItem("狭缝", "slit")
         self.dft_geometry_combo.addItem("圆柱", "cylinder")
-        self.dft_geometry_combo.currentIndexChanged.connect(self._on_dft_option_changed)
+        self.dft_geometry_combo.addItem("全部", "all")
+        self.dft_geometry_combo.currentIndexChanged.connect(self._on_dft_filter_changed)
         method_layout.addRow("结构", self.dft_geometry_combo)
 
+        self.dft_adsorptive_combo = QtWidgets.QComboBox()
+        for label, key in (
+            ("N2", "n2"),
+            ("Ar", "ar"),
+            ("CO2", "co2"),
+            ("O2", "o2"),
+            ("H2", "h2"),
+            ("全部", "all"),
+        ):
+            self.dft_adsorptive_combo.addItem(label, key)
+        self.dft_adsorptive_combo.currentIndexChanged.connect(self._on_dft_filter_changed)
+        method_layout.addRow("气体", self.dft_adsorptive_combo)
+
         self.dft_model_combo = QtWidgets.QComboBox()
-        for key, label in dft_model_options():
-            if key == DEFAULT_DFT_MODEL:
-                self.dft_model_combo.addItem(label, key)
-        if self.dft_model_combo.count() == 0:
-            self.dft_model_combo.addItem("N2 - DFT Model", DEFAULT_DFT_MODEL)
-        self.dft_model_combo.currentIndexChanged.connect(self._on_dft_option_changed)
+        self._populate_dft_model_combo(DEFAULT_DFT_MODEL)
+        self.dft_model_combo.setMaxVisibleItems(24)
+        self.dft_model_combo.view().setMinimumWidth(620)
+        self.dft_model_combo.currentIndexChanged.connect(self._on_dft_model_changed)
         method_layout.addRow("模型", self.dft_model_combo)
 
         regularization_group = QtWidgets.QGroupBox("正则化")
@@ -4706,6 +4721,7 @@ class MainWindow(QtWidgets.QMainWindow):
         return {
             "analysis_type": DEFAULT_DFT_ANALYSIS_TYPE,
             "geometry": DEFAULT_DFT_GEOMETRY,
+            "adsorptive": DEFAULT_DFT_ADSORPTIVE,
             "model": DEFAULT_DFT_MODEL,
             "regularization": DEFAULT_DFT_REGULARIZATION,
         }
@@ -4714,9 +4730,26 @@ class MainWindow(QtWidgets.QMainWindow):
         settings = self._default_dft_settings()
         if result is None:
             return settings
+        settings["adsorptive"] = self._dft_adsorptive_for_result(result)
+        matching_models = dft_model_options(
+            analysis_type=str(settings["analysis_type"]),
+            geometry=str(settings["geometry"]),
+            adsorptive=str(settings["adsorptive"]),
+        )
+        if matching_models:
+            settings["model"] = matching_models[0][0]
         vendor_model = result.method_options.get("vendor_dft_model")
         if vendor_model:
-            settings["model"] = str(vendor_model)
+            vendor_spec = dft_model_spec(str(vendor_model))
+            if vendor_spec is not None:
+                settings.update(
+                    {
+                        "analysis_type": vendor_spec.analysis_type,
+                        "geometry": vendor_spec.geometry,
+                        "adsorptive": vendor_spec.adsorptive,
+                        "model": vendor_spec.key,
+                    }
+                )
         vendor_regularization = result.method_options.get("vendor_dft_regularization")
         if vendor_regularization is not None:
             try:
@@ -4734,11 +4767,14 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _apply_dft_settings(self, settings: dict[str, object]) -> None:
         self.dft_analysis_type = str(settings.get("analysis_type", DEFAULT_DFT_ANALYSIS_TYPE))
-        if self.dft_analysis_type not in {"dft_pore", "typical"}:
+        if self.dft_analysis_type not in {"dft_pore", "typical", "all"}:
             self.dft_analysis_type = DEFAULT_DFT_ANALYSIS_TYPE
         self.dft_geometry = str(settings.get("geometry", DEFAULT_DFT_GEOMETRY))
-        if self.dft_geometry not in {"slit", "cylinder"}:
+        if self.dft_geometry not in {"slit", "cylinder", "all"}:
             self.dft_geometry = DEFAULT_DFT_GEOMETRY
+        self.dft_adsorptive = str(settings.get("adsorptive", DEFAULT_DFT_ADSORPTIVE))
+        if self.dft_adsorptive not in {"n2", "ar", "co2", "o2", "h2", "all"}:
+            self.dft_adsorptive = DEFAULT_DFT_ADSORPTIVE
         self.dft_model = str(settings.get("model", DEFAULT_DFT_MODEL))
         try:
             regularization = float(settings.get("regularization", DEFAULT_DFT_REGULARIZATION))
@@ -4751,10 +4787,69 @@ class MainWindow(QtWidgets.QMainWindow):
     def _sync_dft_controls_from_state(self) -> None:
         self._set_combo_data(getattr(self, "dft_type_combo", None), self.dft_analysis_type)
         self._set_combo_data(getattr(self, "dft_geometry_combo", None), self.dft_geometry)
-        self._set_combo_data(getattr(self, "dft_model_combo", None), self.dft_model)
+        self._set_combo_data(getattr(self, "dft_adsorptive_combo", None), self.dft_adsorptive)
+        self._populate_dft_model_combo(self.dft_model)
         slider = getattr(self, "dft_regularization_slider", None)
         if slider is not None:
             slider.setValue(self.dft_regularization, emit=False)
+
+    def _populate_dft_model_combo(self, preferred_model: str = "") -> None:
+        combo = getattr(self, "dft_model_combo", None)
+        if combo is None:
+            return
+        options = dft_model_options(
+            analysis_type=self.dft_analysis_type,
+            geometry=self.dft_geometry,
+            adsorptive=self.dft_adsorptive,
+        )
+        previous_blocked = combo.blockSignals(True)
+        try:
+            combo.clear()
+            for key, label in options:
+                combo.addItem(label, key)
+                combo.setItemData(combo.count() - 1, label, QtCore.Qt.ToolTipRole)
+            if not options:
+                combo.addItem("没有匹配模型", "__no_matching_model__")
+                combo.setEnabled(False)
+                self.dft_model = "__no_matching_model__"
+                return
+            combo.setEnabled(True)
+            selected_index = next(
+                (index for index, (key, _label) in enumerate(options) if key == preferred_model),
+                0,
+            )
+            combo.setCurrentIndex(selected_index)
+            self.dft_model = str(combo.currentData())
+        finally:
+            combo.blockSignals(previous_blocked)
+
+    @staticmethod
+    def _dft_adsorptive_for_result(result) -> str:
+        properties = getattr(result, "adsorptive_properties", None)
+        run_conditions = getattr(result, "run_conditions", None)
+        candidates = (
+            getattr(run_conditions, "adsorptive_short", ""),
+            getattr(run_conditions, "adsorptive_name", ""),
+            getattr(properties, "mnemonic", ""),
+            getattr(properties, "adsorptive", ""),
+        )
+        aliases = {
+            "n2": "n2",
+            "nitrogen": "n2",
+            "ar": "ar",
+            "argon": "ar",
+            "co2": "co2",
+            "carbondioxide": "co2",
+            "o2": "o2",
+            "oxygen": "o2",
+            "h2": "h2",
+            "hydrogen": "h2",
+        }
+        for value in candidates:
+            normalized = "".join(character for character in str(value).lower() if character.isalnum())
+            if normalized in aliases:
+                return aliases[normalized]
+        return DEFAULT_DFT_ADSORPTIVE
 
     @staticmethod
     def _set_combo_data(combo: QtWidgets.QComboBox | None, value: object) -> None:
@@ -4858,16 +4953,31 @@ class MainWindow(QtWidgets.QMainWindow):
         return {
             "analysis_type": self.dft_analysis_type,
             "geometry": self.dft_geometry,
+            "adsorptive": self.dft_adsorptive,
             "model": self.dft_model,
             "regularization": float(self.dft_regularization),
         }
 
-    def _on_dft_option_changed(self, *_args) -> None:
+    def _on_dft_filter_changed(self, *_args) -> None:
         if self._syncing_dft_controls:
             return
         self.dft_analysis_type = str(self.dft_type_combo.currentData())
         self.dft_geometry = str(self.dft_geometry_combo.currentData())
+        self.dft_adsorptive = str(self.dft_adsorptive_combo.currentData())
+        self._syncing_dft_controls = True
+        try:
+            self._populate_dft_model_combo(self.dft_model)
+        finally:
+            self._syncing_dft_controls = False
+        self._finish_dft_option_change()
+
+    def _on_dft_model_changed(self, *_args) -> None:
+        if self._syncing_dft_controls:
+            return
         self.dft_model = str(self.dft_model_combo.currentData())
+        self._finish_dft_option_change()
+
+    def _finish_dft_option_change(self) -> None:
         self._save_dft_settings_for_active()
         self.refresh_dft_plot()
         if self._is_dft_tab_active():
@@ -8434,7 +8544,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return False
         settings = self._dft_settings_for_result(result)
         defaults = self._dft_default_settings_for_result(result)
-        for key in ("analysis_type", "geometry", "model"):
+        for key in ("analysis_type", "geometry", "adsorptive", "model"):
             if str(settings.get(key)) != str(defaults.get(key)):
                 return True
         if not _float_equal(settings.get("regularization"), defaults.get("regularization")):
