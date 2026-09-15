@@ -12,14 +12,19 @@ class DftModelArchiveTests(unittest.TestCase):
     def test_all_distinct_archive_models_are_exposed_and_loadable(self) -> None:
         options = dft_model_options()
 
-        self.assertEqual(len(options), 48)
-        self.assertEqual(len({key for key, _label in options}), 48)
-        self.assertEqual(len({label for _key, label in options}), 48)
+        self.assertEqual(len(options), 55)
+        self.assertEqual(len({key for key, _label in options}), 55)
+        self.assertEqual(len({label for _key, label in options}), 55)
         self.assertEqual(options[0][0], "n2_dft_model")
         self.assertIn(
             ("n2_nldft_carbon_slit", "N2 @ 77 on Carbon Slit Pores"),
             options,
         )
+        self.assertIn(("het_n2_carbon_slit", "Het N2 carbon slit"), options)
+        self.assertIn(("het_co2_carbon_slit", "Het CO2 carbon slit"), options)
+        keys = {key for key, _label in options}
+        for model_id in ("101", "110", "111", "112", "240"):
+            self.assertIn(f"micromeritics_mod{model_id}", keys)
         self.assertTrue(all("MOD" not in label for _key, label in options))
 
         for key, _label in options:
@@ -56,8 +61,8 @@ class DftModelArchiveTests(unittest.TestCase):
         )
 
         self.assertEqual(len(classical_slit_n2), 3)
-        self.assertEqual(len(all_types_slit_n2), 11)
-        self.assertEqual(len(all_filters), 48)
+        self.assertEqual(len(all_types_slit_n2), 15)
+        self.assertEqual(len(all_filters), 55)
         self.assertEqual(
             {dft_model_spec(key).analysis_type for key, _label in classical_slit_n2},
             {"typical"},
@@ -103,9 +108,9 @@ class DftModelArchiveTests(unittest.TestCase):
             app.processEvents()
 
         try:
-            self.assertEqual(window.dft_model_combo.count(), 8)
+            self.assertEqual(window.dft_model_combo.count(), 12)
             select(window.dft_type_combo, "all")
-            self.assertEqual(window.dft_model_combo.count(), 11)
+            self.assertEqual(window.dft_model_combo.count(), 15)
             select(window.dft_geometry_combo, "cylinder")
             self.assertEqual(window.dft_model_combo.count(), 10)
             select(window.dft_adsorptive_combo, "all")

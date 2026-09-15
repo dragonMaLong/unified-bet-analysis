@@ -43,6 +43,20 @@ DFT_MODEL_SPECS: dict[str, DftModelSpec] = {
         model_id="MOD200",
         file_name="mod200.df3",
     ),
+    "het_n2_carbon_slit": DftModelSpec(
+        key="het_n2_carbon_slit",
+        label="Het N2 carbon slit",
+        model_id="HET_N2_SLIT",
+        file_name="het_n2_slit.df3",
+        adsorptive="n2",
+    ),
+    "het_co2_carbon_slit": DftModelSpec(
+        key="het_co2_carbon_slit",
+        label="Het CO2 carbon slit",
+        model_id="HET_CO2_SLIT",
+        file_name="het_co2_slit.df3",
+        adsorptive="co2",
+    ),
 }
 
 _MODEL_KEY_ALIASES = {
@@ -195,7 +209,13 @@ def _available_model_specs() -> dict[str, DftModelSpec]:
     except (OSError, zipfile.BadZipFile, KeyError):
         pass
 
-    ordered = sorted(specs_by_id.values(), key=lambda spec: int(spec.model_id[3:]))
+    def sort_key(spec: DftModelSpec) -> tuple[int, int, str]:
+        match = re.fullmatch(r"MOD(\d{3})", spec.model_id.upper())
+        if match is not None:
+            return 0, int(match.group(1)), spec.label.casefold()
+        return 1, 0, spec.label.casefold()
+
+    ordered = sorted(specs_by_id.values(), key=sort_key)
     return {spec.key: spec for spec in ordered}
 
 

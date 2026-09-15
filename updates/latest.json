@@ -10,14 +10,14 @@
   "github_release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.1.4",
   "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.4/BET-DragonScience.exe",
   "asset_name": "BET-DragonScience.exe",
-  "sha256": "53dd74c9c517a5062886163ffde3cb17512f974485ab8a6fe9f57a7e8d5d1712",
+  "sha256": "80c6f6d4be0da86ceb96ae55e3150e8e61ad406c49ea5b85645a818c0d3b8dd4",
   "platforms": {
     "windows-x64": {
       "asset_name": "BET-DragonScience.exe",
       "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.4/BET-DragonScience.exe",
       "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.1.4/BET-DragonScience.exe",
       "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.4/BET-DragonScience.exe",
-      "sha256": "53dd74c9c517a5062886163ffde3cb17512f974485ab8a6fe9f57a7e8d5d1712"
+      "sha256": "80c6f6d4be0da86ceb96ae55e3150e8e61ad406c49ea5b85645a818c0d3b8dd4"
     },
     "macos-x64": {
       "asset_name": "BET-DragonScience-macos-x64.dmg",
@@ -35,5 +35,5 @@
     }
   },
   "published_at": "2026-09-15",
-  "release_notes": "1. DFT 模型扩展为 48 个可计算的官方 Micromeritics 核。\n2. 新增类型、结构、气体三级交集筛选，并在每一级提供“全部”选项。\n3. 简化模型名称，去除 MOD 编号。\n4. 修正特殊 DFT 核布局解析，支持大于 1 的压力、非单调轴与重复点。\n5. 根据样品气体自动选择筛选条件，无匹配模型时给出明确提示。"
+  "release_notes": "1. DFT 模型扩展为 55 个可计算的 Micromeritics 核，补充 2D-NLDFT、SD3 及异质表面模型。\n2. 新增类型、结构、气体三级交集筛选，并在每一级提供“全部”选项。\n3. 简化模型名称，去除 MOD 编号。\n4. 修正特殊 DFT 核布局解析，支持大于 1 的压力、非单调轴与重复点。\n5. 根据样品气体自动选择筛选条件，无匹配模型时给出明确提示。"
 }
