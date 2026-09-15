@@ -67,7 +67,8 @@ DFT_REGULARIZATION_VALUES = (
     3.16000,
     10.00000,
 )
-HK_AVOGADRO = 6.02214129e23
+ASAP_2020_AVOGADRO = 6.02214129e23
+HK_AVOGADRO = ASAP_2020_AVOGADRO
 HK_GAS_CONSTANT_ERG_MOL_K = 8.31441e7
 HK_ELECTRON_KINETIC_ENERGY_ERG = 0.8183e-6
 HK_DEFAULT_GEOMETRY = "slit"
@@ -330,8 +331,87 @@ def bet_analysis(
     p_max: float | None = None,
 ) -> FitResult:
     if p_min is None or p_max is None:
+        jwgb_points = _jwgb_raw_bet_points(result)
+        if jwgb_points:
+            pressures = [float(point.relative_pressure) for point in jwgb_points]
+            return _bet_analysis_for_points(result, jwgb_points, min(pressures), max(pressures))
         p_min, p_max = automatic_bet_range(result)
     return _bet_analysis_for_range(result, p_min, p_max)
+
+
+def single_point_bet_analysis(
+    result: TriStarResult,
+    target_pressure: float | None = None,
+) -> FitResult:
+    """Calculate the separately configured single-point BET surface area.
+
+    JWGB text RAW exports retain measured isotherm points but not the already
+    interpolated single-point quantity printed by the report.  Interpolate the
+    adsorption quantity at the nominal target and apply ``Vm = V(1-P/P0)``.
+    """
+    if target_pressure is None:
+        target_pressure = result.method_options.get("jwgb_single_point_bet_pressure")
+    if not _valid_number(target_pressure):
+        return FitResult("Single-point BET", "not_available")
+    target = float(target_pressure)
+    if not 0.0 < target < 1.0:
+        return FitResult("Single-point BET", "not_available", pressure_min=target, pressure_max=target)
+
+    points = sorted(
+        (
+            point
+            for point in adsorption_points(result)
+            if _valid_number(point.relative_pressure)
+            and _valid_number(point.quantity_adsorbed_cm3_g_stp)
+            and float(point.quantity_adsorbed_cm3_g_stp or 0.0) > 0.0
+        ),
+        key=lambda point: float(point.relative_pressure),
+    )
+    if not points:
+        return FitResult("Single-point BET", "not_enough_points", pressure_min=target, pressure_max=target)
+
+    quantity = None
+    source_points: list[IsothermPoint] = []
+    for point in points:
+        pressure = float(point.relative_pressure)
+        if math.isclose(pressure, target, rel_tol=0.0, abs_tol=1e-12):
+            quantity = float(point.quantity_adsorbed_cm3_g_stp or 0.0)
+            source_points = [point]
+            break
+    if quantity is None:
+        for lower, upper in zip(points, points[1:]):
+            lower_pressure = float(lower.relative_pressure)
+            upper_pressure = float(upper.relative_pressure)
+            if lower_pressure < target < upper_pressure:
+                lower_quantity = float(lower.quantity_adsorbed_cm3_g_stp or 0.0)
+                upper_quantity = float(upper.quantity_adsorbed_cm3_g_stp or 0.0)
+                fraction = (target - lower_pressure) / (upper_pressure - lower_pressure)
+                quantity = lower_quantity + fraction * (upper_quantity - lower_quantity)
+                source_points = [lower, upper]
+                break
+    if quantity is None or quantity <= 0.0:
+        return FitResult("Single-point BET", "not_enough_points", pressure_min=target, pressure_max=target)
+
+    monolayer = quantity * (1.0 - target)
+    surface_area = monolayer * surface_area_factor_m2_per_cm3(result)
+    rows = [
+        {
+            "relative_pressure": target,
+            "quantity_adsorbed_cm3_g_stp": quantity,
+            "source_point_min": float(min(point.index for point in source_points)),
+            "source_point_max": float(max(point.index for point in source_points)),
+        }
+    ]
+    return FitResult(
+        "Single-point BET",
+        "ok",
+        1,
+        target,
+        target,
+        monolayer_capacity_cm3_g_stp=monolayer,
+        surface_area_m2_g=surface_area,
+        rows=rows,
+    )
 
 
 def automatic_langmuir_range(result: TriStarResult) -> tuple[float, float]:
@@ -348,6 +428,17 @@ def automatic_langmuir_range(result: TriStarResult) -> tuple[float, float]:
 
 
 def automatic_t_plot_pressure_range(result: TriStarResult) -> tuple[float, float]:
+    if _uses_tristar_plus_v3_defaults(result) and _uses_official_fit_ranges(result):
+        stored_thickness = _stored_t_plot_thickness_range(result)
+        if stored_thickness is not None:
+            method = str(result.method_options.get("vendor_t_plot_thickness_method") or DEFAULT_THICKNESS_METHOD)
+            pressures = []
+            for point in adsorption_points(result):
+                value = thickness_nm(float(point.relative_pressure), method, None)
+                if value is not None and stored_thickness[0] - 1e-12 <= value <= stored_thickness[1] + 1e-12:
+                    pressures.append(float(point.relative_pressure))
+            if len(pressures) >= 2:
+                return min(pressures), max(pressures)
     if _uses_official_fit_ranges(result):
         stored_range = _stored_t_plot_pressure_range(result)
         if stored_range is not None:
@@ -366,7 +457,11 @@ def automatic_t_plot_pressure_range(result: TriStarResult) -> tuple[float, float
 
 def automatic_bet_range(result: TriStarResult) -> tuple[float, float]:
     points = adsorption_points(result)
-    if len(points) < 3:
+    jwgb_points = _jwgb_raw_bet_points(result, points)
+    if jwgb_points:
+        pressures = [float(point.relative_pressure) for point in jwgb_points]
+        return min(pressures), max(pressures)
+    if len(points) < _minimum_bet_fit_points(result):
         return BET_AUTO_FALLBACK_RANGE
     if _uses_official_fit_ranges(result) and _uses_asap_defaults(result):
         stored_range = _stored_bet_range(result)
@@ -558,8 +653,8 @@ def _bet_analysis_for_points(
     p_min: float,
     p_max: float,
 ) -> FitResult:
-    if len(selected) < 3:
-        return FitResult("BET", "not_enough_points", len(selected), p_min, p_max)
+    minimum_points = _minimum_bet_fit_points(result)
+    selected_count_is_insufficient = len(selected) < minimum_points
 
     rows = []
     x_values = []
@@ -581,7 +676,9 @@ def _bet_analysis_for_points(
         x_values.append(x)
         y_values.append(y)
 
-    if len(x_values) < 3:
+    if selected_count_is_insufficient:
+        return FitResult("BET", "not_enough_points", len(selected), p_min, p_max, rows=rows)
+    if len(x_values) < minimum_points:
         return FitResult("BET", "not_enough_valid_points", len(x_values), p_min, p_max, rows=rows)
 
     slope, intercept, r_squared = _linear_fit(x_values, y_values)
@@ -636,7 +733,8 @@ def langmuir_analysis(
     if p_min is None or p_max is None:
         p_min, p_max = automatic_langmuir_range(result)
     selected = _points_in_range(adsorption_points(result), p_min, p_max)
-    if len(selected) < 3:
+    minimum_points = _minimum_fit_points(result)
+    if len(selected) < minimum_points:
         return FitResult("Langmuir", "not_enough_points", len(selected), p_min, p_max)
 
     rows = []
@@ -659,7 +757,7 @@ def langmuir_analysis(
         x_values.append(x)
         y_values.append(y)
 
-    if len(x_values) < 3:
+    if len(x_values) < minimum_points:
         return FitResult("Langmuir", "not_enough_valid_points", len(x_values), p_min, p_max, rows=rows)
 
     slope, intercept, r_squared = _linear_fit(x_values, y_values)
@@ -700,9 +798,18 @@ def t_plot_analysis(
     p_min: float | None = None,
     p_max: float | None = None,
     thickness_params: dict[str, float] | None = None,
-    thickness_method: str = DEFAULT_THICKNESS_METHOD,
+    thickness_method: str | None = None,
 ) -> FitResult:
+    thickness_method = _t_plot_thickness_method(result, thickness_method)
     if p_min is None or p_max is None:
+        if _uses_tristar_plus_v3_defaults(result) and _uses_official_fit_ranges(result):
+            stored_thickness = _stored_t_plot_thickness_range(result)
+            if stored_thickness is not None:
+                return t_plot_analysis_by_thickness(
+                    result, *stored_thickness,
+                    thickness_params=thickness_params,
+                    thickness_method=thickness_method,
+                )
         p_min, p_max = automatic_t_plot_pressure_range(result)
     selected = _points_in_range(adsorption_points(result), p_min, p_max)
     return _t_plot_fit_from_points(result, selected, p_min, p_max, thickness_params, thickness_method)
@@ -715,15 +822,17 @@ def t_plot_analysis_by_thickness(
     p_min: float | None = None,
     p_max: float | None = None,
     thickness_params: dict[str, float] | None = None,
-    thickness_method: str = DEFAULT_THICKNESS_METHOD,
+    thickness_method: str | None = None,
 ) -> FitResult:
+    thickness_method = _t_plot_thickness_method(result, thickness_method)
     pts = adsorption_points(result)
     if p_min is not None and p_max is not None:
         pts = _points_in_range(pts, p_min, p_max)
     selected = []
+    tolerance = 1e-12 if _uses_tristar_plus_v3_defaults(result) else 0.0
     for pt in pts:
         t = thickness_nm(float(pt.relative_pressure), thickness_method, thickness_params)
-        if t is not None and t_min <= t <= t_max:
+        if t is not None and t_min - tolerance <= t <= t_max + tolerance:
             selected.append(pt)
     return _t_plot_fit_from_points(result, selected, t_min, t_max, thickness_params, thickness_method)
 
@@ -736,7 +845,8 @@ def _t_plot_fit_from_points(
     thickness_params: dict[str, float] | None = None,
     thickness_method: str = DEFAULT_THICKNESS_METHOD,
 ) -> FitResult:
-    if len(selected) < 3:
+    minimum_points = _minimum_fit_points(result)
+    if len(selected) < minimum_points:
         return FitResult("t-Plot", "not_enough_points", len(selected), range_min, range_max)
 
     density_factor = density_conversion_factor(result)
@@ -766,7 +876,7 @@ def _t_plot_fit_from_points(
         x_values.append(thickness)
         y_values.append(y_value)
 
-    if len(x_values) < 3:
+    if len(x_values) < minimum_points:
         return FitResult("t-Plot", "not_enough_valid_points", len(x_values), range_min, range_max, rows=rows)
 
     slope, intercept, r_squared = _linear_fit(x_values, y_values)
@@ -779,7 +889,7 @@ def _t_plot_fit_from_points(
             external_surface_area = raw_external_surface_area
         micropore_volume = max(0.0, intercept * density_factor) if _valid_number(intercept) else None
     else:
-        external_surface_area = slope * 1000.0 if slope > 0 else None
+        external_surface_area = slope * 1000.0 if slope > 0 or _uses_tristar_plus_v3_defaults(result) else None
         if _uses_micromeritics_flex_defaults(result):
             micropore_volume = intercept if _valid_number(intercept) else None
         else:
@@ -804,7 +914,7 @@ def analysis_bundle(
         return {
             "BET": bet_analysis(result),
             "Langmuir": langmuir_analysis(result, langmuir_min, langmuir_max),
-            "t-Plot": t_plot_analysis(result, t_plot_min, t_plot_max),
+            "t-Plot": t_plot_analysis(result) if _uses_tristar_plus_v3_defaults(result) else t_plot_analysis(result, t_plot_min, t_plot_max),
         }
     return {
         "BET": bet_analysis(result, p_min, p_max),
@@ -817,7 +927,13 @@ def surface_area_factor_m2_per_cm3(result: TriStarResult) -> float:
     cross_section = DEFAULT_N2_CROSS_SECTION_NM2
     if result.adsorptive_properties and result.adsorptive_properties.molecular_cross_sectional_area_nm2:
         cross_section = float(result.adsorptive_properties.molecular_cross_sectional_area_nm2)
-    avogadro = 6.023e23 if _uses_tristar_3020_defaults(result) else 6.02214076e23
+    if _uses_tristar_3020_defaults(result):
+        avogadro = 6.023e23
+    elif _uses_legacy_asap_2020_defaults(result):
+        # Micromeritics' published ASAP 2020 calculations use this value.
+        avogadro = ASAP_2020_AVOGADRO
+    else:
+        avogadro = 6.02214076e23
     molar_volume_cm3_stp = 22414.0
     return avogadro * cross_section * 1e-18 / molar_volume_cm3_stp
 
@@ -831,7 +947,7 @@ def _uses_tristar_3020_defaults(result: TriStarResult) -> bool:
 def _uses_asap_defaults(result: TriStarResult) -> bool:
     model = str(result.method_options.get("instrument_model", ""))
     software = str(result.method_options.get("instrument_software", ""))
-    return "ASAP 2460" in model or "ASAP 2020 Plus" in model or "ASAP 2460" in software or "ASAP 2020 Plus" in software
+    return "ASAP 2460" in model or "ASAP 2020" in model or "ASAP 2460" in software or "ASAP 2020" in software
 
 
 def _uses_asap_2460_defaults(result: TriStarResult) -> bool:
@@ -840,10 +956,45 @@ def _uses_asap_2460_defaults(result: TriStarResult) -> bool:
     return "ASAP 2460" in model or "ASAP 2460" in software
 
 
+def _uses_legacy_asap_2020_defaults(result: TriStarResult) -> bool:
+    return str(result.method_options.get("format_family", "")) == "ASAP 2020 V4 SMP"
+
+
 def _uses_tristar_ii_plus_defaults(result: TriStarResult) -> bool:
     model = str(result.method_options.get("instrument_model", ""))
     software = str(result.method_options.get("instrument_software", ""))
     return "TriStar II Plus" in model or "MicroActive for TriStar II Plus" in software
+
+
+def _uses_tristar_plus_v3_defaults(result: TriStarResult) -> bool:
+    return result.method_options.get("format_family") == "TriStar II Plus 3.02 SMP"
+
+
+def _minimum_fit_points(result: TriStarResult) -> int:
+    # The 3.02 reports explicitly fit two selected points, including t-Plot
+    # fits after nonpositive adsorption measurements have been excluded.
+    return 2 if _uses_tristar_plus_v3_defaults(result) else 3
+
+
+def _minimum_bet_fit_points(result: TriStarResult) -> int:
+    # Legacy ASAP 2020 V4 may save a report interval containing two points.
+    return 2 if _uses_legacy_asap_2020_defaults(result) else _minimum_fit_points(result)
+
+
+def _t_plot_thickness_method(result: TriStarResult, requested: str | None) -> str:
+    if requested is not None:
+        return requested
+    if _uses_tristar_plus_v3_defaults(result):
+        return str(result.method_options.get("vendor_t_plot_thickness_method") or DEFAULT_THICKNESS_METHOD)
+    return DEFAULT_THICKNESS_METHOD
+
+
+def _stored_t_plot_thickness_range(result: TriStarResult) -> tuple[float, float] | None:
+    lower = result.method_options.get("stored_t_plot_thickness_min_nm")
+    upper = result.method_options.get("stored_t_plot_thickness_max_nm")
+    if _valid_number(lower) and _valid_number(upper) and 0.0 < float(lower) < float(upper):
+        return float(lower), float(upper)
+    return None
 
 
 def _uses_micromeritics_flex_defaults(result: TriStarResult) -> bool:
@@ -891,6 +1042,27 @@ def _uses_jwgb_defaults(result: TriStarResult) -> bool:
         or "JWGB" in software
         or "精微高博" in manufacturer
     )
+
+
+def _jwgb_raw_bet_points(
+    result: TriStarResult,
+    points: Sequence[IsothermPoint] | None = None,
+) -> list[IsothermPoint]:
+    """Return the vendor-selected BET points encoded as MAP rows in text RAW."""
+    if not result.method_options.get("use_official_raw_bet_points"):
+        return []
+    raw_ids = result.method_options.get("jwgb_raw_bet_fit_point_ids")
+    if not isinstance(raw_ids, (list, tuple)):
+        return []
+    point_ids = {
+        int(value)
+        for value in raw_ids
+        if _valid_number(value) and int(value) > 0
+    }
+    if not point_ids:
+        return []
+    source = list(points) if points is not None else adsorption_points(result)
+    return [point for point in source if int(point.index) in point_ids]
 
 
 def _uses_bsd_t_plot_defaults(result: TriStarResult) -> bool:

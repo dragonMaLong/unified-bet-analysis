@@ -25,17 +25,20 @@
 | Micromeritics MicroActive for TriStar II Plus | MicroActive for TriStar II Plus | `SMP`、`XLS`、`XLSX`、`XLSM` | 支持原始 SMP 与官方 Excel 导出；BET 读取官方选点区间，BJH 正在按 MicroActive 标准修正继续逼近。 |
 | Micromeritics 3Flex 3500 | 3Flex 3500 / Flex `6.03` 官方报表、MicroActive 可打开的手动点表 SMP 已验证 | `SMP`、`XLS` | 支持 SMP 内部手动等温线点表，并按 Flex `6.03` 官方 XLS 反推路径做自由空间修正与 BJH adsorption/desorption 标准修正；支持正式 Flex XLS 报表，临时导出的 `Entered Data Table` 不作为正式兼容格式。 |
 | Micromeritics ASAP 2460 | ASAP 2460 | `SMP`、`XLS`、`XLSX`、`XLSM` | 支持 ASAP 等温线与官方 Excel 导出；BET 默认区间包含 ASAP 2460 特定修正。 |
+| Micromeritics ASAP 2020 | ASAP 2020 `V4.04` | `SMP` | 支持旧版 ASAP 2020 SMP 的等温线、样品信息和测量自由空间读取；BET 使用文件保存的报告区间并兼容旧版两点拟合。 |
 | Micromeritics ASAP 2020 Plus | ASAP 2020 Plus | `SMP`、`XLS`、`XLSX`、`XLSM` | 支持 ASAP 2020 Plus 原始/导出数据读取与统一分析。 |
 | MicrotracBEL BELSORP（BELMaster） | BELMaster DAT / Excel 导出 | `DAT`、`XLS`、`XLSX`、`XLSM` | 支持 BELMaster 等温线导入，并进入统一 BET / Langmuir / t-Plot / BJH 分析流程。 |
 | Quantachrome Autosorb iQ | Autosorb iQ / QuadraSorb；QPS、NovaWin `version 11.02` 文本型 Excel 报告已验证 | `QPS`、`XLSX` | 支持 QPS 原始等温线导入；支持 NovaWin 文本型 Excel 报告读取等温线，并在 Broekhoff-De Boer 厚度 + 标准修正下直接采用官方 BJH adsorption/desorption 表。 |
 | 贝士德 BSD-660 | BSD-660MC，软件 `V.9.1.15.0 Date 26.04.28` 已验证 | `XLS`、`XLSX`、`XLSM` | 支持官方 Excel 导出；BET、Langmuir、t-Plot 已按 BSD 报表口径复现，BJH 默认读取官方逐点表，孔容递推仍在反推中。 |
-| 精微高博 | `Info / Isotherm / BET Surface Area / Langmuir Surface Area / t-Plot / BJH` 多 sheet 官方 Excel 导出已验证 | `XLSX` | 支持官方 Excel 导入并读取等温线；BET、Langmuir、t-Plot 使用官方导出点号反推默认区间，t-Plot 厚度曲线为 Harkins-Jura，BJH 默认反推为 Halsey + standard + 不平滑，官方 BJH 表保存为校验数据。 |
+| 精微高博 | APAS1000_ZQ / Matrix1000 文本 RAW；`Info / Isotherm / BET Surface Area / Langmuir Surface Area / t-Plot / BJH` 多 sheet 官方 Excel 导出已验证 | `RAW`、`XLSX` | RAW 读取吸脱附等温线、样品质量、气体、日期和分析时长；`MAP` 点作为原厂多点 BET 选点，少于 3 点时明确报告无有效多点结果；另按名义压力计算单点 BET。官方 Excel 导入保留原厂点号、算法参数与校验表。 |
 
 不同来源在分析时会自动匹配对应的默认算法，例如 TriStar II 3020 沿用其历史阿伏伽德罗常数、BSD / JWGB t-Plot 以吸附量（STP）而非液体体积作纵轴、ASAP 2460 对存储区间下限做特定修正等。这样默认结果会贴近原软件，而统一重算时又能切换到一致规则。
 
+另支持软件名称为 `TriStar II Plus Version 3.02` 的 SMP：读取等温线点表、逐文件自由空间修正和测量条件，并将点表中的分钟换算为秒。BET、Langmuir 使用文件保存的区间；t-Plot 读取保存的 Harkins–Jura 厚度区间，允许两点拟合并保留负外表面积。三个参考样本的 BET、t-Plot 已与原厂摘要显示值核对；吸附量仍采用经验自由空间公式重建，Langmuir 存在小量尾差，完整等温线表及 BJH 逐点结果仍待核对。样品条件中显示定量校验状态。
+
 ## 当前功能
 
-- 读取上表所列的 SMP / XLS(X/M) / DAT / QPS 文件。
+- 读取上表所列的 SMP / RAW / XLS(X/M) / DAT / QPS 文件。
 - 通过左右双栏导入窗口批量选择文件，支持已导入文件回显、格式排序、多选移动和待导入顺序调整。
 - 多样品导入、显示、隐藏、排序、删除和拖拽调整顺序。
 - 样品列表冻结前两列，便于横向滚动时查看样品名称。
@@ -55,7 +58,7 @@
 - BET、Langmuir、t-Plot 和 BJH 的重复计算结果会按样品与参数组合缓存，切换样品或调整显示范围时尽量复用已有结果。
 - 结果参数、样品条件、实际等温线、目标压力表、报告模块和日志信息查看。
 - 选中样品导出为 XLSX。
-- 命令行解析 SMP / XLS(X/M) / DAT / QPS 并导出 CSV。
+- 命令行解析 SMP / RAW / XLS(X/M) / DAT / QPS 并导出 CSV。
 
 ## 性能与缓存
 
@@ -98,7 +101,7 @@ python app.py --ui
 
 ## 命令行解析
 
-解析单个文件（SMP / XLS / XLSX / XLSM / DAT / QPS）：
+解析单个文件（SMP / RAW / XLS / XLSX / XLSM / DAT / QPS）：
 
 ```
 python app.py path\to\sample.SMP
@@ -129,6 +132,7 @@ tristar_bet/smp.py                  Micromeritics SMP 解析与 CSV 导出
 tristar_bet/excel_import.py         MicroActive / BSD 等 Excel 报表解析
 tristar_bet/belmaster.py            MicrotracBEL BELSORP (BELMaster) DAT 解析
 tristar_bet/quantachrome.py         Quantachrome Autosorb iQ QPS 解析
+tristar_bet/jwgb_raw.py             精微高博 APAS 文本 RAW 解析
 tristar_bet/reference_thickness.py  参考厚度曲线与插值
 tristar_bet/analysis.py             BET、Langmuir、t-Plot、BJH 等分析计算
 tristar_bet/ui/main_window.py       中文图形界面主窗口

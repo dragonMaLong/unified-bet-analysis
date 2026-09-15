@@ -42,6 +42,7 @@ from tristar_bet.analysis import (
     dh_pore_distribution,
     horvath_kawazoe_pore_distribution,
     langmuir_analysis,
+    single_point_bet_analysis,
     t_plot_analysis,
     t_plot_analysis_by_thickness,
     thickness_nm,
@@ -765,7 +766,7 @@ class SampleTableWidget(QtWidgets.QTableWidget):
             if not url.isLocalFile():
                 continue
             path = Path(url.toLocalFile())
-            if path.is_file() and path.suffix.lower() in (".smp", ".dat", ".qps", ".xls", ".xlsx", ".xlsm"):
+            if path.is_file() and path.suffix.lower() in (".smp", ".raw", ".dat", ".qps", ".xls", ".xlsx", ".xlsm"):
                 paths.append(str(path))
         return paths
 
@@ -799,7 +800,7 @@ PORE_VOLUME_METHOD_BJH = "bjh"
 PORE_VOLUME_METHOD_DH = "dh"
 PORE_VOLUME_METHOD_HK = "hk"
 PORE_VOLUME_METHOD_DFT = "dft"
-SUPPORTED_DATA_SUFFIXES = (".smp", ".dat", ".qps", ".xls", ".xlsx", ".xlsm")
+SUPPORTED_DATA_SUFFIXES = (".smp", ".raw", ".dat", ".qps", ".xls", ".xlsx", ".xlsm")
 BET_DEFAULT_RANGE = (0.05, 0.30)
 BET_PLOT_RANGE = (0.0, 1.0)
 LANGMUIR_DEFAULT_RANGE = (0.05, 0.30)
@@ -1959,7 +1960,9 @@ class MainWindow(QtWidgets.QMainWindow):
         sample_header.sectionClicked.connect(self.on_sample_header_clicked)
         sample_header.sectionResized.connect(self.on_sample_header_resized)
         self.sample_table.horizontalHeaderItem(TEST_TIME_COLUMN).setToolTip("点击按测试时间排序")
-        self.sample_table.horizontalHeaderItem(BET_COLUMN).setToolTip("点击按BET比表面积排序")
+        self.sample_table.horizontalHeaderItem(BET_COLUMN).setToolTip(
+            "优先显示有效多点 BET；JWGB 原厂仅 1 个 MAP 点时显示并标注单点 BET；点击排序"
+        )
         self.sample_table.horizontalHeaderItem(BET_COLUMN).setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
         self.sample_table.horizontalHeaderItem(LANGMUIR_COLUMN).setToolTip("点击按Langmuir比表面积排序")
         self.sample_table.horizontalHeaderItem(LANGMUIR_COLUMN).setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
@@ -2301,7 +2304,7 @@ class MainWindow(QtWidgets.QMainWindow):
         splitter.setSizes([390, 890])
         self.setCentralWidget(splitter)
 
-        self.statusBar().showMessage("打开或拖入 SMP、DAT、QPS 或官方 Excel 导出文件")
+        self.statusBar().showMessage("打开或拖入 SMP、RAW、DAT、QPS 或官方 Excel 导出文件")
         self.refresh_all()
         self._sync_select_all_state()
         QtCore.QTimer.singleShot(0, self._position_header_controls)
@@ -4305,6 +4308,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _t_plot_settings_for_result(self, result) -> dict[str, object]:
         settings = self._default_t_plot_settings()
+        if result.method_options.get("format_family") == "TriStar II Plus 3.02 SMP":
+            method = result.method_options.get("vendor_t_plot_thickness_method")
+            params_by_method = dict(settings["thickness_params_by_method"])
+            if method in params_by_method:
+                settings["thickness_method"] = method
+                settings["thickness_params"] = dict(params_by_method[method])
         custom = self.custom_t_plot_settings.get(id(result))
         if custom:
             settings.update(custom)
@@ -5476,7 +5485,15 @@ class MainWindow(QtWidgets.QMainWindow):
                 test_time_item.setToolTip("SMP 优先来自日志 Started 时间；DAT/QPS 来自测量日期")
                 self.sample_table.setItem(row, TEST_TIME_COLUMN, test_time_item)
 
-                bet_item = self._table_item(_fmt(bet.surface_area_m2_g), alignment=QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+                bet_value, bet_kind, bet_tooltip = self._sample_bet_display(result, bet)
+                bet_text = _fmt(bet_value)
+                if bet_kind == "single_point":
+                    bet_text = f"{bet_text}（单点）"
+                bet_item = self._table_item(
+                    bet_text,
+                    tooltip=bet_tooltip,
+                    alignment=QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter,
+                )
                 self._style_sample_bet_item(bet_item, result)
                 self.sample_table.setItem(row, BET_COLUMN, bet_item)
 
@@ -5516,9 +5533,40 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         result = self.results[row]
         bet = self._bet_analysis_for_result(result)
-        bet_item = self._table_item(_fmt(bet.surface_area_m2_g), alignment=QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        bet_value, bet_kind, bet_tooltip = self._sample_bet_display(result, bet)
+        bet_text = _fmt(bet_value)
+        if bet_kind == "single_point":
+            bet_text = f"{bet_text}（单点）"
+        bet_item = self._table_item(
+            bet_text,
+            tooltip=bet_tooltip,
+            alignment=QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter,
+        )
         self._style_sample_bet_item(bet_item, result)
         self.sample_table.setItem(row, BET_COLUMN, bet_item)
+
+    def _sample_bet_display(self, result, bet=None) -> tuple[float | None, str, str]:
+        bet = bet if bet is not None else self._bet_analysis_for_result(result)
+        if bet.surface_area_m2_g is not None:
+            kind = "manual_multipoint" if self._is_custom_bet_fit(result) else "multipoint"
+            label = "手动多点 BET" if kind == "manual_multipoint" else "多点 BET"
+            return float(bet.surface_area_m2_g), kind, f"{label}；{status_text(bet.status)}"
+
+        point_ids = result.method_options.get("jwgb_raw_bet_fit_point_ids")
+        if (
+            not self._is_custom_bet_fit(result)
+            and isinstance(point_ids, (list, tuple))
+            and len(point_ids) == 1
+        ):
+            single_point = single_point_bet_analysis(result)
+            if single_point.status == "ok" and single_point.surface_area_m2_g is not None:
+                pressure = _fmt(single_point.pressure_min, 6)
+                return (
+                    float(single_point.surface_area_m2_g),
+                    "single_point",
+                    f"JWGB 单点 BET，P/P0={pressure}；原厂 MAP 仅 1 点，多点 BET 无效",
+                )
+        return None, "unavailable", status_text(bet.status)
 
     def _refresh_sample_langmuir_cell(self, row: int) -> None:
         if row < 0 or row >= len(self.results):
@@ -5560,6 +5608,13 @@ class MainWindow(QtWidgets.QMainWindow):
             self._refresh_sample_bjh_pore_cell(row)
 
     def _style_sample_bet_item(self, item: QtWidgets.QTableWidgetItem, result) -> None:
+        if not self._is_custom_bet_fit(result) and result.method_options.get("use_official_raw_bet_points"):
+            point_ids = result.method_options.get("jwgb_raw_bet_fit_point_ids")
+            if isinstance(point_ids, (list, tuple)) and len(point_ids) < 3:
+                item.setForeground(QtGui.QBrush(QtGui.QColor("#b45309")))
+                if not item.toolTip():
+                    item.setToolTip("JWGB RAW 原厂 MAP 选点不足 3 个；无有效多点 BET 结果")
+                return
         if not self._is_custom_bet_fit(result):
             return
         item.setForeground(QtGui.QBrush(QtGui.QColor(CUSTOM_BET_COLOR)))
@@ -5958,6 +6013,23 @@ class MainWindow(QtWidgets.QMainWindow):
         self._bet_x_range = None
         data_p_min = p_min if p_min is not None else BET_PLOT_RANGE[0]
         data_p_max = p_max if p_max is not None else BET_PLOT_RANGE[1]
+        # The overview pressure region may not contain an instrument's saved
+        # BET range (legacy ASAP 2020 files commonly fit below P/P0=0.05).
+        # Keep that overview range, but expand the BET plot far enough to show
+        # every visible sample's actual fit selection and its regression line.
+        for index in self._visible_analysis_indices():
+            result = self.results[index]
+            fit_range = (
+                raw_region
+                if result is active and raw_region and not reset_region
+                else self._bet_fit_range_for_result(result)
+            )
+            if not fit_range:
+                continue
+            fit_lo, fit_hi = sorted((float(fit_range[0]), float(fit_range[1])))
+            if np.isfinite(fit_lo) and np.isfinite(fit_hi):
+                data_p_min = min(float(data_p_min), fit_lo)
+                data_p_max = max(float(data_p_max), fit_hi)
         self._bet_plot_p_range = (data_p_min, data_p_max)
         x_by_index = plot_bet_multi(
             self.bet_plot,
@@ -6212,6 +6284,9 @@ class MainWindow(QtWidgets.QMainWindow):
             hi = max(x_min, min(float(raw_region[1]), x_max))
             if lo < hi - 1e-10:
                 return lo, hi
+            if math.isclose(lo, hi, rel_tol=0.0, abs_tol=1e-10):
+                half_width = max((x_max - x_min) * 0.01, 1e-6)
+                return max(x_min, lo - half_width), min(x_max, hi + half_width)
         return x_min, x_max
 
     def _remove_bet_region(self) -> None:
@@ -7999,6 +8074,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.custom_bet_fit_ranges.pop(id(result), None)
 
     def _bet_analysis_for_result(self, result):
+        if not self._is_custom_bet_fit(result):
+            return bet_analysis(result)
         fit_range = self._bet_fit_range_for_result(result)
         return self._cached_bet_analysis(result, fit_range[0], fit_range[1])
 
@@ -8042,6 +8119,14 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _t_plot_fit_range_for_result(self, result) -> tuple[float, float]:
         settings = self._t_plot_settings_for_result(result)
+        custom_range = self.custom_t_plot_fit_ranges.get(id(result))
+        if custom_range is not None:
+            return custom_range
+        if result.method_options.get("format_family") == "TriStar II Plus 3.02 SMP":
+            lo = result.method_options.get("stored_t_plot_thickness_min_nm")
+            hi = result.method_options.get("stored_t_plot_thickness_max_nm")
+            if isinstance(lo, (int, float)) and isinstance(hi, (int, float)) and 0.0 < lo < hi < 10.0:
+                return (float(lo), float(hi))
         return self.custom_t_plot_fit_ranges.get(
             id(result),
             self._default_t_plot_fit_range(
@@ -8059,7 +8144,10 @@ class MainWindow(QtWidgets.QMainWindow):
             return False
         settings = self._t_plot_settings_for_result(result)
         method = str(settings["thickness_method"])
-        if method != DEFAULT_T_PLOT_THICKNESS_METHOD:
+        default_method = DEFAULT_T_PLOT_THICKNESS_METHOD
+        if result.method_options.get("format_family") == "TriStar II Plus 3.02 SMP":
+            default_method = result.method_options.get("vendor_t_plot_thickness_method", default_method)
+        if method != default_method:
             return True
 
         default_params = T_PLOT_THICKNESS_PARAM_DEFAULTS.get(method, DEFAULT_T_PLOT_THICKNESS_PARAMS)
@@ -8099,7 +8187,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _bet_sort_key(self, result) -> float:
         try:
-            value = self._bet_analysis_for_result(result).surface_area_m2_g
+            value, _kind, _tooltip = self._sample_bet_display(result)
             return float(value) if value is not None else 0.0
         except Exception:
             return 0.0
@@ -8526,18 +8614,34 @@ def active_metric_rows(
         t_plot.external_surface_area_m2_g,
         t_plot_surface_area_correction,
     )
+    single_point_rows: list[tuple[str, str]] = []
+    if result.method_options.get("jwgb_single_point_bet_pressure") is not None:
+        single_point = single_point_bet_analysis(result)
+        source_point = result.method_options.get("jwgb_single_point_bet_source_point_id")
+        interpolation_points = ""
+        if single_point.rows:
+            source_min = int(single_point.rows[0].get("source_point_min", 0.0))
+            source_max = int(single_point.rows[0].get("source_point_max", 0.0))
+            interpolation_points = str(source_min) if source_min == source_max else f"{source_min}-{source_max}"
+        single_point_rows = [
+            ("JWGB 单点 BET 压力", _fmt(single_point.pressure_min, 6)),
+            ("JWGB 单点 BET 比表面积", f"{_fmt(single_point.surface_area_m2_g)} m2/g"),
+            ("JWGB 单点 BET 名义来源点", str(source_point or "")),
+            ("JWGB 单点 BET 插值点", interpolation_points),
+        ]
     rows += [
         ("样品质量", f"{_fmt(result.sample.sample_mass_g)} g"),
         ("吸附质", _adsorptive_label(result)),
         ("数据点数", str(result.point_count)),
-        ("BET 状态", status_text(bet.status)),
-        ("BET 比表面积", _value_pm_text(bet.surface_area_m2_g, bet.surface_area_standard_error, "m2/g")),
-        ("BET 斜率", _value_pm_text(bet.slope, bet.slope_standard_error, "g/cm3 STP")),
-        ("BET Y 截距", _value_pm_text(bet.intercept, bet.intercept_standard_error, "g/cm3 STP")),
-        ("BET 单层容量", f"{_fmt(bet.monolayer_capacity_cm3_g_stp)} cm3/g STP"),
-        ("BET C 常数", _fmt(bet.c_constant)),
-        ("BET 相关系数", _fmt(bet_correlation, 7)),
-        ("BET R2", _fmt(bet.r_squared, 6)),
+        ("多点 BET 状态", status_text(bet.status)),
+        ("多点 BET 比表面积", _value_pm_text(bet.surface_area_m2_g, bet.surface_area_standard_error, "m2/g")),
+        ("多点 BET 斜率", _value_pm_text(bet.slope, bet.slope_standard_error, "g/cm3 STP")),
+        ("多点 BET Y 截距", _value_pm_text(bet.intercept, bet.intercept_standard_error, "g/cm3 STP")),
+        ("多点 BET 单层容量", f"{_fmt(bet.monolayer_capacity_cm3_g_stp)} cm3/g STP"),
+        ("多点 BET C 常数", _fmt(bet.c_constant)),
+        ("多点 BET 相关系数", _fmt(bet_correlation, 7)),
+        ("多点 BET R2", _fmt(bet.r_squared, 6)),
+        *single_point_rows,
         ("Langmuir 状态", status_text(langmuir.status)),
         ("Langmuir 比表面积", f"{_fmt(langmuir.surface_area_m2_g)} m2/g"),
         ("Langmuir 单层容量", f"{_fmt(langmuir.monolayer_capacity_cm3_g_stp)} cm3/g STP"),
@@ -8591,6 +8695,8 @@ def condition_rows(result) -> list[tuple[str, str]]:
         ("Vfree factor", f"{_fmt(free.vfree_factor_cm3)} cm3"),
         ("非理想因子", _fmt(free.nonideality_factor, 9)),
     ]
+    if result.method_options.get("tristar_plus_quantity_validation") == "empirical_reconstruction_summary_checked_on_reference_samples":
+        rows.append(("定量校验", "3.02 参考样本的 BET、t-Plot 已核对原厂摘要；完整点表及 BJH 仍待核对"))
     if props is not None:
         rows.extend(
             [
@@ -8755,10 +8861,12 @@ def export_results_xlsx(
                 "测试耗时",
                 "质量(g)",
                 "点数",
-                "BET状态",
-                "BET面积(m2/g)",
-                "BET Vm(cm3/g)",
-                "BET C",
+                "多点BET状态",
+                "多点BET面积(m2/g)",
+                "多点BET Vm(cm3/g)",
+                "多点BET C",
+                "JWGB单点BET压力(P/P0)",
+                "JWGB单点BET面积(m2/g)",
                 "Langmuir状态",
                 "Langmuir面积(m2/g)",
                 "t-Plot状态",
@@ -8772,6 +8880,7 @@ def export_results_xlsx(
     for index, result in enumerate(results):
         analyses = analysis_bundle(result)
         bet = analyses["BET"]
+        single_point = single_point_bet_analysis(result)
         langmuir = analyses["Langmuir"]
         t_plot = analyses["t-Plot"]
         pore_volume = pore_volumes[index] if pore_volumes is not None and index < len(pore_volumes) else None
@@ -8788,6 +8897,8 @@ def export_results_xlsx(
                 bet.surface_area_m2_g,
                 bet.monolayer_capacity_cm3_g_stp,
                 bet.c_constant,
+                single_point.pressure_min if single_point.status == "ok" else None,
+                single_point.surface_area_m2_g if single_point.status == "ok" else None,
                 status_text(langmuir.status),
                 langmuir.surface_area_m2_g,
                 status_text(t_plot.status),
@@ -8811,10 +8922,15 @@ def export_results_xlsx(
             "Po(mmHg)",
             "Elapsed(s)",
             "Elapsed",
+            "JWGB点类型",
         ]
     )
     for result in results:
+        point_codes = result.method_options.get("jwgb_raw_point_codes")
         for point in result.isotherm:
+            point_code = ""
+            if isinstance(point_codes, (list, tuple)) and 0 < point.index <= len(point_codes):
+                point_code = str(point_codes[point.index - 1])
             isotherm_sheet.append(
                 [
                     result.file_name,
@@ -8828,6 +8944,7 @@ def export_results_xlsx(
                     point.saturation_pressure_mmHg,
                     point.elapsed_seconds,
                     point.elapsed_time,
+                    point_code,
                 ]
             )
 

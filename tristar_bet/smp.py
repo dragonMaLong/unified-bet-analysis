@@ -74,7 +74,8 @@ def load_smp(path: str | Path) -> TriStarResult:
 def load_file(path: str | Path) -> TriStarResult:
     """Load any supported instrument file, dispatching on its extension.
 
-    Micromeritics ``.smp`` containers go to :func:`load_smp`; MicrotracBEL
+    Micromeritics ``.smp`` containers go to :func:`load_smp`; JWGB/APAS
+    text ``.raw`` exports go to :func:`tristar_bet.jwgb_raw.load_jwgb_raw`; MicrotracBEL
     BELMaster ``.dat`` exports go to :func:`tristar_bet.belmaster.load_dat`;
     Quantachrome Autosorb iQ ``.qps`` files go to
     :func:`tristar_bet.quantachrome.load_qps`; official Excel report
@@ -93,6 +94,10 @@ def load_file(path: str | Path) -> TriStarResult:
         from .quantachrome import load_qps
 
         return load_qps(path)
+    if suffix == ".raw":
+        from .jwgb_raw import load_jwgb_raw
+
+        return load_jwgb_raw(path)
     return load_smp(path)
 
 
@@ -112,6 +117,14 @@ class TriStarSmpParser:
         run_conditions = self._parse_run_conditions(blocks.get(302, b""))
         target_pressure_table = self._parse_target_pressure_table(blocks.get(302, b""))
         adsorptive_properties = self._parse_adsorptive_properties(blocks.get(320, b""))
+        asap_software = self._asap_software_text(blocks.get(303, b""))
+        legacy_asap_2020 = bool(asap_software and "ASAP 2020" in asap_software and "ASAP 2020 Plus" not in asap_software)
+        if legacy_asap_2020:
+            run_conditions = self._sanitize_legacy_asap_2020_run_conditions(run_conditions, adsorptive_properties)
+        tristar_plus_v3 = self._is_tristar_plus_v3(blocks.get(303, b""))
+        if tristar_plus_v3:
+            sample = self._with_tristar_plus_v3_sample_info(sample, blocks.get(301, b""))
+            run_conditions = self._parse_tristar_plus_v3_run_conditions(blocks.get(302, b""), adsorptive_properties)
         free_space = self._parse_free_space(
             blocks.get(303, b""),
             self._payload_size(subsets, 303),
@@ -119,8 +132,10 @@ class TriStarSmpParser:
             adsorptive_properties,
             blocks.get(705, b""),
         )
-        po_records = self._parse_po_records(blocks.get(303, b""), self._payload_size(subsets, 303))
-        isotherm = self._parse_isotherm(blocks.get(303, b""), po_records, sample, free_space)
+        # Version 3.02 stores P/P0 and elapsed minutes in each point row. The
+        # old separate-P0 scanner otherwise mistakes point bytes for P0 data.
+        po_records = [] if tristar_plus_v3 else self._parse_po_records(blocks.get(303, b""), self._payload_size(subsets, 303))
+        isotherm = [] if tristar_plus_v3 else self._parse_isotherm(blocks.get(303, b""), po_records, sample, free_space)
         used_microactive_point_table = False
         used_asap_point_table = False
         used_3flex_manual_point_table = False
@@ -155,9 +170,19 @@ class TriStarSmpParser:
                 )
                 adsorptive_properties = manual_adsorptive_properties
                 free_space = manual_free_space
-        method_options = self._parse_method_options(blocks.get(302, b""), blocks.get(725, b""), blocks.get(320, b""))
+        method_options = self._parse_method_options(blocks.get(302, b""), b"" if tristar_plus_v3 else blocks.get(725, b""), blocks.get(320, b""))
         method_options.update(self._parse_instrument_info(blocks))
         method_options.update(self._parse_stored_bet_range(blocks.get(311, b"")))
+        if legacy_asap_2020:
+            # Subset 311 is the report's saved selection interval. This legacy
+            # file can intentionally contain only two collected points inside
+            # that interval, which is a valid exact linear BET fit.
+            method_options["use_stored_fit_ranges"] = True
+            if "stored_bet_pressure_min" in method_options:
+                method_options["stored_bet_range_source"] = "ASAP 2020 V4 SMP subset 311 report selection"
+            method_options["vendor_bet_minimum_points"] = 2
+        if tristar_plus_v3:
+            method_options.update(self._parse_tristar_plus_v3_report_options(blocks, run_conditions))
         method_options.update(self._parse_test_time_options(header, method_options, blocks.get(705, b"")))
         if used_asap_point_table:
             method_options["asap_quantity_source"] = "raw_cm3_stp_free_space_corrected_and_normalized"
@@ -165,6 +190,8 @@ class TriStarSmpParser:
                 method_options["asap_vfree_factor_cm3"] = free_space.vfree_factor_cm3
             if free_space.vbath_cm3 is not None:
                 method_options["asap_vbath_cm3"] = free_space.vbath_cm3
+            if legacy_asap_2020:
+                method_options["format_family"] = "ASAP 2020 V4 SMP"
         if used_microactive_point_table:
             if free_space.vfree_factor_cm3 is not None:
                 method_options["microactive_bet_vfree_factor_cm3"] = free_space.vfree_factor_cm3
@@ -178,6 +205,22 @@ class TriStarSmpParser:
                 if sample.sample_mass_g
                 else "raw_cm3_stp_unscaled_missing_sample_mass"
             )
+        if tristar_plus_v3:
+            method_options["format_family"] = "TriStar II Plus 3.02 SMP"
+            method_options["po_record_source"] = "derived_from_point_absolute_and_relative_pressure"
+            method_options["tristar_plus_quantity_validation"] = "empirical_reconstruction_summary_checked_on_reference_samples"
+            method_options["microactive_quantity_source"] = (
+                "raw_cm3_stp_free_space_corrected_and_normalized"
+                if isotherm and all(point.quantity_adsorbed_cm3_g_stp is not None for point in isotherm)
+                else "unavailable_missing_free_space_or_sample_mass"
+            )
+            # Keep each derived P0 alongside its own point; do not invent an
+            # initial P0-only record from unrelated bytes in the container.
+            po_records = [
+                PoRecord(point.index, point.record_rel_offset, point.saturation_pressure_mmHg, point.elapsed_seconds)
+                for point in isotherm
+                if point.saturation_pressure_mmHg is not None and point.elapsed_seconds is not None
+            ]
         if used_3flex_manual_point_table:
             method_options["instrument_manufacturer"] = "Micromeritics"
             method_options["instrument_model"] = "3Flex 3500"
@@ -393,6 +436,166 @@ class TriStarSmpParser:
             adsorptive_name=adsorptive_name,
         )
 
+    def _is_tristar_plus_v3(self, block: bytes) -> bool:
+        """The 3.02 layout is verified separately from MicroActive 1.x."""
+        return any(item.text == "TriStar II Plus Version 3.02" for item in self._read_mic_strings(block))
+
+    def _with_tristar_plus_v3_sample_info(self, sample: SampleInfo, block: bytes) -> SampleInfo:
+        strings = self._read_mic_strings(block)
+        first_label = next((item.rel_offset for item in strings if item.text == "Sample:"), 0)
+        values = [item.text for item in strings if item.rel_offset < first_label]
+        barcode_label = next((item.rel_offset for item in strings if item.text == "Bar Code:"), None)
+        comment = next((item for item in strings if barcode_label is not None and item.rel_offset > barcode_label), None)
+        density = None
+        mass = sample.sample_mass_g
+        if comment is not None:
+            length = _read_uint32(block, comment.rel_offset - 4)
+            if length is not None and length % 2 == 0 and comment.rel_offset + length + 37 <= len(block):
+                end = comment.rel_offset + length
+                sample_mass = _read_double(block, end + 5)
+                tare = _read_double(block, end + 13)
+                total = _read_double(block, end + 21)
+                value = _read_double(block, end + 29)
+                if (
+                    block[end:end + 5] == b"\x01\x01\x00\x00\x00"
+                    and sample_mass is not None and 1e-8 < sample_mass < 100.0
+                    and tare is not None and 0.0 <= tare < 1000.0
+                    and total is not None and math.isclose(sample_mass + tare, total, rel_tol=0.0, abs_tol=1e-8)
+                ):
+                    mass = sample_mass
+                    if value is not None and 0.01 < value < 100.0:
+                        density = value
+        return replace(
+            sample,
+            submitter=values[2] if len(values) > 2 else sample.submitter,
+            bar_code=values[3] if len(values) > 3 else sample.bar_code,
+            sample_mass_g=mass,
+            sample_density_g_cm3=density,
+        )
+
+    def _parse_tristar_plus_v3_run_conditions(
+        self, block: bytes, props: AdsorptiveProperties | None,
+    ) -> RunConditions:
+        strings = self._read_mic_strings(block)
+        mnemonic = props.mnemonic if props else ""
+        adsorptive = props.adsorptive if props else ""
+        bath = None
+        po_reference = None
+        equilibration_interval = None
+        # The gas mnemonic follows the variable-size method pressure table.
+        for item in reversed(strings):
+            if mnemonic and item.text == mnemonic:
+                candidate_bath = _read_double(block, item.rel_offset - 31)
+                candidate_po = _read_double(block, item.rel_offset - 39)
+                if candidate_bath is not None and 50.0 < candidate_bath < 150.0 and candidate_po is not None and 100.0 < candidate_po < 1000.0:
+                    bath, po_reference = candidate_bath, candidate_po
+                    interval = _read_double(block, item.rel_offset - 121)
+                    if interval is not None and 0.0 < interval <= 86400.0:
+                        equilibration_interval = interval
+                    break
+        if bath is None:
+            bath = _temperature_from_text(adsorptive)
+
+        # The method name has a variable UTF-16 length. The verified early
+        # fields begin five bytes after it; later legacy offsets do not apply.
+        name_end = None
+        if len(block) >= 26 and block[19:22] == b"\xe0\x01\x00":
+            length = _read_uint32(block, 22)
+            if length is not None and length % 2 == 0 and 26 + length + 43 <= len(block):
+                name_end = 26 + length
+        def run_value(offset: int) -> float | None:
+            value = _read_double(block, name_end + offset) if name_end is not None else None
+            return value if value is not None and (value == 0.0 or 1e-8 <= value <= 1e6) else None
+        return RunConditions(
+            evacuation_rate_mmHg_s=run_value(5),
+            unrestricted_evacuate_from_mmHg=run_value(13),
+            evacuation_time_h=run_value(21),
+            leak_test_time_s=_read_uint32(block, name_end + 31) if name_end is not None else None,
+            equilibration_interval_s=equilibration_interval,
+            free_space_equilibration_time_h=None,
+            ambient_free_space_entered_cm3=None,
+            analysis_free_space_entered_cm3=None,
+            desorption_test_time_s=None,
+            po_reference_mmHg=po_reference,
+            bath_temperature_K=bath,
+            adsorptive_short=mnemonic,
+            adsorptive_name=adsorptive,
+        )
+
+    @staticmethod
+    def _sanitize_legacy_asap_2020_run_conditions(
+        run: RunConditions,
+        props: AdsorptiveProperties | None,
+    ) -> RunConditions:
+        """Discard fields whose offsets belong to newer, incompatible layouts."""
+
+        def valid(value: float | None, lower: float, upper: float, *, allow_zero: bool = False) -> float | None:
+            if value is None or not math.isfinite(float(value)):
+                return None
+            value = float(value)
+            if (lower <= value if allow_zero else lower < value) and value <= upper:
+                return value
+            return None
+
+        return replace(
+            run,
+            evacuation_rate_mmHg_s=valid(run.evacuation_rate_mmHg_s, 0.0, 1000.0),
+            unrestricted_evacuate_from_mmHg=valid(run.unrestricted_evacuate_from_mmHg, 0.0, 1000.0, allow_zero=True),
+            evacuation_time_h=valid(run.evacuation_time_h, 0.0, 168.0, allow_zero=True),
+            leak_test_time_s=(run.leak_test_time_s if run.leak_test_time_s is not None and 0 <= run.leak_test_time_s <= 604800 else None),
+            equilibration_interval_s=valid(run.equilibration_interval_s, 0.0, 86400.0),
+            free_space_equilibration_time_h=valid(run.free_space_equilibration_time_h, 0.0, 168.0),
+            ambient_free_space_entered_cm3=valid(run.ambient_free_space_entered_cm3, 1e-8, 300.0),
+            analysis_free_space_entered_cm3=valid(run.analysis_free_space_entered_cm3, 1e-8, 300.0),
+            desorption_test_time_s=(
+                run.desorption_test_time_s
+                if run.desorption_test_time_s is not None and 0 <= run.desorption_test_time_s <= 604800
+                else None
+            ),
+            adsorptive_short=(props.mnemonic if props and props.mnemonic else run.adsorptive_short),
+            adsorptive_name=(props.adsorptive if props and props.adsorptive else run.adsorptive_name),
+        )
+
+    def _parse_tristar_plus_v3_report_options(
+        self, blocks: dict[int, bytes], run: RunConditions,
+    ) -> dict[str, object]:
+        options: dict[str, object] = {"use_stored_fit_ranges": True}
+        langmuir = blocks.get(312, b"")
+        if len(langmuir) >= 18:
+            absolute_min = _read_double(langmuir, len(langmuir) - 18)
+            absolute_max = _read_double(langmuir, len(langmuir) - 10)
+            po = run.po_reference_mmHg
+            if absolute_min is not None and absolute_max is not None and po is not None and po > 0.0 and 0.0 <= absolute_min < absolute_max <= po:
+                options.update({
+                    "stored_langmuir_pressure_min": absolute_min / po,
+                    "stored_langmuir_pressure_max": absolute_max / po,
+                    "stored_langmuir_range_source": "SMP subset 312 absolute mmHg / method P0",
+                })
+        t_plot = blocks.get(314, b"")
+        # This layout contains a selected thickness model and a thickness
+        # interval in Angstrom, not a P/P0 interval.
+        if len(t_plot) >= 208 and _read_uint16(t_plot, 19) == 1:
+            strings = self._read_mic_strings(t_plot)
+            if any(item.rel_offset == 103 and item.text == "Harkins and Jura" for item in strings):
+                t_min = _read_double(t_plot, 184)
+                t_max = _read_double(t_plot, 192)
+                if t_min is not None and t_max is not None and 0.0 < t_min < t_max < 100.0:
+                    options.update({
+                        "vendor_t_plot_thickness_method": "harkins_jura",
+                        "stored_t_plot_thickness_min_nm": t_min / 10.0,
+                        "stored_t_plot_thickness_max_nm": t_max / 10.0,
+                        "stored_t_plot_range_source": "SMP subset 314 thickness Angstrom / 10",
+                    })
+        bjh_blocks = [blocks.get(subset_id, b"") for subset_id in (315, 316)]
+        if all(
+            len(block) >= 137 and _read_uint16(block, 19) == 1
+            and any(item.rel_offset == 103 and item.text == "Harkins and Jura" for item in self._read_mic_strings(block))
+            for block in bjh_blocks
+        ):
+            options["vendor_bjh_thickness_method"] = "harkins_jura"
+            options["vendor_bjh_thickness_source"] = "SMP subsets 315/316 selected thickness model"
+        return options
+
     def _parse_target_pressure_table(self, block: bytes) -> list[TargetPressureRow]:
         for parser in (
             self._parse_tristar_3020_target_pressure_table,
@@ -596,7 +799,10 @@ class TriStarSmpParser:
         if not block or payload_size <= 0:
             return FreeSpaceInfo(None, None, None, None, None, None, None, None, "missing")
 
-        asap_free_space = self._parse_asap_free_space(block, adsorptive_properties)
+        if self._is_tristar_plus_v3(block):
+            return self._parse_tristar_plus_v3_free_space(block, run, adsorptive_properties)
+
+        asap_free_space = self._parse_asap_free_space(block, run, adsorptive_properties)
         if asap_free_space is not None:
             return asap_free_space
 
@@ -744,6 +950,7 @@ class TriStarSmpParser:
     def _parse_asap_free_space(
         self,
         block: bytes,
+        run: RunConditions,
         adsorptive_properties: AdsorptiveProperties | None = None,
     ) -> FreeSpaceInfo | None:
         software = self._asap_software_text(block)
@@ -758,10 +965,25 @@ class TriStarSmpParser:
         if cold is None or warm is None or not (0.0 < float(warm) < float(cold) < 300.0):
             return None
 
+        ambient_temperature = ASSUMED_AMBIENT_TEMPERATURE_K
         if "ASAP 2020 Plus" in software:
             vfree = ASAP_2020_PLUS_VFREE_COLD_COEFF * float(cold) + ASAP_2020_PLUS_VFREE_WARM_COEFF * float(warm)
             vbath = ASAP_2020_PLUS_VBATH_DIFF_COEFF * (float(cold) - float(warm))
             source = "asap_2020_plus_sample_tube_fields"
+        elif "ASAP 2020" in software:
+            # Legacy 2020 V4 stores Vfc and Vfw in the two Sample Tube fields.
+            # The original report calculation uses Vfc directly for the
+            # ideal-gas term and derives the immersed volume from the measured
+            # warm/cold pair (Calculations - 2020 ASAP, pp. 51-53).
+            bath_temperature = run.bath_temperature_K
+            if bath_temperature is None or not (50.0 < float(bath_temperature) < 150.0):
+                bath_temperature = 77.35
+            denominator = 1.0 - float(bath_temperature) / ambient_temperature
+            if denominator <= 0.0:
+                return None
+            vfree = float(cold)
+            vbath = (float(cold) - float(warm)) / denominator
+            source = "asap_2020_v4_measured_free_space_fields"
         else:
             vfree = ASAP_2460_VFREE_COLD_COEFF * float(cold) + ASAP_2460_VFREE_WARM_COEFF * float(warm)
             vbath = (
@@ -786,11 +1008,12 @@ class TriStarSmpParser:
             vbath_cm3=vbath,
             vfree_factor_cm3=vfree,
             vfree_factor_source=source,
+            ambient_temperature_K_assumed=ambient_temperature,
         )
 
     def _asap_software_text(self, block: bytes) -> str:
         for item in self._read_mic_strings(block):
-            if "ASAP 2460 Version" in item.text or "ASAP 2020 Plus Version" in item.text:
+            if re.search(r"\bASAP\s+(?:2460|2020(?:\s+Plus)?)\s+(?:Version\s+)?V?\d", item.text, re.IGNORECASE):
                 return item.text
         return ""
 
@@ -857,6 +1080,46 @@ class TriStarSmpParser:
             vfree_factor_cm3=vfree,
             vfree_factor_source=source,
             ambient_temperature_K_assumed=float(ambient_temperature),
+        )
+
+    def _parse_tristar_plus_v3_free_space(
+        self, block: bytes, run: RunConditions, props: AdsorptiveProperties | None,
+    ) -> FreeSpaceInfo:
+        missing = FreeSpaceInfo(None, None, None, None, None, None, None, None, "tristar_plus_v3_missing_free_space")
+        tube = next((item.rel_offset for item in self._read_mic_strings(block) if item.text == "Sample Tube"), None)
+        if tube is None:
+            return missing
+        cold = _read_double(block, tube - 24)
+        warm = _read_double(block, tube - 16)
+        correction = _read_double(block, tube + 218)
+        if cold is None or warm is None or correction is None:
+            return missing
+        if not (0.0 < warm < cold < 300.0 and -warm < correction <= 0.0):
+            return missing
+        ambient = _read_double(block, tube - 237)
+        if ambient is None or not 250.0 <= ambient <= 330.0:
+            ambient = ASSUMED_AMBIENT_TEMPERATURE_K
+        bath = run.bath_temperature_K
+        nonideality = props.nonideality_factor if props else None
+        if bath is None or not 50.0 < bath < 150.0 or nonideality is None or not 0.0 <= nonideality < 0.01:
+            return missing
+        # The file-specific signed correction reproduces the measured warm
+        # and cold volumes in subset 705. Old per-port constants belong to a
+        # different instrument and must not be applied to these files.
+        measured_cold, measured_warm = cold + correction, warm + correction
+        vfree = VFREE_INTERCEPT + VFREE_COLD_COEFF * cold + VFREE_WARM_COEFF * warm + VFREE_STEM_COEFF * correction
+        vbath = (cold - warm) / (1.0 - bath / ambient)
+        return FreeSpaceInfo(
+            analysis_entered_cm3=cold,
+            ambient_entered_cm3=warm,
+            nonideality_factor=nonideality,
+            cold_free_space_cm3=measured_cold,
+            warm_free_space_cm3=measured_warm,
+            stem_volume_cm3=correction,
+            vbath_cm3=vbath,
+            vfree_factor_cm3=vfree,
+            vfree_factor_source="tristar_ii_plus_v3_sample_tube_fields_empirical",
+            ambient_temperature_K_assumed=ambient,
         )
 
     def _parse_analysis_port(self, log_block: bytes) -> int | None:
@@ -967,7 +1230,8 @@ class TriStarSmpParser:
         if not block or payload_size <= 0:
             return []
         strings = self._read_mic_strings(block)
-        if not any("MicroActive for TriStar II Plus" in item.text for item in strings):
+        tristar_plus_v3 = self._is_tristar_plus_v3(block)
+        if not tristar_plus_v3 and not any("MicroActive for TriStar II Plus" in item.text for item in strings):
             return []
 
         rows = self._scan_microactive_point_rows(block, payload_size)
@@ -986,10 +1250,12 @@ class TriStarSmpParser:
             phase = "adsorption" if idx - 1 <= max_index else "desorption"
             saturation_pressure = absolute / relative if relative else None
             elapsed = _read_uint32(block, rel + 24)
+            if elapsed is not None and tristar_plus_v3:
+                elapsed *= 60
             if elapsed is not None and not (0 <= elapsed <= 60 * 60 * 24 * 30):
                 elapsed = None
             quantity_per_g = self._calculate_quantity(absolute, quantity, sample, free_space)
-            if quantity_per_g is None:
+            if quantity_per_g is None and not tristar_plus_v3:
                 quantity_per_g = quantity / sample_mass if sample_mass else quantity
             points.append(
                 IsothermPoint(
@@ -1002,7 +1268,7 @@ class TriStarSmpParser:
                     saturation_pressure_mmHg=saturation_pressure,
                     elapsed_seconds=elapsed,
                     quantity_adsorbed_cm3_g_stp=quantity_per_g,
-                    quantity_adsorbed_mmol_g=quantity_per_g / CM3_STP_PER_MMOL,
+                    quantity_adsorbed_mmol_g=quantity_per_g / CM3_STP_PER_MMOL if quantity_per_g is not None else None,
                 )
             )
         return points
@@ -1484,6 +1750,7 @@ class TriStarSmpParser:
                 or "TriStar II 3020 Version" in text
                 or "ASAP 2460 Version" in text
                 or "ASAP 2020 Plus Version" in text
+                or re.search(r"\bASAP\s+2020\s+(?:Version\s+)?V?\d", text, re.IGNORECASE)
             ):
                 software = text
                 break
@@ -1498,6 +1765,8 @@ class TriStarSmpParser:
             model = "ASAP 2460"
         elif "ASAP 2020 Plus" in joined:
             model = "ASAP 2020 Plus"
+        elif "ASAP 2020" in joined:
+            model = "ASAP 2020"
         elif "3500" in texts or "3Flex" in joined:
             manufacturer = "Micromeritics"
             model = "3Flex 3500"
@@ -1561,11 +1830,13 @@ class TriStarSmpParser:
                 continue
             text = item.text.strip()
             text_lower = text.lower()
+            normalized_event = text_lower.rstrip(" .")
             event_text = event_time.strftime("%Y-%m-%d %H:%M:%S")
             event_key = _datetime_sort_key(event_time)
 
             if (
-                "started analysis of file" in text_lower
+                normalized_event == "analysis started"
+                or "started analysis of file" in text_lower
                 or "starting a sample analysis" in text_lower
                 or ("analysis on file" in text_lower and " started" in text_lower)
             ):
@@ -1573,7 +1844,11 @@ class TriStarSmpParser:
                 events.setdefault("log_started_sort_key", event_key)
                 events.setdefault("log_started_event", text)
                 events.setdefault("_log_started_datetime", event_time)
-            elif "finished a sample analysis" in text_lower or ("analysis on file" in text_lower and " done" in text_lower):
+            elif (
+                normalized_event == "analysis done"
+                or "finished a sample analysis" in text_lower
+                or ("analysis on file" in text_lower and " done" in text_lower)
+            ):
                 events["log_completed_time"] = event_text
                 events["log_completed_sort_key"] = event_key
                 events["log_completed_event"] = text
@@ -1766,7 +2041,7 @@ def _target_pressure_rows(results: Sequence[TriStarResult]) -> list[dict[str, ob
 def _isotherm_rows(results: Sequence[TriStarResult]) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for result in results:
-        if result.po_records:
+        if result.po_records and result.po_records[0].index == 0:
             first_po = result.po_records[0]
             rows.append(
                 {
