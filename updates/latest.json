@@ -1,23 +1,23 @@
 {
-  "version": "1.1.1",
-  "release_name": "v1.1.1",
-  "release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.1.1",
-  "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.1/BET-DragonScience.exe",
+  "version": "1.1.2",
+  "release_name": "v1.1.2",
+  "release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.1.2",
+  "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.2/BET-DragonScience.exe",
   "gitee_source_name": "Gitee",
-  "gitee_release_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/tag/v1.1.1",
-  "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.1.1/BET-DragonScience.exe",
+  "gitee_release_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/tag/v1.1.2",
+  "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.1.2/BET-DragonScience.exe",
   "github_source_name": "GitHub",
-  "github_release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.1.1",
-  "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.1/BET-DragonScience.exe",
+  "github_release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.1.2",
+  "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.2/BET-DragonScience.exe",
   "asset_name": "BET-DragonScience.exe",
-  "sha256": "f563c39a429c91c383556dcfdf2d5dabe7034f04822438646f2fa2a20a9e46d4",
+  "sha256": "834246c3d351d227186e892b2b820773b5573789abb15f78f77135bcadbe80b3",
   "platforms": {
     "windows-x64": {
       "asset_name": "BET-DragonScience.exe",
-      "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.1/BET-DragonScience.exe",
-      "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.1.1/BET-DragonScience.exe",
-      "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.1/BET-DragonScience.exe",
-      "sha256": "f563c39a429c91c383556dcfdf2d5dabe7034f04822438646f2fa2a20a9e46d4"
+      "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.2/BET-DragonScience.exe",
+      "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.1.2/BET-DragonScience.exe",
+      "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.2/BET-DragonScience.exe",
+      "sha256": "834246c3d351d227186e892b2b820773b5573789abb15f78f77135bcadbe80b3"
     },
     "macos-x64": {
       "asset_name": "BET-DragonScience-macos-x64.dmg",
@@ -34,6 +34,6 @@
       "sha256": "4f8ec5e3d13b126d97086d07b65fa9cf0238d13467761e2833f5058796e02538"
     }
   },
-  "published_at": "2026-07-02",
-  "release_notes": "1. 样品栏支持 Ctrl 多选和 Shift 连续选择。\n2. 右键删除可一次删除多个已选样品，冻结前两列同样支持多选操作。\n3. 删除后会自动保留当前样品或切换到邻近样品。"
+  "published_at": "2026-09-15",
+  "release_notes": "1. 支持精微高博 APAS1000_ZQ / Matrix1000 文本 RAW 导入，并按 MAP 标记恢复官方 BET 选点。\n2. 仅有 1 个 MAP 点时，在样品栏单独显示单点 BET；多点结果明确标注为多点 BET。\n3. 完善 Micromeritics ASAP 2020 V4 SMP 导入，读取保存的 BET 区间及准确测试起止时间。\n4. 修复 ASAP 2020 BET 拟合图选区、拟合点及线性拟合线不一致的问题。"
 }
