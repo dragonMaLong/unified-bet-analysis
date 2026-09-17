@@ -1,23 +1,23 @@
 {
-  "version": "1.1.4",
-  "release_name": "v1.1.4",
-  "release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.1.4",
-  "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.4/BET-DragonScience.exe",
+  "version": "1.1.5",
+  "release_name": "v1.1.5",
+  "release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.1.5",
+  "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.5/BET-DragonScience.exe",
   "gitee_source_name": "Gitee",
-  "gitee_release_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/tag/v1.1.4",
-  "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.1.4/BET-DragonScience.exe",
+  "gitee_release_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/tag/v1.1.5",
+  "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.1.5/BET-DragonScience.exe",
   "github_source_name": "GitHub",
-  "github_release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.1.4",
-  "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.4/BET-DragonScience.exe",
+  "github_release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.1.5",
+  "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.5/BET-DragonScience.exe",
   "asset_name": "BET-DragonScience.exe",
-  "sha256": "80c6f6d4be0da86ceb96ae55e3150e8e61ad406c49ea5b85645a818c0d3b8dd4",
+  "sha256": "9100f801902a23b2264cb18e085e568c6d941720d95d9066aa110cbc014551ab",
   "platforms": {
     "windows-x64": {
       "asset_name": "BET-DragonScience.exe",
-      "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.4/BET-DragonScience.exe",
-      "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.1.4/BET-DragonScience.exe",
-      "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.4/BET-DragonScience.exe",
-      "sha256": "80c6f6d4be0da86ceb96ae55e3150e8e61ad406c49ea5b85645a818c0d3b8dd4"
+      "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.5/BET-DragonScience.exe",
+      "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.1.5/BET-DragonScience.exe",
+      "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.5/BET-DragonScience.exe",
+      "sha256": "9100f801902a23b2264cb18e085e568c6d941720d95d9066aa110cbc014551ab"
     },
     "macos-x64": {
       "asset_name": "BET-DragonScience-macos-x64.dmg",
@@ -34,6 +34,6 @@
       "sha256": "4f8ec5e3d13b126d97086d07b65fa9cf0238d13467761e2833f5058796e02538"
     }
   },
-  "published_at": "2026-09-15",
-  "release_notes": "1. DFT 模型扩展为 55 个可计算的 Micromeritics 核，补充 2D-NLDFT、SD3 及异质表面模型。\n2. 新增类型、结构、气体三级交集筛选，并在每一级提供“全部”选项。\n3. 简化模型名称，去除 MOD 编号。\n4. 修正特殊 DFT 核布局解析，支持大于 1 的压力、非单调轴与重复点。\n5. 根据样品气体自动选择筛选条件，无匹配模型时给出明确提示。"
+  "published_at": "2026-09-17",
+  "release_notes": "1. 新增康塔 26 个 GAI 模型及对应自动正则化流程，模型总数增至 81 个。\n2. 完善麦克 Classical 圆柱 N₂ Halsey 模型的非 AMS 求解。\n3. DFT 分布图按绿色选框内可见曲线自适应 Y 轴。\n4. 优化康塔求解速度，“全部应用”支持最多 4 进程批量计算和缓存复用。\n5. 调整正则化布局与滑块系数同步，保留现有拖动交互。\n验证范围与限制详见 Release 说明；Ar 77 K 和两个 CO₂ 模型目前仅有合成输入对照。"
 }
