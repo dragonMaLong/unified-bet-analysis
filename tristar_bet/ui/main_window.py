@@ -48,6 +48,7 @@ from tristar_bet.analysis import (
     thickness_nm,
 )
 from tristar_bet.dft_models import dft_model_options, dft_model_spec
+from tristar_bet.quantachrome_dft import VALIDATED_GAI_MODELS
 from tristar_bet.reference_thickness import (
     DEFAULT_REFERENCE_DIR,
     normalize_reference_points,
@@ -983,7 +984,7 @@ class RegularizationSlider(QtWidgets.QWidget):
         self._value = float(value)
         self._dragging = False
         self._editor = QtWidgets.QLineEdit(self)
-        validator = QtGui.QDoubleValidator(0.0, 10.0, 5, self._editor)
+        validator = QtGui.QDoubleValidator(0.0, 10.0, 9, self._editor)
         validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
         self._editor.setValidator(validator)
         self._editor.setAlignment(QtCore.Qt.AlignCenter)
@@ -991,12 +992,16 @@ class RegularizationSlider(QtWidgets.QWidget):
         self._editor.hide()
         self._editor.editingFinished.connect(self._finish_inline_edit)
         self.setMinimumHeight(76)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Fixed)
         self.setMinimumWidth(320)
         self.setMouseTracking(True)
         self.setCursor(QtCore.Qt.PointingHandCursor)
 
     def value(self) -> float:
         return float(self._value)
+
+    def sizeHint(self) -> QtCore.QSize:
+        return QtCore.QSize(320, 76)
 
     def setValue(self, value: float, *, emit: bool = False) -> None:
         value = self._clamp_value(value)
@@ -1273,6 +1278,8 @@ class RegularizationSlider(QtWidgets.QWidget):
 
     @staticmethod
     def _format_value(value: float) -> str:
+        if 0.0 < float(value) < .01:
+            return f"{float(value):.9f}".rstrip("0")
         return f"{float(value):.5f}"
 
 
@@ -1797,6 +1804,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.hk_pore_volume_range: tuple[float, float] = DEFAULT_HK_PORE_VOLUME_RANGE
         self._dft_distribution_rows_by_index: dict[int, list[dict[str, float]]] = {}
         self._dft_result_cache: dict[tuple[object, ...], object] = {}
+        self._dft_batch_calculator = None
         self.dft_region = None
         self._dft_selection_items = []
         self._dft_width_log_bounds: tuple[float, float] | None = None
@@ -1846,6 +1854,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.dft_adsorptive = DEFAULT_DFT_ADSORPTIVE
         self.dft_model = DEFAULT_DFT_MODEL
         self.dft_regularization = DEFAULT_DFT_REGULARIZATION
+        self.dft_automatic_regularization = True
         self.dft_regularization_apply_all = False
         self._pending_dft_regularization_apply_all_value: float | None = None
         self._dft_regularization_preview_active = False
@@ -2997,6 +3006,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.dft_geometry_combo = QtWidgets.QComboBox()
         self.dft_geometry_combo.addItem("狭缝", "slit")
         self.dft_geometry_combo.addItem("圆柱", "cylinder")
+        self.dft_geometry_combo.addItem("混合孔型", "mixed")
         self.dft_geometry_combo.addItem("全部", "all")
         self.dft_geometry_combo.currentIndexChanged.connect(self._on_dft_filter_changed)
         method_layout.addRow("结构", self.dft_geometry_combo)
@@ -3025,6 +3035,21 @@ class MainWindow(QtWidgets.QMainWindow):
         regularization_layout = QtWidgets.QVBoxLayout(regularization_group)
         regularization_layout.setContentsMargins(8, 8, 8, 8)
         regularization_layout.setSpacing(4)
+        regularization_options = QtWidgets.QHBoxLayout()
+        regularization_options.setSpacing(16)
+        self.dft_auto_regularization_checkbox = QtWidgets.QCheckBox("自动选择正则化")
+        self.dft_auto_regularization_checkbox.setEnabled(False)
+        self.dft_auto_regularization_checkbox.setToolTip(
+            "支持已完成求解器对照的 26 个模型；拖动滑块转为手动，约束阶数保持不变。")
+        self.dft_auto_regularization_checkbox.toggled.connect(self._on_dft_auto_regularization_changed)
+        regularization_options.addWidget(self.dft_auto_regularization_checkbox)
+        self.dft_regularization_apply_all_checkbox = QtWidgets.QCheckBox("应用全部")
+        self.dft_regularization_apply_all_checkbox.setToolTip(
+            "勾选后，手动调整系数会同步到所有样品；各样品的模型及约束阶数保持不变。")
+        self.dft_regularization_apply_all_checkbox.toggled.connect(self._on_dft_regularization_apply_all_toggled)
+        regularization_options.addWidget(self.dft_regularization_apply_all_checkbox)
+        regularization_options.addStretch(1)
+        regularization_layout.addLayout(regularization_options)
         self.dft_regularization_slider = RegularizationSlider(
             DFT_REGULARIZATION_VALUES,
             self.dft_regularization,
@@ -3033,10 +3058,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.dft_regularization_slider.valueChanged.connect(self._on_dft_regularization_changed)
         self.dft_regularization_slider.valueChangeFinished.connect(self._finish_deferred_dft_regularization_refresh)
         regularization_layout.addWidget(self.dft_regularization_slider)
-        self.dft_regularization_apply_all_checkbox = QtWidgets.QCheckBox("应用全部")
-        self.dft_regularization_apply_all_checkbox.setToolTip("勾选后，拖动正则化会同步到所有样品")
-        self.dft_regularization_apply_all_checkbox.toggled.connect(self._on_dft_regularization_apply_all_toggled)
-        regularization_layout.addWidget(self.dft_regularization_apply_all_checkbox)
 
         self.dft_default_button = QtWidgets.QPushButton("默认")
         self.dft_default_button.setToolTip("恢复当前样品的 DFT 默认设置")
@@ -4724,6 +4745,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "adsorptive": DEFAULT_DFT_ADSORPTIVE,
             "model": DEFAULT_DFT_MODEL,
             "regularization": DEFAULT_DFT_REGULARIZATION,
+            "automatic_regularization": True,
         }
 
     def _dft_default_settings_for_result(self, result) -> dict[str, object]:
@@ -4770,12 +4792,13 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.dft_analysis_type not in {"dft_pore", "typical", "all"}:
             self.dft_analysis_type = DEFAULT_DFT_ANALYSIS_TYPE
         self.dft_geometry = str(settings.get("geometry", DEFAULT_DFT_GEOMETRY))
-        if self.dft_geometry not in {"slit", "cylinder", "all"}:
+        if self.dft_geometry not in {"slit", "cylinder", "sphere", "mixed", "all"}:
             self.dft_geometry = DEFAULT_DFT_GEOMETRY
         self.dft_adsorptive = str(settings.get("adsorptive", DEFAULT_DFT_ADSORPTIVE))
         if self.dft_adsorptive not in {"n2", "ar", "co2", "o2", "h2", "all"}:
             self.dft_adsorptive = DEFAULT_DFT_ADSORPTIVE
         self.dft_model = str(settings.get("model", DEFAULT_DFT_MODEL))
+        self.dft_automatic_regularization = bool(settings.get("automatic_regularization", True))
         try:
             regularization = float(settings.get("regularization", DEFAULT_DFT_REGULARIZATION))
         except (TypeError, ValueError):
@@ -4792,6 +4815,30 @@ class MainWindow(QtWidgets.QMainWindow):
         slider = getattr(self, "dft_regularization_slider", None)
         if slider is not None:
             slider.setValue(self.dft_regularization, emit=False)
+        self._sync_dft_auto_controls()
+
+    def _sync_dft_auto_controls(self) -> None:
+        supported = self.dft_model in VALIDATED_GAI_MODELS
+        checkbox = getattr(self, "dft_auto_regularization_checkbox", None)
+        if checkbox is None:
+            return
+        previous = checkbox.blockSignals(True)
+        checkbox.setChecked(supported and self.dft_automatic_regularization)
+        checkbox.blockSignals(previous)
+        checkbox.setEnabled(supported)
+        self.dft_regularization_slider.setEnabled(True)
+        self.dft_regularization_apply_all_checkbox.setEnabled(True)
+
+    def _use_manual_dft_regularization(self) -> None:
+        if self.dft_model in VALIDATED_GAI_MODELS:
+            self.dft_automatic_regularization = False
+            self._sync_dft_auto_controls()
+
+    def _on_dft_auto_regularization_changed(self, checked: bool) -> None:
+        if self._syncing_dft_controls or self.dft_model not in VALIDATED_GAI_MODELS:
+            return
+        self.dft_automatic_regularization = bool(checked)
+        self._finish_dft_option_change()
 
     def _populate_dft_model_combo(self, preferred_model: str = "") -> None:
         combo = getattr(self, "dft_model_combo", None)
@@ -4878,6 +4925,8 @@ class MainWindow(QtWidgets.QMainWindow):
         for result in self.results:
             settings = self._dft_settings_for_result(result)
             settings["regularization"] = float(value)
+            if settings["model"] in VALIDATED_GAI_MODELS:
+                settings["automatic_regularization"] = False
             self._store_dft_settings_for_result(result, settings)
 
     def _on_dft_regularization_apply_all_toggled(self, checked: bool) -> None:
@@ -4956,11 +5005,13 @@ class MainWindow(QtWidgets.QMainWindow):
             "adsorptive": self.dft_adsorptive,
             "model": self.dft_model,
             "regularization": float(self.dft_regularization),
+            "automatic_regularization": bool(self.dft_automatic_regularization),
         }
 
     def _on_dft_filter_changed(self, *_args) -> None:
         if self._syncing_dft_controls:
             return
+        previous_model = self.dft_model
         self.dft_analysis_type = str(self.dft_type_combo.currentData())
         self.dft_geometry = str(self.dft_geometry_combo.currentData())
         self.dft_adsorptive = str(self.dft_adsorptive_combo.currentData())
@@ -4969,15 +5020,19 @@ class MainWindow(QtWidgets.QMainWindow):
             self._populate_dft_model_combo(self.dft_model)
         finally:
             self._syncing_dft_controls = False
+        if self.dft_model != previous_model:
+            self.dft_automatic_regularization = self.dft_model in VALIDATED_GAI_MODELS
         self._finish_dft_option_change()
 
     def _on_dft_model_changed(self, *_args) -> None:
         if self._syncing_dft_controls:
             return
         self.dft_model = str(self.dft_model_combo.currentData())
+        self.dft_automatic_regularization = self.dft_model in VALIDATED_GAI_MODELS
         self._finish_dft_option_change()
 
     def _finish_dft_option_change(self) -> None:
+        self._sync_dft_auto_controls()
         self._save_dft_settings_for_active()
         self.refresh_dft_plot()
         if self._is_dft_tab_active():
@@ -4988,6 +5043,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_dft_regularization_changed(self, value: float) -> None:
         if self._syncing_dft_controls:
             return
+        self._use_manual_dft_regularization()
         self.dft_regularization = max(0.0, min(float(value), 10.0))
         self._sync_dft_diagnostic_line_to_regularization()
         if getattr(self, "dft_regularization_apply_all", False):
@@ -5011,6 +5067,7 @@ class MainWindow(QtWidgets.QMainWindow):
             value = 10.0 ** float(self._dft_diagnostic_line.value())
         except (TypeError, ValueError):
             return
+        self._use_manual_dft_regularization()
         if value <= 1e-6:
             value = 0.0
         self._syncing_dft_controls = True
@@ -5032,12 +5089,50 @@ class MainWindow(QtWidgets.QMainWindow):
         settings = self._current_dft_settings_snapshot()
         for result in self.results:
             self._store_dft_settings_for_result(result, settings)
+        self._prefetch_dft_batch()
         self.refresh_dft_plot()
         if self._is_dft_tab_active():
             self.refresh_isotherm_plot()
         if self._active_pore_volume_method() == PORE_VOLUME_METHOD_DFT:
             self._refresh_all_sample_bjh_pore_cells()
         self.statusBar().showMessage("已将当前 DFT 设置应用到所有样品", 3000)
+
+    def _prefetch_dft_batch(self) -> None:
+        """Populate GUI-owned cache in parallel before synchronous rendering."""
+        from tristar_bet.dft_batch import DftBatchCalculator
+        jobs, keys = [], []
+        need_all = self._active_pore_volume_method() == PORE_VOLUME_METHOD_DFT
+        for index, result in enumerate(self.results):
+            visible = index < len(self.visible_results) and self.visible_results[index]
+            if not (need_all or visible or index == self.active_index):
+                continue
+            settings = self._dft_settings_for_result(result)
+            if settings["model"] not in VALIDATED_GAI_MODELS:
+                continue
+            automatic = bool(settings.get("automatic_regularization", True))
+            options = dict(analysis_type=str(settings["analysis_type"]),
+                           geometry=str(settings["geometry"]), model=str(settings["model"]),
+                           regularization=float(settings["regularization"]),
+                           include_diagnostics=automatic)
+            key = self._dft_result_cache_key(result, **options)
+            if key in self._dft_result_cache:
+                continue
+            keys.append(key)
+            jobs.append((result, dict(options, automatic_regularization=automatic)))
+        # Small batches are faster without process startup/serialization.
+        minimum_jobs = 8 if self._dft_batch_calculator is None else 4
+        if len(jobs) < minimum_jobs or (os.cpu_count() or 1) < 3:
+            return
+        if self._dft_batch_calculator is None:
+            self._dft_batch_calculator = DftBatchCalculator()
+        for key, distribution in zip(keys, self._dft_batch_calculator.calculate(jobs)):
+            if distribution is not None:
+                self._store_dft_result_cache(key, distribution)
+
+    def closeEvent(self, event) -> None:
+        if self._dft_batch_calculator is not None:
+            self._dft_batch_calculator.close()
+        super().closeEvent(event)
 
     def reset_all_dft_to_default(self) -> None:
         self.custom_dft_settings.clear()
@@ -6037,9 +6132,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self._dft_diagnostic_line = plot_dft_diagnostics(
             plot,
             list(getattr(dft_result, "diagnostic_rows", [])),
-            float(settings["regularization"]),
+            float(dft_result.regularization),
+            penalty_label=(f"{dft_result.regularization_order} 阶约束范数"
+                           if dft_result.solver_profile == "gai_native" else None),
         )
+        if dft_result.ok and dft_result.automatic_regularization:
+            self.dft_regularization = float(dft_result.regularization)
+            self.dft_regularization_slider.setValue(self.dft_regularization, emit=False)
+            # Preserve the selected value when auto is unchecked, without
+            # emitting a manual-change event or invalidating the auto cache.
+            self._save_dft_settings_for_active()
         if self._dft_diagnostic_line is not None:
+            self._dft_diagnostic_line.setMovable(True)
             self._dft_diagnostic_line.sigPositionChangeFinished.connect(self._on_dft_diagnostic_line_changed)
 
     def _bjh_pressure_range(self) -> tuple[float, float] | None:
@@ -7011,6 +7115,38 @@ class MainWindow(QtWidgets.QMainWindow):
             width_range,
             active_index=self.active_index,
         )
+        self._fit_dft_y_axis_to_width_range(width_range)
+
+    def _fit_dft_y_axis_to_width_range(self, width_range: tuple[float, float]) -> None:
+        try:
+            width_lo, width_hi = sorted((float(width_range[0]), float(width_range[1])))
+        except (TypeError, ValueError, IndexError):
+            return
+        if not (np.isfinite(width_lo) and np.isfinite(width_hi) and width_lo < width_hi):
+            return
+        selected_values = []
+        for index, rows in self._dft_distribution_rows_by_index.items():
+            if index < 0 or index >= len(self.visible_results) or not self.visible_results[index]:
+                continue
+            for row in rows:
+                try:
+                    width = float(row.get("pore_width_nm", row.get("pore_diameter_nm")))
+                    value = float(row.get("differential_pore_volume_cm3_g", 0.0))
+                except (TypeError, ValueError):
+                    continue
+                if (
+                    np.isfinite(width)
+                    and np.isfinite(value)
+                    and width_lo <= width <= width_hi
+                    and value >= 0.0
+                ):
+                    selected_values.append(value)
+        if not selected_values:
+            return
+        selected_max = float(max(selected_values))
+        if selected_max <= 0.0:
+            selected_max = 1.0
+        self.dft_plot.setYRange(0.0, selected_max * 1.08, padding=0.0)
 
     def _remove_dft_region(self) -> None:
         if self.dft_region is None:
@@ -7381,6 +7517,8 @@ class MainWindow(QtWidgets.QMainWindow):
         regularization: float,
         include_diagnostics: bool,
     ) -> tuple[object, ...]:
+        automatic = (model in VALIDATED_GAI_MODELS and
+                     bool(self._dft_settings_for_result(result).get("automatic_regularization", True)))
         return (
             id(result),
             str(getattr(getattr(result, "header", None), "file_path", "")),
@@ -7388,8 +7526,9 @@ class MainWindow(QtWidgets.QMainWindow):
             str(analysis_type),
             str(geometry),
             str(model),
-            round(float(regularization), 10),
+            None if automatic else round(float(regularization), 10),
             bool(include_diagnostics),
+            bool(self._dft_settings_for_result(result).get("automatic_regularization", True)),
         )
 
     def _store_dft_result_cache(self, cache_key: tuple[object, ...], result) -> None:
@@ -7407,6 +7546,11 @@ class MainWindow(QtWidgets.QMainWindow):
         regularization: float,
         include_diagnostics: bool = False,
     ):
+        automatic = bool(self._dft_settings_for_result(result).get("automatic_regularization", True))
+        if model in VALIDATED_GAI_MODELS and automatic:
+            # Auto selection already produces the complete diagnostic curve.
+            # Reuse it between the isotherm, distribution and diagnostics plots.
+            include_diagnostics = True
         cache_key = self._dft_result_cache_key(
             result,
             analysis_type=analysis_type,
@@ -7425,6 +7569,7 @@ class MainWindow(QtWidgets.QMainWindow):
             model=model,
             regularization=regularization,
             include_diagnostics=include_diagnostics,
+            automatic_regularization=automatic,
         )
         self._store_dft_result_cache(cache_key, distribution)
         return distribution
@@ -8548,6 +8693,8 @@ class MainWindow(QtWidgets.QMainWindow):
             if str(settings.get(key)) != str(defaults.get(key)):
                 return True
         if not _float_equal(settings.get("regularization"), defaults.get("regularization")):
+            return True
+        if bool(settings.get("automatic_regularization", True)) != bool(defaults.get("automatic_regularization", True)):
             return True
         return False
 

@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+# Dispatch frozen multiprocessing workers before CLI parsing or GUI imports.
+if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()
+
 import argparse
 import os
 from pathlib import Path
@@ -21,7 +26,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--prefix", default="tristar3020_minimal_parser", help="Output file prefix")
     parser.add_argument("--no-export", action="store_true", help="Only print a CLI summary")
     parser.add_argument("--ui", action="store_true", help="Start the Chinese Qt analysis interface")
+    parser.add_argument("--self-test-dft", metavar="REPORT_JSON", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+
+    if args.self_test_dft:
+        from tristar_bet.release_smoke import run_dft_smoke
+        return run_dft_smoke(Path(args.self_test_dft))
 
     if args.ui or not args.input:
         return _run_ui_or_explain()

@@ -2700,6 +2700,8 @@ def plot_dft_diagnostics(
     plot: pg.PlotWidget,
     diagnostic_rows: list[dict[str, float]],
     regularization: float,
+    *,
+    penalty_label: str | None = None,
 ) -> pg.InfiniteLine | None:
     plot.clear()
     _clear_manual_legend_entries(plot)
@@ -2711,11 +2713,11 @@ def plot_dft_diagnostics(
             except Exception:
                 pass
     plot_item = plot.getPlotItem()
-    plot.setTitle("拟合误差 / 分布粗糙度 vs. 正则化")
+    plot.setTitle(f"拟合误差 / {penalty_label or '分布粗糙度'} vs. 正则化")
     plot.setLabel("bottom", "正则化")
     plot.setLabel("left", "RMS 拟合误差 (mmol/g)", color="#2563eb")
     plot_item.showAxis("right")
-    plot_item.getAxis("right").setLabel("分布粗糙度", color="#f97316")
+    plot_item.getAxis("right").setLabel(penalty_label or "分布粗糙度", color="#f97316")
     plot_item.getAxis("left").setTextPen(pg.mkPen("#2563eb"))
     plot_item.getAxis("right").setTextPen(pg.mkPen("#f97316"))
     plot.setLogMode(x=True, y=False)
@@ -2774,7 +2776,7 @@ def plot_dft_diagnostics(
         plot,
         [
             (0, rms_item, "RMS error"),
-            (1, rough_item, "Distribution roughness"),
+            (1, rough_item, penalty_label or "Distribution roughness"),
         ],
     )
     line = pg.InfiniteLine(

@@ -6,7 +6,11 @@ from typing import Sequence
 
 import numpy as np
 
-from .dft_models import interpolate_dft_kernel, load_dft_model_kernel
+from .dft_models import (
+    convert_dft_kernel_to_pore_volume_basis,
+    interpolate_dft_kernel,
+    load_dft_model_kernel,
+)
 from .models import IsothermPoint, TriStarResult
 from .reference_thickness import default_reference_params, normalize_reference_points, reference_thickness_nm
 
@@ -265,6 +269,9 @@ class DftPoreDistributionResult:
     rows: list[dict[str, float]] = field(default_factory=list)
     fit_rows: list[dict[str, float]] = field(default_factory=list)
     diagnostic_rows: list[dict[str, float]] = field(default_factory=list)
+    solver_profile: str = "generic"
+    automatic_regularization: bool = False
+    regularization_order: int | None = None
 
     @property
     def ok(self) -> bool:
@@ -1762,6 +1769,7 @@ def dft_pore_distribution(
     regularization: float = DFT_DEFAULT_REGULARIZATION,
     phase: str = "adsorption",
     include_diagnostics: bool = True,
+    automatic_regularization: bool = True,
 ) -> DftPoreDistributionResult:
     """Regularized DFT/NLDFT pore distribution.
 
@@ -1784,7 +1792,7 @@ def dft_pore_distribution(
         return DftPoreDistributionResult("DFT", phase_key, "not_enough_points", len(points))
 
     geometry_key = str(geometry or DFT_DEFAULT_GEOMETRY).strip().lower()
-    if geometry_key not in {"slit", "cylinder"}:
+    if geometry_key not in {"slit", "cylinder", "sphere", "mixed"}:
         geometry_key = DFT_DEFAULT_GEOMETRY
     analysis_key = str(analysis_type or DFT_DEFAULT_ANALYSIS_TYPE).strip().lower()
     if analysis_key not in {"dft_pore", "typical"}:
@@ -1827,11 +1835,93 @@ def dft_pore_distribution(
         return DftPoreDistributionResult("DFT", phase_key, "not_enough_adsorbed_volume", len(points))
 
     official_kernel = load_dft_model_kernel(model_key)
+    from .quantachrome_dft import VALIDATED_GAI_MODELS, merge_equilibrium_branches, prepare_gai
+
+    if official_kernel is not None and model_key in VALIDATED_GAI_MODELS and phase_key == "adsorption":
+        # For the validated GAI profiles the kernel dictates the physical
+        # branch. Explicit non-default desorption calculations retain the
+        # legacy path until independently verified.
+        selected = np.column_stack((pressure, quantity_stp / 22.414))
+        actual_phase = "adsorption"
+        if model_key.endswith("_eq"):
+            des = np.asarray([[float(p.relative_pressure), float(p.quantity_adsorbed_cm3_g_stp)/22.414]
+                              for p in desorption_points(result)], dtype=float).reshape(-1, 2)
+            des = des[np.argsort(des[:, 0], kind="stable")]
+            selected = merge_equilibrium_branches(selected, des)
+            actual_phase = "equilibrium" if len(des) >= 2 else "adsorption"
+        try:
+            problem = prepare_gai(official_kernel, selected)
+            area, alpha, diagnostics = problem.solve(None if automatic_regularization else lambda_value)
+            if include_diagnostics and not automatic_regularization:
+                # Diagnostics use the same physical problem and alpha units.
+                _, _, diagnostics = problem.solve()
+            rows = problem.distribution(area, alpha, actual_phase)
+        except (ValueError, np.linalg.LinAlgError):
+            return DftPoreDistributionResult("DFT", actual_phase, "not_enough_distribution_points",
+                len(selected), model=model_key, solver_profile="gai_native")
+        except RuntimeError:
+            return DftPoreDistributionResult("DFT", actual_phase, "solver_not_converged",
+                len(selected), model=model_key, solver_profile="gai_native")
+        fitted = problem.matrix @ area
+        fit_rows = [dict(point_index=float(i+1), relative_pressure=float(p),
+                        quantity_adsorbed_cm3_g_stp=float(q*22.414),
+                        model_quantity_adsorbed_cm3_g_stp=float(f*22.414),
+                        quantity_adsorbed_mmol_g=float(q), model_quantity_adsorbed_mmol_g=float(f),
+                        interpolated=1.0)
+                    for i, (p, q, f) in enumerate(zip(problem.pressure, problem.target_mmol, fitted))]
+        return DftPoreDistributionResult(
+            "DFT", actual_phase, "ok", len(selected), regularization=alpha,
+            analysis_type=official_kernel.spec.analysis_type, geometry=official_kernel.spec.geometry,
+            model=model_key, rows=rows, fit_rows=fit_rows,
+            diagnostic_rows=diagnostics if include_diagnostics or automatic_regularization else [],
+            solver_profile="gai_native", automatic_regularization=automatic_regularization,
+            regularization_order=problem.regularization_order,
+        )
+    if (official_kernel is not None and official_kernel.spec.model_id == "MOD005"
+            and phase_key == "adsorption"):
+        # Keep the verified non-AMS adsorption profile isolated from all other
+        # models and the as-yet unverified desorption path.
+        from .halsey_dft import prepare_halsey
+
+        try:
+            problem = prepare_halsey(official_kernel, pressure, quantity_stp)
+            area = problem.solve(lambda_value)
+            rows = problem.distribution(area, lambda_value, phase_key)
+            diagnostics = []
+            if include_diagnostics:
+                for value in DFT_REGULARIZATION_VALUES:
+                    candidate = area if value == lambda_value else problem.solve(value)
+                    rms, roughness = problem.metrics(candidate)
+                    diagnostics.append(dict(regularization=float(value), rms_error_mmol_g=rms,
+                                            distribution_roughness=roughness))
+        except (ValueError, np.linalg.LinAlgError):
+            return DftPoreDistributionResult("DFT", phase_key, "not_enough_distribution_points",
+                                             len(points), model=model_key, regularization=lambda_value)
+        except RuntimeError:
+            return DftPoreDistributionResult("DFT", phase_key, "solver_not_converged",
+                                             len(points), model=model_key, regularization=lambda_value)
+        fitted = problem.matrix @ area
+        fit_rows = [dict(point_index=float(i+1), relative_pressure=float(p),
+                         quantity_adsorbed_cm3_g_stp=float(q),
+                         model_quantity_adsorbed_cm3_g_stp=float(f),
+                         quantity_adsorbed_mmol_g=float(q/22.414),
+                         model_quantity_adsorbed_mmol_g=float(f/22.414), interpolated=1.0)
+                    for i, (p, q, f) in enumerate(zip(problem.pressure, problem.target_stp, fitted))]
+        return DftPoreDistributionResult(
+            "DFT", phase_key, "ok", len(points), regularization=lambda_value,
+            analysis_type=official_kernel.spec.analysis_type, geometry=official_kernel.spec.geometry,
+            model=model_key, rows=rows, fit_rows=fit_rows, diagnostic_rows=diagnostics,
+        )
     if official_kernel is not None:
         analysis_key = official_kernel.spec.analysis_type
         geometry_key = official_kernel.spec.geometry
         pore_widths = np.asarray(official_kernel.pore_widths_nm, dtype=float)
         kernel = interpolate_dft_kernel(official_kernel, pressure)
+        kernel = convert_dft_kernel_to_pore_volume_basis(
+            official_kernel,
+            kernel,
+            liquid_molar_volume_cm3_mmol=density_factor * 22.414,
+        )
     else:
         pore_widths = _dft_width_grid_nm(analysis_key)
         kernel = _dft_kernel_matrix(pressure, pore_widths, geometry_key)
