@@ -63,12 +63,14 @@ class ResultFileDelegate(QtWidgets.QStyledItemDelegate):
         self.table = table
 
     def paint(self, painter, option, index):
+        if getattr(self.table, "_transposed", False):
+            return super().paint(painter, option, index)
         opt = QtWidgets.QStyleOptionViewItem(option)
         self.initStyleOption(opt, index)
         opt.state &= ~QtWidgets.QStyle.State_HasFocus
         emphasized = index.row() == getattr(self.table, "_active_sample_row", -1) or index.row() in getattr(self.table, "_selected_cell_rows", set())
         if emphasized:
-            opt.state |= QtWidgets.QStyle.State_Selected
+            opt.font.setBold(True)
         for group in (QtGui.QPalette.Active, QtGui.QPalette.Inactive):
             opt.palette.setColor(group, QtGui.QPalette.Highlight, QtGui.QColor(SELECTION_BLUE))
             opt.palette.setColor(group, QtGui.QPalette.HighlightedText, opt.palette.color(QtGui.QPalette.Text))
@@ -80,26 +82,29 @@ class ResultFileDelegate(QtWidgets.QStyledItemDelegate):
         if getattr(self.table, "_has_completion_badges", False):
             opt.rect = opt.rect.adjusted(0, 0, -26, 0)
         style.drawControl(QtWidgets.QStyle.CE_ItemViewItem, opt, painter, opt.widget)
-        status = index.data(RESULT_STATUS_ROLE)
-        if status not in {"ok", "warning"}:
-            return
-        painter.save()
-        painter.setRenderHint(QtGui.QPainter.Antialiasing)
-        badge = QtCore.QRectF(option.rect.right() - 21, option.rect.center().y() - 7, 14, 14)
-        painter.setPen(QtCore.Qt.NoPen)
-        painter.setBrush(QtGui.QColor("#16a34a" if status == "ok" else "#d97706"))
-        painter.drawEllipse(badge)
-        painter.setPen(QtGui.QPen(QtGui.QColor("#ffffff"), 1.7, QtCore.Qt.SolidLine, QtCore.Qt.RoundCap, QtCore.Qt.RoundJoin))
-        x, y = badge.left(), badge.top()
-        if status == "ok":
-            path = QtGui.QPainterPath(QtCore.QPointF(x + 3, y + 7))
-            path.lineTo(x + 6, y + 10)
-            path.lineTo(x + 11, y + 4)
-            painter.drawPath(path)
-        else:
-            painter.drawLine(QtCore.QPointF(x + 7, y + 3), QtCore.QPointF(x + 7, y + 8))
-            painter.drawPoint(QtCore.QPointF(x + 7, y + 11))
-        painter.restore()
+        paint_status_badge(painter, option.rect, index.data(RESULT_STATUS_ROLE))
+
+
+def paint_status_badge(painter, rect, status):
+    if status not in {"ok", "warning"}:
+        return
+    painter.save()
+    painter.setRenderHint(QtGui.QPainter.Antialiasing)
+    badge = QtCore.QRectF(rect.right() - 21, rect.center().y() - 7, 14, 14)
+    painter.setPen(QtCore.Qt.NoPen)
+    painter.setBrush(QtGui.QColor("#16a34a" if status == "ok" else "#d97706"))
+    painter.drawEllipse(badge)
+    painter.setPen(QtGui.QPen(QtGui.QColor("#ffffff"), 1.7, QtCore.Qt.SolidLine, QtCore.Qt.RoundCap, QtCore.Qt.RoundJoin))
+    x, y = badge.left(), badge.top()
+    if status == "ok":
+        path = QtGui.QPainterPath(QtCore.QPointF(x + 3, y + 7))
+        path.lineTo(x + 6, y + 10)
+        path.lineTo(x + 11, y + 4)
+        painter.drawPath(path)
+    else:
+        painter.drawLine(QtCore.QPointF(x + 7, y + 3), QtCore.QPointF(x + 7, y + 8))
+        painter.drawPoint(QtCore.QPointF(x + 7, y + 11))
+    painter.restore()
 
 
 class TableCopyController(QtCore.QObject):
@@ -127,8 +132,10 @@ class TableCopyController(QtCore.QObject):
 
     def _selection_changed(self, *_args):
         self.table._selected_cell_rows = {index.row() for index in self.table.selectionModel().selectedIndexes()}
+        self.table._selected_cell_columns = {index.column() for index in self.table.selectionModel().selectedIndexes()}
         for view in self.views:
             view.viewport().update()
+            view.horizontalHeader().viewport().update()
 
     def selected_grid(self):
         selected = self.table.selectionModel().selectedIndexes()
@@ -189,6 +196,49 @@ class TableCopyController(QtCore.QObject):
         menu.exec_(view.viewport().mapToGlobal(position))
 
 
+class DetailTableInteractionController(QtCore.QObject):
+    """Keep copy selections local to the current interaction, without tooltips."""
+    def __init__(self, window, tables):
+        super().__init__(window)
+        self.window = window
+        self.tables = tables
+        QtWidgets.QApplication.instance().installEventFilter(self)
+
+    def eventFilter(self, watched, event):
+        kind = event.type()
+        if kind not in (QtCore.QEvent.ToolTip, QtCore.QEvent.MouseButtonPress):
+            return False
+        if not isinstance(watched, QtWidgets.QWidget):
+            return False
+        owner = next((table for table in self.tables if watched is table or table.isAncestorOf(watched)), None)
+        if kind == QtCore.QEvent.ToolTip:
+            if owner is not None:
+                QtWidgets.QToolTip.hideText()
+                return True
+            return False
+        if event.button() != QtCore.Qt.LeftButton:
+            return False
+        ancestor = watched
+        while ancestor is not None:
+            # Clicking the Copy action must retain the selection until copied.
+            if isinstance(ancestor, QtWidgets.QMenu):
+                if ancestor.rect().contains(ancestor.mapFromGlobal(event.globalPos())):
+                    return False
+                break
+            ancestor = ancestor.parentWidget()
+        if watched is not self.window and not self.window.isAncestorOf(watched):
+            return False
+        for table in self.tables:
+            views = [table]
+            frozen = getattr(table, "_frozen_table", None)
+            if frozen is not None:
+                views.append(frozen)
+            inside_cell = any(watched is view.viewport() and view.indexAt(event.pos()).isValid() for view in views)
+            if not inside_cell:
+                table.clearSelection()
+        return False
+
+
 def configure_cell_copy(table, frozen_view=None):
     # Only change selection styling; retain the existing fonts, headers and grid.
     table.setStyleSheet(table.styleSheet() + f"\nQTableView::item:selected {{ background: {SELECTION_BLUE}; color: #111827; }}")
@@ -234,13 +284,15 @@ def fit_content_widths(table):
             header = table.horizontalHeaderItem(column)
             title = header.text() if header is not None else ""
             width = max(header_metrics.horizontalAdvance(line) for line in title.split("\n")) + 24
+            if getattr(table, "_transpose_enabled", False):
+                width += 30 if column == 0 else (26 if getattr(table, "_transposed", False) else 0)
             reference = getattr(table, "_column_width_references", {}).get(column)
             if reference is not None:
                 width = max(width, metrics.horizontalAdvance(reference) + 24)
             for row in range(table.rowCount() if reference is None else 0):
                 item = table.item(row, column)
                 if item is not None:
-                    extra = 26 if column == 0 and getattr(table, "_has_completion_badges", False) else 0
+                    extra = 26 if column == 0 and getattr(table, "_has_completion_badges", False) and not getattr(table, "_transposed", False) else 0
                     width = max(width, metrics.horizontalAdvance(item.text()) + 24 + extra)
             width = max(40, width)
             # Do not overwrite a user's wider choice; grow if new content needs it.

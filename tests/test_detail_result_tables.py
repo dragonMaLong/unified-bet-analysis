@@ -2,6 +2,7 @@ import csv
 import io
 import os
 import unittest
+import tempfile
 from dataclasses import fields, replace
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -45,7 +46,9 @@ class DetailResultTableTests(unittest.TestCase):
 
     def setUp(self):
         # GUI event tests must not start background network update checks.
-        with patch.object(MainWindow, "_auto_check_for_updates"):
+        self.settings_directory = tempfile.TemporaryDirectory()
+        self.test_settings = QtCore.QSettings(str(Path(self.settings_directory.name) / "settings.ini"), QtCore.QSettings.IniFormat)
+        with patch.object(MainWindow, "_auto_check_for_updates"), patch("tristar_bet.ui.main_window.QtCore.QSettings", return_value=self.test_settings):
             self.w = MainWindow()
         self.samples = [sample("A", 1), sample("B", 2), sample("C", 3)]
         self.w.results = list(self.samples)
@@ -59,12 +62,178 @@ class DetailResultTableTests(unittest.TestCase):
 
     def tearDown(self):
         self.w.close()
+        # Dispose the application-level filter with its window; merely hiding
+        # dozens of test windows leaves their filters observing later tests.
+        self.w.deleteLater()
+        QtCore.QCoreApplication.sendPostedEvents(None, QtCore.QEvent.DeferredDelete)
+        self.test_settings.sync()
+        self.settings_directory.cleanup()
 
     def assert_orders_match(self):
         expected = [Path(result.file_name).stem for result in self.w.results]
         for table in self.w.analysis_result_tables.values():
             self.assertEqual([table.item(row, 0).text() for row in range(table.rowCount())], expected)
         self.assertEqual([self.w.sample_table.item(row, 1).text() for row in range(len(expected))], expected)
+
+    def test_transpose_button_in_frozen_header_and_shared_layout(self):
+        table = self.w.bet_results_table
+        self._show_table(table)
+        header = table.frozen_header()
+        button = header.transpose_button
+        self.assertTrue(button.isVisible())
+        self.assertLess(button.geometry().right(), table.columnWidth(0) - 3)
+        self.assertEqual(button.toolTip(), "切换为：样品作为列")
+        QtTest.QTest.mouseClick(button, QtCore.Qt.LeftButton)
+        self.app.processEvents()
+        for candidate in self.w.analysis_result_tables.values():
+            self.assertTrue(candidate._transposed)
+            self.assertEqual(candidate.horizontalHeaderItem(0).text(), "参数")
+            self.assertEqual(candidate.frozen_header().transpose_button.toolTip(), "切换为：样品作为行")
+        self.assertFalse(self.w.pore_volume_results_table._transposed)
+        self.assertIsNone(self.w.pore_volume_results_table.frozen_header().transpose_button)
+        QtTest.QTest.mouseClick(button, QtCore.Qt.LeftButton)
+        self.app.processEvents()
+        self.assertEqual(table.horizontalHeaderItem(0).text(), "文件名")
+        self.assert_orders_match()
+
+    def test_transposed_cells_match_original_values_badges_and_units(self):
+        originals = {}
+        for method, table in self.w.analysis_result_tables.items():
+            originals[method] = [[(table.item(r, c).text(), table.item(r, c).data(QtCore.Qt.UserRole))
+                                 for c in range(table.columnCount())] for r in range(table.rowCount())]
+        self.w._toggle_analysis_table_orientation()
+        for method, table in self.w.analysis_result_tables.items():
+            for sample_index, values in enumerate(originals[method]):
+                header = table.horizontalHeaderItem(sample_index + 1)
+                self.assertEqual(header.text(), values[0][0])
+                self.assertEqual(header.data(RESULT_STATUS_ROLE), "ok")
+                self.assertIn("区间计算完成", header.toolTip())
+                for parameter, value in enumerate(values[1:]):
+                    item = table.item(parameter, sample_index + 1)
+                    self.assertEqual((item.text(), item.data(QtCore.Qt.UserRole)), value)
+            self.assertEqual(table.item(0, 0).text(), "多点BET比表面积(m²/g)" if method == "bet" else
+                             ("比表面积(m²/g)" if method == "langmuir" else "外比表面积(m²/g)"))
+
+    def test_transposed_sort_tracks_sample_order_and_active_identity(self):
+        w = self.w
+        w._toggle_analysis_table_orientation()
+        table = w.bet_results_table
+        self._show_table(table)
+        parameter = table._parameter_keys.index("area") - 1
+        active = w.active_result()
+        # Single-click the frozen parameter label; do not select its row.
+        position = table._frozen_table.visualRect(table.model().index(parameter, 0)).center()
+        QtTest.QTest.mouseClick(table._frozen_table.viewport(), QtCore.Qt.LeftButton, pos=position)
+        self.app.processEvents()
+        self.assertFalse(table.selectionModel().hasSelection())
+        QtTest.QTest.mouseClick(table._frozen_table.viewport(), QtCore.Qt.LeftButton, pos=position)
+        self.assertFalse(table.selectionModel().hasSelection())
+        self.assertEqual([r.file_name for r in w.results], ["C.SMP", "B.SMP", "A.SMP"])
+        self.assertIs(w.active_result(), active)
+        for candidate in w.analysis_result_tables.values():
+            self.assertEqual([candidate.horizontalHeaderItem(c).text() for c in range(1, 4)], ["C", "B", "A"])
+            self.assertFalse(candidate.horizontalHeader().isSortIndicatorShown())
+        w.sort_samples_by_bet(True)
+        self.assertEqual([table.horizontalHeaderItem(c).text() for c in range(1, 4)], ["A", "B", "C"])
+
+    def test_transposed_hover_and_cell_selection_map_to_sample_column(self):
+        w = self.w
+        w._toggle_analysis_table_orientation()
+        table = w.t_plot_results_table
+        self._show_table(table)
+        index = table.model().index(5, 3)
+        table.scrollTo(index, QtWidgets.QAbstractItemView.PositionAtCenter)
+        self.app.processEvents()
+        QtTest.QTest.mouseMove(table.viewport(), table.visualRect(index).center())
+        self.app.processEvents()
+        self.assertEqual(w._hovered_sample_row, 2)
+        self.assertTrue(w.sample_table.item(2, 1).font().bold())
+        self.assertTrue(w.bet_results_table.item(0, 3).font().bold())
+        table.setCurrentCell(5, 3)
+        self.assertEqual(w.active_index, 2)
+        table.setCurrentCell(5, 0)
+        self.assertEqual(w.active_index, 2)
+        w._on_analysis_header_clicked("t_plot", 1)
+        self.assertEqual(w.active_index, 0)
+        self.assertEqual([r.file_name for r in w.results], ["A.SMP", "B.SMP", "C.SMP"])
+
+    def test_transposed_copy_and_single_point_rows(self):
+        w = self.w
+        w._toggle_analysis_table_orientation()
+        self.samples[0].method_options["jwgb_single_point_bet_pressure"] = .3
+        w.refresh_metrics()
+        table = w.bet_results_table
+        row = table._parameter_keys.index("single_area") - 1
+        self.assertIsInstance(table.item(row, 1).data(QtCore.Qt.UserRole), float)
+        self.assertEqual(table.item(row, 2).text(), "—")
+        self._select_rectangle(table, 0, 0, 2, 2)
+        copied = list(csv.reader(io.StringIO(table._copy_controller.mime_data().text()), delimiter="\t"))
+        self.assertEqual(copied, [[table.item(r, c).text() for c in range(3)] for r in range(3)])
+        self.samples[0].method_options.pop("jwgb_single_point_bet_pressure")
+        w.refresh_metrics()
+        self.assertNotIn("single_area", table._parameter_keys)
+
+    def test_transposed_preference_survives_new_window_and_empty_samples(self):
+        self.w._toggle_analysis_table_orientation()
+        self.assertTrue(self.test_settings.value("results/samples_as_columns", type=bool))
+        with patch.object(MainWindow, "_auto_check_for_updates"), patch("tristar_bet.ui.main_window.QtCore.QSettings", return_value=self.test_settings):
+            other = MainWindow()
+        try:
+            for table in other.analysis_result_tables.values():
+                self.assertTrue(table._transposed)
+                self.assertEqual(table.columnCount(), 1)
+                self.assertGreater(table.rowCount(), 0)
+                self.assertEqual(table.horizontalHeaderItem(0).text(), "参数")
+            other._toggle_analysis_table_orientation()
+            self.assertEqual(other.bet_results_table.rowCount(), 0)
+        finally:
+            other.close()
+            other.deleteLater()
+            QtCore.QCoreApplication.sendPostedEvents(None, QtCore.QEvent.DeferredDelete)
+
+    def test_transposed_drag_copy_header_highlight_and_frozen_button_resize(self):
+        w = self.w
+        w._toggle_analysis_table_orientation()
+        table = w.bet_results_table
+        self._show_table(table)
+        frozen = table._frozen_table
+        start = frozen.visualRect(table.model().index(0, 0)).center()
+        end = frozen.viewport().mapFromGlobal(table.viewport().mapToGlobal(table.visualRect(table.model().index(2, 2)).center()))
+        order = list(w.results)
+        QtTest.QTest.mousePress(frozen.viewport(), QtCore.Qt.LeftButton, pos=start)
+        QtTest.QTest.mouseMove(frozen.viewport(), end)
+        QtTest.QTest.mouseRelease(frozen.viewport(), QtCore.Qt.LeftButton, pos=end)
+        self.app.processEvents()
+        self.assertEqual(w.results, order)
+        self.assertEqual({(i.row(), i.column()) for i in table.selectedIndexes()}, {(r, c) for r in range(3) for c in range(3)})
+        before = table._copy_controller.selected_grid()
+        w.refresh_metrics()
+        self.assertEqual(table._copy_controller.selected_grid(), before)
+        header = table.horizontalHeader()
+        image = header.viewport().grab().toImage()
+        self.assertNotEqual(image.pixelColor(header.sectionViewportPosition(1) + 3, 3).name(), SELECTION_BLUE)
+        table.setColumnWidth(0, 300)
+        self.app.processEvents()
+        button = table.frozen_header().transpose_button
+        self.assertEqual(button.geometry().right(), 292)
+        QtTest.QTest.mouseClick(table.frozen_header().viewport(), QtCore.Qt.LeftButton, pos=QtCore.QPoint(15, 10))
+        self.assertTrue(table._transposed)
+
+    def test_transposed_move_and_remove_preserve_sample_header_mapping(self):
+        w = self.w
+        w._toggle_analysis_table_orientation()
+        w.move_sample_row(0, 3)
+        for table in w.analysis_result_tables.values():
+            self.assertEqual([table.horizontalHeaderItem(c).text() for c in range(1, 4)], ["B", "C", "A"])
+            for c, result in enumerate(w.results, 1):
+                self.assertEqual(table.item(0, c).data(QtCore.Qt.UserRole + 1), id(result))
+        w.results = w.results[:1]
+        w.visible_results = [True]
+        w.active_index = 0
+        w.refresh_all()
+        for table in w.analysis_result_tables.values():
+            self.assertEqual(table.columnCount(), 2)
+            self.assertEqual(table.horizontalHeaderItem(1).text(), "B")
 
     def test_tabs_and_deduplicated_overview(self):
         tabs = [self.w.detail_tabs.tabText(index) for index in range(self.w.detail_tabs.count())]
@@ -433,7 +602,7 @@ class DetailResultTableTests(unittest.TestCase):
         QtTest.QTest.mouseRelease(frozen.viewport(), QtCore.Qt.LeftButton, pos=end)
         self.assertEqual({(i.row(), i.column()) for i in table.selectedIndexes()}, {(r, c) for r in (0, 1) for c in range(3)})
 
-    def test_selected_cells_and_frozen_filename_share_sample_list_blue(self):
+    def test_only_selected_cells_are_blue_not_context_filename(self):
         table = self.w.bet_results_table
         self._show_table(table)
         self._select_rectangle(table, 1, 1, 1, 1)
@@ -441,8 +610,107 @@ class DetailResultTableTests(unittest.TestCase):
         for view, column in [(table, 1), (table._frozen_table, 0)]:
             rect = view.visualRect(table.model().index(1, column))
             pixel = view.viewport().grab().toImage().pixelColor(rect.left() + 3, rect.top() + 3)
-            self.assertEqual(pixel.name(), SELECTION_BLUE)
+            if view is table:
+                self.assertEqual(pixel.name(), SELECTION_BLUE)
+            else:
+                self.assertNotEqual(pixel.name(), SELECTION_BLUE)
         self.assertFalse(table.selectionModel().isSelected(table.model().index(1, 0)))
+        self._select_rectangle(table, 1, 0, 1, 1)
+        self.app.processEvents()
+        rect = table._frozen_table.visualRect(table.model().index(1, 0))
+        pixel = table._frozen_table.viewport().grab().toImage().pixelColor(rect.left() + 3, rect.top() + 3)
+        self.assertEqual(pixel.name(), SELECTION_BLUE)
+
+    def test_left_click_elsewhere_clears_detail_selection_in_both_orientations(self):
+        w = self.w
+        for transposed in (False, True):
+            if w._analysis_tables_transposed != transposed:
+                w._toggle_analysis_table_orientation()
+            table = w.bet_results_table
+            self._show_table(table)
+            targets = [(w.sample_table.viewport(), QtCore.QPoint(20, w.sample_table.viewport().height() - 12)),
+                       (w.isotherm_plot.viewport(), QtCore.QPoint(30, 30)),
+                       (w.detail_tabs.tabBar(), w.detail_tabs.tabBar().tabRect(0).center())]
+            for target, pos in targets:
+                w.detail_tabs.setCurrentWidget(table)
+                self._select_rectangle(table, 0, 1, 1, 2)
+                QtTest.QTest.mouseClick(target, QtCore.Qt.LeftButton, pos=pos)
+                self.assertFalse(table.selectionModel().hasSelection())
+
+    def test_right_click_copy_menu_does_not_clear_selection(self):
+        table = self.w.bet_results_table
+        self._show_table(table)
+        self._select_rectangle(table, 0, 1, 1, 2)
+        expected = table._copy_controller.selected_grid()
+        menu = QtWidgets.QMenu(table)
+        action = menu.addAction("复制")
+        copied = []
+        action.triggered.connect(lambda: copied.append(table._copy_controller.selected_grid()))
+        menu.popup(table.viewport().mapToGlobal(QtCore.QPoint(20, 30)))
+        self.app.processEvents()
+        QtTest.QTest.mouseClick(menu, QtCore.Qt.LeftButton, pos=menu.actionGeometry(action).center())
+        self.assertEqual(copied, [expected])
+        self.assertEqual(table._copy_controller.selected_grid(), expected)
+        menu.close()
+
+    def test_all_seven_detail_tables_suppress_tooltip_events(self):
+        class Probe(QtCore.QObject):
+            seen = 0
+            def eventFilter(self, obj, event):
+                if event.type() == QtCore.QEvent.ToolTip:
+                    self.seen += 1
+                return False
+        probe = Probe()
+        w = self.w
+        for index in range(7):
+            table = w.detail_tabs.widget(index)
+            self._show_table(table)
+            widgets = [table.viewport(), table.horizontalHeader().viewport()]
+            if hasattr(table, "_frozen_table"):
+                widgets += [table._frozen_table.viewport(), table.frozen_header().viewport()]
+            button = getattr(table.horizontalHeader(), "transpose_button", None)
+            if button is not None:
+                widgets.append(button)
+            for widget in widgets:
+                widget.installEventFilter(probe)
+                event = QtGui.QHelpEvent(QtCore.QEvent.ToolTip, QtCore.QPoint(10, 10), widget.mapToGlobal(QtCore.QPoint(10, 10)))
+                QtWidgets.QApplication.sendEvent(widget, event)
+                widget.removeEventFilter(probe)
+        self.assertEqual(probe.seen, 0)
+        event = QtGui.QHelpEvent(QtCore.QEvent.ToolTip, QtCore.QPoint(), QtCore.QPoint())
+        self.assertFalse(w._detail_interactions.eventFilter(w.sample_table.viewport(), event))
+
+    def test_header_click_sorts_without_selecting_whole_columns(self):
+        w = self.w
+        for index in range(7):
+            table = w.detail_tabs.widget(index)
+            self._show_table(table)
+            if table.rowCount():
+                self._select_rectangle(table, 0, 0, 0, 1)
+            header = table.horizontalHeader()
+            col = 1
+            pos = QtCore.QPoint(header.sectionViewportPosition(col) + 15, header.height() // 2)
+            QtTest.QTest.mouseClick(header.viewport(), QtCore.Qt.LeftButton, pos=pos)
+            self.assertFalse(table.selectionModel().hasSelection())
+            if table in w.analysis_result_tables.values():
+                method = next(key for key, value in w.analysis_result_tables.items() if value is table)
+                self.assertEqual(w._result_sort_state[:2], (method, table._column_keys[col]))
+
+    def test_header_divider_still_resizes_frozen_column_without_sorting(self):
+        table = self.w.bet_results_table
+        self._show_table(table)
+        header = table.frozen_header()
+        width = table.columnWidth(0)
+        start = QtCore.QPoint(width - 2, header.height() // 2)
+        end = start + QtCore.QPoint(45, 0)
+        QtTest.QTest.mousePress(header.viewport(), QtCore.Qt.LeftButton, pos=start)
+        event = QtGui.QMouseEvent(QtCore.QEvent.MouseMove, QtCore.QPointF(end), QtCore.Qt.NoButton, QtCore.Qt.LeftButton, QtCore.Qt.NoModifier)
+        QtWidgets.QApplication.sendEvent(header.viewport(), event)
+        QtTest.QTest.mouseRelease(header.viewport(), QtCore.Qt.LeftButton, pos=end)
+        self.assertGreater(table.columnWidth(0), width)
+        self.assertEqual(table.columnWidth(0), header.sectionSize(0))
+        self.assertFalse(table.selectionModel().hasSelection())
+        self.assertIsNone(self.w._result_sort_state)
 
     def _mock_pore_methods(self):
         methods = {}

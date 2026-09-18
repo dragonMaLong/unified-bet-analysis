@@ -101,10 +101,11 @@ from tristar_bet.ui.plots import (
 )
 from tristar_bet.ui.detail_tables import (
     ANALYSIS_COLUMNS, SINGLE_BET_COLUMNS, PORE_VOLUME_COLUMNS, configure_content_widths, fit_content_widths,
-    RESULT_STATUS_ROLE, ResultFileDelegate, configure_cell_copy,
+    RESULT_STATUS_ROLE, ResultFileDelegate, configure_cell_copy, DetailTableInteractionController,
 )
 from tristar_bet.version import __version__
 from tristar_bet.ui.region_endpoints import RegionEndpointControls
+from tristar_bet.ui.result_layout import AnalysisHeader
 
 
 APP_NAME = "BET 综合分析-DragonScience"
@@ -445,6 +446,8 @@ class SampleTableWidget(QtWidgets.QTableWidget):
         self._drop_indicator.setFixedHeight(2)
         self._drop_indicator.setStyleSheet("background: #2563eb;")
         self._drop_indicator.hide()
+        if getattr(self, "ANALYSIS_HEADER", False):
+            self.setHorizontalHeader(AnalysisHeader(self, self))
         self._init_frozen_columns()
 
     def frozen_header(self):
@@ -452,6 +455,8 @@ class SampleTableWidget(QtWidgets.QTableWidget):
 
     def _init_frozen_columns(self) -> None:
         self._frozen_table = QtWidgets.QTableView(self)
+        if getattr(self, "ANALYSIS_HEADER", False):
+            self._frozen_table.setHorizontalHeader(AnalysisHeader(self, self._frozen_table))
         self._frozen_table.setModel(self.model())
         self._frozen_table.setSelectionModel(self.selectionModel())
         self._frozen_table.setAcceptDrops(True)
@@ -845,6 +850,8 @@ def _paint_visibility_dot(painter, rect, state, enabled=True) -> None:
 
 class AnalysisResultsTable(SampleTableWidget):
     FROZEN_COLUMN_COUNT = 1
+    ANALYSIS_HEADER = True
+    parameterSortRequested = Signal(int)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -855,6 +862,21 @@ class AnalysisResultsTable(SampleTableWidget):
         self._cell_drag_timer.timeout.connect(self._extend_cell_drag)
         self._active_sample_row = -1
         self._selected_cell_rows = set()
+        self._transposed = False
+        self._transpose_enabled = False
+        self._hovered_sample_column = -1
+        self._parameter_click = None
+
+    def _set_hovered_row(self, row):
+        if not getattr(self, "_transposed", False):
+            super()._set_hovered_row(row)
+
+    def _set_hovered_sample_column(self, sample):
+        if not 0 <= sample < self.columnCount() - 1:
+            sample = -1
+        if sample != self._hovered_sample_column:
+            self._hovered_sample_column = sample
+            self.rowHovered.emit(sample)
 
     def _begin_row_drag(self, position):
         pass
@@ -911,12 +933,28 @@ class AnalysisResultsTable(SampleTableWidget):
         frozen = getattr(self, "_frozen_table", None)
         if frozen is None or obj not in (self.viewport(), frozen.viewport()):
             return super().eventFilter(obj, event)
+        if getattr(self, "_transposed", False):
+            if event.type() == QtCore.QEvent.MouseButtonDblClick and event.button() == QtCore.Qt.LeftButton:
+                index = self._cell_at_global_position(event.globalPos())
+                if index.isValid() and index.column() == 0:
+                    self._cell_drag_active = False
+                    self._cell_drag_timer.stop()
+                    self._parameter_click = None
+                    return True
+            elif event.type() == QtCore.QEvent.MouseMove:
+                index = self._cell_at_global_position(event.globalPos())
+                self._set_hovered_sample_column(index.column() - 1 if index.isValid() else -1)
+            elif event.type() in (QtCore.QEvent.Leave, QtCore.QEvent.Hide):
+                self._set_hovered_sample_column(-1)
         if event.type() == QtCore.QEvent.ContextMenu:
             # Let each view open its own copy menu at the actual pointer.
             return QtWidgets.QTableWidget.eventFilter(self, obj, event)
         if event.type() == QtCore.QEvent.MouseButtonPress and event.button() == QtCore.Qt.LeftButton:
             index = self._cell_at_global_position(event.globalPos())
+            self._parameter_click = None
             if index.isValid():
+                if self._transposed and index.column() == 0 and not event.modifiers():
+                    self._parameter_click = (index.row(), event.globalPos())
                 self.setFocus(QtCore.Qt.MouseFocusReason)
                 anchor = self.currentIndex() if event.modifiers() & QtCore.Qt.ShiftModifier else index
                 self._cell_drag_anchor = anchor if anchor.isValid() else index
@@ -928,6 +966,8 @@ class AnalysisResultsTable(SampleTableWidget):
                 self.selectionModel().setCurrentIndex(index, QtCore.QItemSelectionModel.NoUpdate)
                 return True
         if event.type() == QtCore.QEvent.MouseMove and getattr(self, "_cell_drag_active", False):
+            if self._parameter_click is not None and (event.globalPos() - self._parameter_click[1]).manhattanLength() >= QtWidgets.QApplication.startDragDistance():
+                self._parameter_click = None
             self._cell_drag_position = event.globalPos()
             self._extend_cell_drag()
             self._cell_drag_timer.start()
@@ -938,6 +978,12 @@ class AnalysisResultsTable(SampleTableWidget):
             self._cell_drag_timer.stop()
             self._cell_drag_active = False
             index = self._cell_at_global_position(event.globalPos(), clamp=True)
+            pending = self._parameter_click
+            self._parameter_click = None
+            if pending is not None and index.row() == pending[0] and index.column() == 0 and (event.globalPos() - pending[1]).manhattanLength() < QtWidgets.QApplication.startDragDistance():
+                self.clearSelection()
+                self.parameterSortRequested.emit(index.row())
+                return True
             self._select_cell_rectangle(index)
             if index.isValid():
                 self.selectionModel().setCurrentIndex(index, QtCore.QItemSelectionModel.NoUpdate)
@@ -2404,6 +2450,7 @@ class MainWindow(QtWidgets.QMainWindow):
         configure_cell_copy(self.target_table)
         self.analysis_result_tables = {}
         self.linked_result_tables = {}
+        self._analysis_tables_transposed = self.settings.value("results/samples_as_columns", False, type=bool)
         self._pore_volume_table_refresh_pending = False
         for method, columns in {**ANALYSIS_COLUMNS, "pore_volume": PORE_VOLUME_COLUMNS}.items():
             table = AnalysisResultsTable(0, len(columns))
@@ -2428,6 +2475,14 @@ class MainWindow(QtWidgets.QMainWindow):
             configure_content_widths(table)
             table._column_keys = [key for key, _label in columns]
             table._row_signatures = []
+            table._parameter_keys = list(table._column_keys)
+            if method != "pore_volume":
+                table._transpose_enabled = True
+                table._transposed = self._analysis_tables_transposed
+                for header in (table.horizontalHeader(), table.frozen_header()):
+                    header.enable_transpose(self._toggle_analysis_table_orientation)
+                table.parameterSortRequested.connect(
+                    lambda row, name=method: self._on_analysis_parameter_clicked(name, row, 0))
             table.rowHovered.connect(self._on_sample_table_row_hovered)
             table.currentCellChanged.connect(self._on_analysis_current_cell_changed)
             table.horizontalHeader().sectionClicked.connect(lambda column, name=method: self._on_analysis_header_clicked(name, column))
@@ -2450,6 +2505,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.detail_tabs.addTab(self.isotherm_table, "实际等温线")
         self.detail_tabs.addTab(self.target_table, "目标压力表")
         self.detail_tabs.currentChanged.connect(self._on_detail_tab_changed)
+        self._detail_interactions = DetailTableInteractionController(
+            self, [self.detail_tabs.widget(index) for index in range(self.detail_tabs.count())])
 
         sample_panel = QtWidgets.QWidget()
         sample_panel_layout = QtWidgets.QVBoxLayout(sample_panel)
@@ -5655,14 +5712,19 @@ class MainWindow(QtWidgets.QMainWindow):
             self._apply_table_row_hover(table, row, hovered)
 
     def _apply_table_row_hover(self, table, row: int, hovered: bool, first_column: int = 0) -> None:
-        if row < 0 or row >= table.rowCount():
+        transposed = getattr(table, "_transposed", False)
+        if row < 0 or row >= (table.columnCount() - 1 if transposed else table.rowCount()):
             return
         was_updating = self._updating_table
         self._updating_table = True
         previous_blocked = table.blockSignals(True)
         try:
-            for column in range(first_column, table.columnCount()):
-                item = table.item(row, column)
+            if transposed:
+                table._header_hover_sample = row if hovered else -1
+                table.horizontalHeader().viewport().update()
+            items = ([table.item(parameter, row + 1) for parameter in range(table.rowCount())]
+                     if transposed else [table.item(row, column) for column in range(first_column, table.columnCount())])
+            for item in items:
                 if item is None:
                     continue
                 base_font = item.data(QtCore.Qt.UserRole + 301)
@@ -5827,20 +5889,58 @@ class MainWindow(QtWidgets.QMainWindow):
                 if id(result) in selected_ids:
                     selection.select(self.sample_table.model().index(row, 0), QtCore.QItemSelectionModel.Select | QtCore.QItemSelectionModel.Rows)
 
+    def _toggle_analysis_table_orientation(self) -> None:
+        self._set_hovered_sample_row(None)
+        self._analysis_tables_transposed = not self._analysis_tables_transposed
+        self.settings.setValue("results/samples_as_columns", self._analysis_tables_transposed)
+        for table in self.analysis_result_tables.values():
+            table._cell_drag_timer.stop()
+            table._cell_drag_active = False
+            table.clearSelection()
+            table._transposed = self._analysis_tables_transposed
+            table._row_signatures = []
+            table._column_keys = []
+            table._hovered_row = -1
+            table._hovered_sample_column = -1
+            table._header_hover_sample = -1
+            table.horizontalScrollBar().setValue(0)
+            table.verticalScrollBar().setValue(0)
+            for header in (table.horizontalHeader(), table.frozen_header()):
+                header.update_layout_state()
+        self.refresh_analysis_result_tables()
+
+    def _on_analysis_parameter_clicked(self, method, row, column) -> None:
+        table = self.analysis_result_tables[method]
+        if table._transposed and column == 0 and 0 <= row < table.rowCount():
+            self._sort_analysis_parameter(method, table._parameter_keys[row + 1],
+                [table.item(row, col + 1).data(QtCore.Qt.UserRole) for col in range(len(self.results))], row)
+
     def _on_analysis_header_clicked(self, method: str, column: int) -> None:
         table = self.linked_result_tables[method]
+        if table._transposed:
+            if 1 <= column <= len(self.results):
+                self._select_sample_from_curve(column - 1)
+            return
         if len(self.results) < 2 or not (0 <= column < table.columnCount()):
             return
         key = table._column_keys[column]
         if key == "file":
             return
+        self._sort_analysis_parameter(method, key,
+            [table.item(row, column).data(QtCore.Qt.UserRole) for row in range(len(self.results))], column)
+
+    def _sort_analysis_parameter(self, method, key, raw_values, position):
+        if len(self.results) < 2:
+            return
         previous = self._result_sort_state
         ascending = not previous[2] if previous and previous[:2] == (method, key) else True
         self._result_sort_state = (method, key, ascending)
-        values = {id(result): table.item(row, column).data(QtCore.Qt.UserRole) for row, result in enumerate(self.results)}
-        self._sort_samples(lambda result: values[id(result)], ascending, table, column)
+        values = {id(result): value for result, value in zip(self.results, raw_values)}
+        self._sort_samples(lambda result: values[id(result)], ascending, self.linked_result_tables[method], position)
 
     def _on_analysis_current_cell_changed(self, row, _column, _previous_row, _previous_column) -> None:
+        if getattr(self.sender(), "_transposed", False):
+            row = _column - 1
         if not self._updating_analysis_tables and 0 <= row < len(self.results):
             self._analysis_selection_source = self.sender()
             try:
@@ -5855,10 +5955,14 @@ class MainWindow(QtWidgets.QMainWindow):
                 table._active_sample_row = self.active_index
                 table.viewport().update()
                 table._frozen_table.viewport().update()
+                table.horizontalHeader().viewport().update()
                 if table is self._analysis_selection_source or table._cell_drag_active:
                     continue
-                if 0 <= self.active_index < table.rowCount():
+                if table._transposed:
+                    index = table.model().index(max(0, table.currentRow()), self.active_index + 1)
+                else:
                     index = table.model().index(self.active_index, max(0, table.currentColumn()))
+                if 0 <= self.active_index < len(self.results) and index.isValid():
                     table.selectionModel().setCurrentIndex(index, QtCore.QItemSelectionModel.NoUpdate)
         finally:
             self._updating_analysis_tables = False
@@ -8220,22 +8324,39 @@ class MainWindow(QtWidgets.QMainWindow):
                 if method == "bet" and show_single:
                     columns += SINGLE_BET_COLUMNS
                 keys = [key for key, _label in columns]
+                table._parameter_keys = keys
+                transposed = table._transposed
+                layout_keys = (["parameter"] + [f"sample:{id(result)}" for result in self.results]
+                               if transposed else keys)
+                labels = (["参数"] + [_display_file_name(result) for result in self.results]
+                          if transposed else [label for _key, label in columns])
+                row_count = len(columns) - 1 if transposed else len(self.results)
                 previous_blocked = table.blockSignals(True)
                 scroll = table.horizontalScrollBar().value()
-                changed = table._column_keys != keys or table.rowCount() != len(self.results)
+                changed = table._column_keys != layout_keys or table.rowCount() != row_count
                 try:
-                    if table._column_keys != keys:
+                    if changed:
                         table._sizing_content = True
+                        table._hovered_sample_column = -1
                         try:
-                            table.setColumnCount(len(columns))
-                            table.setHorizontalHeaderLabels([label for _key, label in columns])
-                            for column in range(len(columns)):
+                            table.clearContents()
+                            table.setColumnCount(len(layout_keys))
+                            table.setHorizontalHeaderLabels(labels)
+                            table.setRowCount(row_count)
+                            for column in range(len(layout_keys)):
                                 table._frozen_table.setColumnHidden(column, column > 0)
                         finally:
                             table._sizing_content = False
-                        table._column_keys = keys
+                        table._column_keys = layout_keys
                         table._row_signatures = []
-                    table.setRowCount(len(self.results))
+                    table.setRowCount(row_count)
+                    if transposed:
+                        for parameter, (_key, label) in enumerate(columns[1:]):
+                            existing = table.item(parameter, 0)
+                            if existing is None or existing.text() != label:
+                                table.setItem(parameter, 0, self._table_item(label,
+                                    tooltip="",
+                                    alignment=QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter))
                     if [entry[0] for entry in table._row_signatures] != [id(result) for result in self.results]:
                         table.clearSelection()
                     signatures = []
@@ -8267,12 +8388,20 @@ class MainWindow(QtWidgets.QMainWindow):
                                 item.setToolTip(tooltip)
                             elif keys[column].startswith("single_"):
                                 item.setToolTip(display + "\n单点BET：" + single_status)
-                            table.setItem(row, column, item)
+                            if transposed:
+                                if column == 0:
+                                    table.setHorizontalHeaderItem(row + 1, item)
+                                else:
+                                    table.setItem(column - 1, row + 1, item)
+                            else:
+                                table.setItem(row, column, item)
                         if row == self._hovered_sample_row:
                             self._apply_table_row_hover(table, row, True)
                     table._row_signatures = signatures
                     if changed:
                         fit_content_widths(table)
+                    for header in (table.horizontalHeader(), table.frozen_header()):
+                        header.update_layout_state()
                     table.horizontalScrollBar().setValue(scroll)
                 finally:
                     table.blockSignals(previous_blocked)
@@ -9269,6 +9398,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _make_table(self, headers: list[str]) -> QtWidgets.QTableWidget:
         table = QtWidgets.QTableWidget(0, len(headers))
+        table.setHorizontalHeader(AnalysisHeader(table, table))
         table.setHorizontalHeaderLabels(headers)
         table.verticalHeader().setVisible(False)
         table.setAlternatingRowColors(True)

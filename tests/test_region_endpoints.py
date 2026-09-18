@@ -106,7 +106,12 @@ class RegionEndpointTests(unittest.TestCase):
         self.controls.cancel()
         self.controls.timer.setInterval(10)
         self.controls.show_labels()
-        QtTest.QTest.qWait(30)
+        # The full GUI suite can leave a busy event queue. Wait for the actual
+        # timeout condition instead of assuming it is delivered within 30 ms.
+        deadline = QtCore.QElapsedTimer()
+        deadline.start()
+        while any(label.isVisible() for label in self.controls.labels) and deadline.elapsed() < 1000:
+            QtTest.QTest.qWait(20)
         self.assertFalse(any(label.isVisible() for label in self.controls.labels))
 
     def test_click_label_and_ignore_plot_projection(self):
