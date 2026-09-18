@@ -12,4 +12,7 @@
 
 验证：124 项自动化测试通过；发布前另验证 Windows 单文件程序的模型资源、DFT 多进程计算及下载文件 SHA-256。
 
-本次发布 Windows x64 单文件程序，GitHub 与 Gitee 使用同一 EXE 和 SHA-256 校验文件。macOS 下载维持原有版本，不代表已发布 macOS 1.1.6。算法与厂商软件的对照仅覆盖已验证参考数据，不保证所有样品和设置完全一致。
+本次发布 Windows x64 单文件程序。Gitee 仓库附件已达 1 GB 配额，本版 Gitee 发布页面和软件更新入口暂指向 GitHub 的同一 EXE，SHA-256 校验不变，未删除任何历史版本附件。macOS 下载维持原有版本，不代表已发布 macOS 1.1.6。算法与厂商软件的对照仅覆盖已验证参考数据，不保证所有样品和设置完全一致。
+
+- [下载 Windows x64 EXE](https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.6/BET-DragonScience.exe)
+- [SHA256SUMS.txt](https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.6/SHA256SUMS.txt)
