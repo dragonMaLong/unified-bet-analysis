@@ -5,7 +5,7 @@
   "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.6/BET-DragonScience.exe",
   "gitee_source_name": "Gitee",
   "gitee_release_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/tag/v1.1.6",
-  "gitee_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.6/BET-DragonScience.exe",
+  "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.1.6/BET-DragonScience.exe",
   "github_source_name": "GitHub",
   "github_release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.1.6",
   "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.6/BET-DragonScience.exe",
@@ -15,7 +15,7 @@
     "windows-x64": {
       "asset_name": "BET-DragonScience.exe",
       "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.6/BET-DragonScience.exe",
-      "gitee_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.6/BET-DragonScience.exe",
+      "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.1.6/BET-DragonScience.exe",
       "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.1.6/BET-DragonScience.exe",
       "sha256": "1b5d8e034d23756d6c3e910e5c498fac11ccd7b4cd56f311d98bf7c82f273a6a"
     },
@@ -35,5 +35,5 @@
     }
   },
   "published_at": "2026-09-18",
-  "release_notes": "1. 各分析标签独立保存等温线蓝色选区，修正 HK 平滑微分。\n2. 引入轻量 Akima 曲线显示，优化标签切换和 DFT 正则化滑块响应。\n3. 绿色选框孔容按数据区间连续更新。\n4. 合并结果参数与样品条件，新增 BET、Langmuir、t-Plot 联动结果表。\n5. 状态改为文件名右侧标记，±误差独立分列，单点 BET 按需显示。\n6. 结果表、实际等温线及目标压力表支持拖选复制；统一菜单与选中颜色。\n7. 优化列宽、路径省略及双击复制，取消文件名排序和排序箭头。\nWindows x64；124 项测试通过，EXE 的 81 个模型及多进程自检通过。详细验证范围见 Release 说明。\nGitee 仓库附件额度已满，本版 Gitee 更新入口暂使用 GitHub 下载同一 EXE，SHA-256 校验不变。"
+  "release_notes": "1. 各分析标签独立保存等温线蓝色选区，修正 HK 平滑微分。\n2. 引入轻量 Akima 曲线显示，优化标签切换和 DFT 正则化滑块响应。\n3. 绿色选框孔容按数据区间连续更新。\n4. 合并结果参数与样品条件，新增 BET、Langmuir、t-Plot 联动结果表。\n5. 状态改为文件名右侧标记，±误差独立分列，单点 BET 按需显示。\n6. 结果表、实际等温线及目标压力表支持拖选复制；统一菜单与选中颜色。\n7. 优化列宽、路径省略及双击复制，取消文件名排序和排序箭头。\nWindows x64；124 项测试通过，EXE 的 81 个模型及多进程自检通过。详细验证范围见 Release 说明。"
 }
