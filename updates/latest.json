@@ -1,23 +1,23 @@
 {
-  "version": "1.2",
-  "release_name": "v1.2",
-  "release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.2",
-  "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.2/BET-DragonScience.exe",
+  "version": "1.2.1",
+  "release_name": "v1.2.1",
+  "release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.2.1",
+  "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.2.1/BET-DragonScience.exe",
   "gitee_source_name": "Gitee",
-  "gitee_release_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/tag/v1.2",
-  "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.2/BET-DragonScience.exe",
+  "gitee_release_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/tag/v1.2.1",
+  "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.2.1/BET-DragonScience.exe",
   "github_source_name": "GitHub",
-  "github_release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.2",
-  "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.2/BET-DragonScience.exe",
+  "github_release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.2.1",
+  "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.2.1/BET-DragonScience.exe",
   "asset_name": "BET-DragonScience.exe",
-  "sha256": "58aa8b281bc7bacf3da23bcebba708ada101790b4d5ba8e3d6e985b3f21b30dd",
+  "sha256": "e0345a2e65fa798450cc4b5947d53d63bfa7bee855d37d6eb37f58f8eba3d7ed",
   "platforms": {
     "windows-x64": {
       "asset_name": "BET-DragonScience.exe",
-      "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.2/BET-DragonScience.exe",
-      "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.2/BET-DragonScience.exe",
-      "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.2/BET-DragonScience.exe",
-      "sha256": "58aa8b281bc7bacf3da23bcebba708ada101790b4d5ba8e3d6e985b3f21b30dd"
+      "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.2.1/BET-DragonScience.exe",
+      "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.2.1/BET-DragonScience.exe",
+      "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.2.1/BET-DragonScience.exe",
+      "sha256": "e0345a2e65fa798450cc4b5947d53d63bfa7bee855d37d6eb37f58f8eba3d7ed"
     },
     "macos-x64": {
       "asset_name": "BET-DragonScience-macos-x64.dmg",
@@ -35,5 +35,5 @@
     }
   },
   "published_at": "2026-09-18",
-  "release_notes": "1. 新增“选区孔容量”联动结果表，并列显示 BJH、DH、HK、DFT 孔容量。\n2. BJH 与 DH 绿色选区独立保存和调整。\n3. 孔容列头第二行实时显示选框范围（nm，两位小数）。\n4. 绿色选框和等温线蓝色选框新增与压汞一致的边界数字显示和点击编辑。\n5. 支持回车/失焦确认、Esc 取消，输入校验、边界防交叉及精度保护。\n6. 优化范围更新、缓存复用及 HK 独立压力范围的使用。\nWindows x64；147 项测试及 EXE 的 81 个模型、多进程自检通过。macOS 下载仍为原有版本。"
+  "release_notes": "1. BET、Langmuir、t-Plot 结果表新增行列切换，支持样品作为列、参数作为行，并记忆布局。\n2. 两种布局均保留冻结列、完成标记、排序联动和框选复制。\n3. 取消下方七个详情标签内的悬浮提示。\n4. 左键点击表格外部或空白位置取消选区，右键复制保留选区。\n5. 统一单击参数排序，取消表头整列选中。\n6. 文件名联动仅加粗，蓝色底色仅表示实际选中的单元格。\nWindows x64；160 项测试及 EXE 的 81 个模型、多进程自检通过。macOS 下载仍为原有版本。"
 }
