@@ -42,6 +42,8 @@ from tristar_bet.analysis import (
     dh_pore_distribution,
     horvath_kawazoe_pore_distribution,
     langmuir_analysis,
+    pore_volume_in_range,
+    prepare_hk_distribution_rows,
     single_point_bet_analysis,
     t_plot_analysis,
     t_plot_analysis_by_thickness,
@@ -96,6 +98,10 @@ from tristar_bet.ui.plots import (
     replace_langmuir_fit_line,
     replace_t_plot_fit_line,
     set_sample_curve_hover_plots,
+)
+from tristar_bet.ui.detail_tables import (
+    ANALYSIS_COLUMNS, SINGLE_BET_COLUMNS, configure_content_widths, fit_content_widths,
+    RESULT_STATUS_ROLE, ResultFileDelegate, configure_cell_copy,
 )
 from tristar_bet.version import __version__
 
@@ -200,6 +206,28 @@ class UpdateDownloadWorker(QtCore.QObject):
 
 
 class SelectAllCheckBox(QtWidgets.QCheckBox):
+    def sizeHint(self) -> QtCore.QSize:
+        return QtCore.QSize(20, 20)
+
+    def hitButton(self, pos) -> bool:
+        return self.rect().contains(pos)
+
+    def paintEvent(self, event) -> None:
+        painter = QtGui.QPainter(self)
+        _paint_visibility_dot(painter, self.rect(), self.checkState(), self.isEnabled())
+
+    def eventFilter(self, watched, event) -> bool:
+        if watched is self.parentWidget() and event.type() in (QtCore.QEvent.Show, QtCore.QEvent.Resize):
+            QtCore.QTimer.singleShot(0, self._align_to_header)
+        return super().eventFilter(watched, event)
+
+    def _align_to_header(self) -> None:
+        header = self.parentWidget()
+        if isinstance(header, QtWidgets.QHeaderView):
+            size = self.sizeHint()
+            x = header.sectionViewportPosition(0) + (header.sectionSize(0) - size.width()) // 2
+            self.setGeometry(x, (header.height() - size.height()) // 2, size.width(), size.height())
+
     def nextCheckState(self) -> None:
         if self.checkState() == QtCore.Qt.Checked:
             self.setCheckState(QtCore.Qt.Unchecked)
@@ -782,8 +810,143 @@ class _NoFocusDelegate(QtWidgets.QStyledItemDelegate):
 
 
 class _FrozenColumnsDelegate(_NoFocusDelegate):
-    def initStyleOption(self, option, index) -> None:
-        super().initStyleOption(option, index)
+    def paint(self, painter, option, index) -> None:
+        state = index.data(QtCore.Qt.CheckStateRole)
+        if index.column() != 0 or state is None:
+            return super().paint(painter, option, index)
+        opt = QtWidgets.QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        opt.features &= ~QtWidgets.QStyleOptionViewItem.HasCheckIndicator
+        style = opt.widget.style() if opt.widget else QtWidgets.QApplication.style()
+        style.drawControl(QtWidgets.QStyle.CE_ItemViewItem, opt, painter, opt.widget)
+        _paint_visibility_dot(painter, opt.rect, state, bool(opt.state & QtWidgets.QStyle.State_Enabled))
+
+    def editorEvent(self, event, model, option, index) -> bool:
+        if index.column() == 0 and index.data(QtCore.Qt.CheckStateRole) is not None:
+            if event.type() == QtCore.QEvent.MouseButtonRelease and event.button() == QtCore.Qt.LeftButton:
+                state = index.data(QtCore.Qt.CheckStateRole)
+                return model.setData(index, QtCore.Qt.Unchecked if state == QtCore.Qt.Checked else QtCore.Qt.Checked, QtCore.Qt.CheckStateRole)
+        return super().editorEvent(event, model, option, index)
+
+
+def _paint_visibility_dot(painter, rect, state, enabled=True) -> None:
+    painter.save()
+    painter.setRenderHint(QtGui.QPainter.Antialiasing)
+    checked = int(state) != int(QtCore.Qt.Unchecked)
+    color = "#2563eb" if checked else "#6b7280"
+    painter.setPen(QtGui.QPen(QtGui.QColor(color if enabled else "#9ca3af"), 1))
+    fill = "#93c5fd" if int(state) == int(QtCore.Qt.PartiallyChecked) else ("#2563eb" if checked else "#ffffff")
+    painter.setBrush(QtGui.QColor(fill if enabled else "#e5e7eb"))
+    painter.drawEllipse(QtCore.QRectF(rect.center().x() - 6, rect.center().y() - 6, 12, 12))
+    painter.restore()
+
+
+class AnalysisResultsTable(SampleTableWidget):
+    FROZEN_COLUMN_COUNT = 1
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._cell_drag_active = False
+        self._cell_drag_anchor = QtCore.QModelIndex()
+        self._cell_drag_timer = QtCore.QTimer(self)
+        self._cell_drag_timer.setInterval(40)
+        self._cell_drag_timer.timeout.connect(self._extend_cell_drag)
+        self._active_sample_row = -1
+        self._selected_cell_rows = set()
+
+    def _begin_row_drag(self, position):
+        pass
+
+    def _update_row_drag(self, position, buttons):
+        return False
+
+    def _finish_row_drag(self, position, button):
+        return False
+
+    def hideEvent(self, event):
+        self._cell_drag_timer.stop()
+        self._cell_drag_active = False
+        super().hideEvent(event)
+
+    def _cell_at_global_position(self, position, *, clamp=False):
+        local = self.viewport().mapFromGlobal(position)
+        row = self.rowAt(local.y())
+        if row < 0 and clamp and self.rowCount():
+            row = 0 if local.y() < 0 else self.rowCount() - 1
+        frozen = self._frozen_table.viewport()
+        frozen_pos = frozen.mapFromGlobal(position)
+        column = 0 if frozen_pos.x() < frozen.width() else self.columnAt(local.x())
+        if column < 0 and clamp and self.columnCount():
+            column = self.columnCount() - 1
+        return self.model().index(row, column)
+
+    def _select_cell_rectangle(self, index):
+        if not self._cell_drag_anchor.isValid() or not index.isValid():
+            return
+        top, bottom = sorted((self._cell_drag_anchor.row(), index.row()))
+        left, right = sorted((self._cell_drag_anchor.column(), index.column()))
+        region = QtCore.QItemSelection(self.model().index(top, left), self.model().index(bottom, right))
+        selection = self.selectionModel()
+        if self._cell_drag_additive:
+            selection.select(self._cell_drag_baseline, QtCore.QItemSelectionModel.ClearAndSelect)
+            selection.select(region, QtCore.QItemSelectionModel.Toggle)
+        else:
+            selection.select(region, QtCore.QItemSelectionModel.ClearAndSelect)
+
+    def _extend_cell_drag(self):
+        if not self._cell_drag_active:
+            return
+        local = self.viewport().mapFromGlobal(self._cell_drag_position)
+        self._auto_scroll(local)
+        bar = self.horizontalScrollBar()
+        if local.x() >= self.viewport().width() - 12:
+            bar.setValue(bar.value() + 18)
+        elif local.x() < 0:
+            bar.setValue(bar.value() - 18)
+        self._select_cell_rectangle(self._cell_at_global_position(self._cell_drag_position, clamp=True))
+
+    def eventFilter(self, obj, event):
+        frozen = getattr(self, "_frozen_table", None)
+        if frozen is None or obj not in (self.viewport(), frozen.viewport()):
+            return super().eventFilter(obj, event)
+        if event.type() == QtCore.QEvent.ContextMenu:
+            # Let each view open its own copy menu at the actual pointer.
+            return QtWidgets.QTableWidget.eventFilter(self, obj, event)
+        if event.type() == QtCore.QEvent.MouseButtonPress and event.button() == QtCore.Qt.LeftButton:
+            index = self._cell_at_global_position(event.globalPos())
+            if index.isValid():
+                self.setFocus(QtCore.Qt.MouseFocusReason)
+                anchor = self.currentIndex() if event.modifiers() & QtCore.Qt.ShiftModifier else index
+                self._cell_drag_anchor = anchor if anchor.isValid() else index
+                self._cell_drag_baseline = QtCore.QItemSelection(self.selectionModel().selection())
+                self._cell_drag_additive = bool(event.modifiers() & QtCore.Qt.ControlModifier)
+                self._cell_drag_position = event.globalPos()
+                self._cell_drag_active = True
+                self._select_cell_rectangle(index)
+                self.selectionModel().setCurrentIndex(index, QtCore.QItemSelectionModel.NoUpdate)
+                return True
+        if event.type() == QtCore.QEvent.MouseMove and getattr(self, "_cell_drag_active", False):
+            self._cell_drag_position = event.globalPos()
+            self._extend_cell_drag()
+            self._cell_drag_timer.start()
+            index = self._cell_at_global_position(event.globalPos(), clamp=True)
+            self._set_hovered_row(index.row())
+            return True
+        if event.type() == QtCore.QEvent.MouseButtonRelease and event.button() == QtCore.Qt.LeftButton and getattr(self, "_cell_drag_active", False):
+            self._cell_drag_timer.stop()
+            self._cell_drag_active = False
+            index = self._cell_at_global_position(event.globalPos(), clamp=True)
+            self._select_cell_rectangle(index)
+            if index.isValid():
+                self.selectionModel().setCurrentIndex(index, QtCore.QItemSelectionModel.NoUpdate)
+            return True
+        return super().eventFilter(obj, event)
+
+    def _accept_file_drag_event(self, event) -> bool:
+        return False
+
+    def _accept_file_drop_event(self, event) -> bool:
+        return False
 
 
 def _check_state_value(state) -> int:
@@ -807,6 +970,7 @@ BET_PLOT_RANGE = (0.0, 1.0)
 LANGMUIR_DEFAULT_RANGE = (0.05, 0.30)
 LANGMUIR_PLOT_RANGE = (0.0, 1.0)
 T_PLOT_DEFAULT_PRESSURE_RANGE = (0.20, 0.50)
+T_PLOT_DEFAULT_ISOTHERM_RANGE = (0.0, 0.60)
 T_PLOT_PLOT_RANGE = (0.0, 1.0)
 HK_DEFAULT_PRESSURE_RANGE = (0.0, 0.05)
 CM3_STP_PER_MMOL = 22.414
@@ -1763,6 +1927,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._updating_sample_column_widths = False
         self._sample_column_widths_initialized = False
         self.sample_column_widths: dict[int, int] = {}
+        self._updating_analysis_tables = False
+        self._analysis_selection_source = None
+        self._analysis_detail_cache = {}
+        self._result_sort_state = None
         self.test_time_sort_ascending = False
         self.bet_sort_ascending = False
         self.langmuir_sort_ascending = False
@@ -1856,7 +2024,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.dft_regularization = DEFAULT_DFT_REGULARIZATION
         self.dft_automatic_regularization = True
         self.dft_regularization_apply_all = False
-        self._pending_dft_regularization_apply_all_value: float | None = None
+        self._pending_dft_regularization_value: float | None = None
         self._dft_regularization_preview_active = False
         self._dft_regularization_refresh_timer = QtCore.QTimer(self)
         self._dft_regularization_refresh_timer.setSingleShot(True)
@@ -1866,8 +2034,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.reference_name_edits: dict[str, QtWidgets.QLineEdit] = {}
         self._syncing_reference_tables = False
         self.region_is_log = False
-        self._isotherm_region_custom = False
-        self._last_isotherm_region_range: tuple[float, float] | None = None
+        self._custom_isotherm_region_keys: set[str] = set()
+        self._isotherm_region_ranges: dict[str, tuple[float, float]] = {}
+        self._displayed_isotherm_region_key: str | None = None
         self._setting_isotherm_region = False
         self._metrics_pending = False
         self._bet_region_pending = False
@@ -2000,7 +2169,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sample_table.setColumnWidth(LANGMUIR_COLUMN, 200)
         self.sample_table.setColumnWidth(T_PLOT_COLUMN, 200)
         self.sample_table.setColumnWidth(BJH_PORE_VOLUME_COLUMN, 190)
-        self.sample_table.setItemDelegate(_NoFocusDelegate(self.sample_table))
+        self.sample_table.setItemDelegate(_FrozenColumnsDelegate(self.sample_table))
         self.sample_table._frozen_table.setItemDelegate(_FrozenColumnsDelegate(self.sample_table._frozen_table))
         self.sample_table.itemChanged.connect(self.on_sample_item_changed)
         self.sample_table.currentCellChanged.connect(self.on_active_cell_changed)
@@ -2045,9 +2214,14 @@ class MainWindow(QtWidgets.QMainWindow):
             """
         )
         self.select_all_check.setParent(self.sample_table.frozen_header())
+        self.sample_table.frozen_header().installEventFilter(self.select_all_check)
         self.select_all_check.show()
 
         self.metrics_table = self._make_table(["参数", "值"])
+        self.metrics_table.horizontalHeader().setStretchLastSection(True)
+        self.metrics_table.setWordWrap(False)
+        self.metrics_table.setTextElideMode(QtCore.Qt.ElideRight)
+        self.metrics_table.itemDoubleClicked.connect(self._copy_summary_path)
 
         self.isotherm_plot = make_plot("吸附/脱附等温线", "吸附量 (cm3/g STP)", "相对压力 (P/P0)")
         self.bet_plot = make_plot("BET 拟合", "P/[V(P0-P)]", "相对压力 (P/P0)")
@@ -2211,7 +2385,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.isotherm_table = self._make_table(
             [
-                "#",
+                "测试点",
                 "阶段",
                 "P/P0",
                 "压力(mmHg)",
@@ -2221,18 +2395,51 @@ class MainWindow(QtWidgets.QMainWindow):
                 "Elapsed",
             ]
         )
-        self.target_table = self._make_table(["行", "阶段", "起始P/P0", "终止P/P0", "步长P/P0", "偏移"])
-        self.condition_table = self._make_table(["字段", "值"])
-        self.log_table = self._make_table(["来源", "偏移", "文本"])
-        self.report_module_table = self._make_table(["SUBSET", "偏移", "文本"])
+        self.target_table = self._make_table(["行", "阶段", "起始P/P0", "终止P/P0", "步长P/P0"])
+        self.isotherm_table.horizontalHeader().setStretchLastSection(True)
+        configure_cell_copy(self.isotherm_table)
+        configure_cell_copy(self.target_table)
+        self.analysis_result_tables = {}
+        for method in ANALYSIS_COLUMNS:
+            table = AnalysisResultsTable(0, len(ANALYSIS_COLUMNS[method]))
+            table.setHorizontalHeaderLabels([label for _key, label in ANALYSIS_COLUMNS[method]])
+            table.verticalHeader().hide()
+            table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+            table.setHorizontalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
+            table.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
+            # Match the existing detail tables, not the separately styled
+            # sample list.  The frozen file column uses the same native style.
+            table.setAlternatingRowColors(True)
+            table._frozen_table.setStyleSheet("")
+            table._frozen_table.setAlternatingRowColors(True)
+            table.frozen_header().setHighlightSections(table.horizontalHeader().highlightSections())
+            table._frozen_table.setShowGrid(True)
+            table.setItemDelegate(_NoFocusDelegate(table))
+            table._frozen_table.setItemDelegate(_NoFocusDelegate(table._frozen_table))
+            table.setItemDelegateForColumn(0, ResultFileDelegate(table, table))
+            table._frozen_table.setItemDelegateForColumn(0, ResultFileDelegate(table, table._frozen_table))
+            table._has_completion_badges = True
+            configure_cell_copy(table, table._frozen_table)
+            configure_content_widths(table)
+            table._column_keys = [key for key, _label in ANALYSIS_COLUMNS[method]]
+            table._row_signatures = []
+            table.rowHovered.connect(self._on_sample_table_row_hovered)
+            table.currentCellChanged.connect(self._on_analysis_current_cell_changed)
+            table.horizontalHeader().sectionClicked.connect(lambda column, name=method: self._on_analysis_header_clicked(name, column))
+            table.frozen_header().sectionClicked.connect(lambda column, name=method: self._on_analysis_header_clicked(name, column))
+            self.analysis_result_tables[method] = table
+            fit_content_widths(table)
+        self.bet_results_table = self.analysis_result_tables["bet"]
+        self.langmuir_results_table = self.analysis_result_tables["langmuir"]
+        self.t_plot_results_table = self.analysis_result_tables["t_plot"]
 
         self.detail_tabs = QtWidgets.QTabWidget()
         self.detail_tabs.addTab(self.metrics_table, "结果参数")
-        self.detail_tabs.addTab(self.condition_table, "样品/条件")
+        self.detail_tabs.addTab(self.bet_results_table, "BET")
+        self.detail_tabs.addTab(self.langmuir_results_table, "Langmuir")
+        self.detail_tabs.addTab(self.t_plot_results_table, "t-Plot")
         self.detail_tabs.addTab(self.isotherm_table, "实际等温线")
         self.detail_tabs.addTab(self.target_table, "目标压力表")
-        self.detail_tabs.addTab(self.report_module_table, "报告模块")
-        self.detail_tabs.addTab(self.log_table, "日志/样品管")
 
         sample_panel = QtWidgets.QWidget()
         sample_panel_layout = QtWidgets.QVBoxLayout(sample_panel)
@@ -4930,11 +5137,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self._store_dft_settings_for_result(result, settings)
 
     def _on_dft_regularization_apply_all_toggled(self, checked: bool) -> None:
+        # Commit a pending drag using its original sample scope first.
+        self._finish_deferred_dft_regularization_refresh()
         self.dft_regularization_apply_all = bool(checked)
-        if not checked:
-            self._pending_dft_regularization_apply_all_value = None
-            self._dft_regularization_preview_active = False
-            self._dft_regularization_refresh_timer.stop()
 
     def _sync_dft_diagnostic_line_to_regularization(self) -> None:
         line = getattr(self, "_dft_diagnostic_line", None)
@@ -4955,36 +5160,38 @@ class MainWindow(QtWidgets.QMainWindow):
         self.refresh_dft_plot(refresh_diagnostics=not preview, refresh_pore_cells=not preview)
         if not preview and self._is_dft_tab_active():
             self.refresh_isotherm_plot()
-        if not preview and self._active_pore_volume_method() == PORE_VOLUME_METHOD_DFT:
-            self._refresh_all_sample_bjh_pore_cells()
+
+    def _store_dft_regularization_change(self) -> None:
+        if self.dft_regularization_apply_all:
+            self._apply_dft_regularization_to_all(self.dft_regularization)
+        else:
+            self._save_dft_settings_for_active()
 
     def _schedule_deferred_dft_regularization_refresh(self) -> None:
         if not self._dft_regularization_refresh_timer.isActive():
             self._dft_regularization_refresh_timer.start()
 
     def _preview_deferred_dft_regularization_refresh(self) -> None:
-        if self._pending_dft_regularization_apply_all_value is None:
+        if self._pending_dft_regularization_value is None:
             return
-        value = float(self._pending_dft_regularization_apply_all_value)
-        self._pending_dft_regularization_apply_all_value = None
+        value = float(self._pending_dft_regularization_value)
+        self._pending_dft_regularization_value = None
         self.dft_regularization = max(0.0, min(value, 10.0))
         self._sync_dft_diagnostic_line_to_regularization()
-        self._apply_dft_regularization_to_all(value)
+        self._store_dft_regularization_change()
         self._dft_regularization_preview_active = True
         self._refresh_dft_regularization_dependents(preview=True)
 
     def _finish_deferred_dft_regularization_refresh(self, *_args) -> None:
-        if not getattr(self, "dft_regularization_apply_all", False):
-            return
         self._dft_regularization_refresh_timer.stop()
-        if self._pending_dft_regularization_apply_all_value is None and not self._dft_regularization_preview_active:
+        if self._pending_dft_regularization_value is None and not self._dft_regularization_preview_active:
             return
-        if self._pending_dft_regularization_apply_all_value is not None:
-            value = float(self._pending_dft_regularization_apply_all_value)
-            self._pending_dft_regularization_apply_all_value = None
+        if self._pending_dft_regularization_value is not None:
+            value = float(self._pending_dft_regularization_value)
+            self._pending_dft_regularization_value = None
             self.dft_regularization = max(0.0, min(value, 10.0))
             self._sync_dft_diagnostic_line_to_regularization()
-            self._apply_dft_regularization_to_all(value)
+            self._store_dft_regularization_change()
         self._dft_regularization_preview_active = False
         self._refresh_dft_regularization_dependents(preview=False)
 
@@ -5046,18 +5253,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self._use_manual_dft_regularization()
         self.dft_regularization = max(0.0, min(float(value), 10.0))
         self._sync_dft_diagnostic_line_to_regularization()
-        if getattr(self, "dft_regularization_apply_all", False):
-            slider = getattr(self, "dft_regularization_slider", None)
-            if slider is not None and slider.isDragging():
-                self._pending_dft_regularization_apply_all_value = self.dft_regularization
-                self._schedule_deferred_dft_regularization_refresh()
-                return
-            self._pending_dft_regularization_apply_all_value = None
-            self._dft_regularization_preview_active = False
-            self._dft_regularization_refresh_timer.stop()
-            self._apply_dft_regularization_to_all(self.dft_regularization)
-        else:
-            self._save_dft_settings_for_active()
+        slider = getattr(self, "dft_regularization_slider", None)
+        if slider is not None and slider.isDragging():
+            self._pending_dft_regularization_value = self.dft_regularization
+            self._schedule_deferred_dft_regularization_refresh()
+            return
+        self._pending_dft_regularization_value = None
+        self._dft_regularization_preview_active = False
+        self._dft_regularization_refresh_timer.stop()
+        self._store_dft_regularization_change()
         self._refresh_dft_regularization_dependents()
 
     def _on_dft_diagnostic_line_changed(self) -> None:
@@ -5240,6 +5444,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
 
         kept_visibility = {id(result): visible for result, visible in zip(self.results, self.visible_results)}
+        kept_colors = {id(result): self._analysis_sample_color(index) for index, result in enumerate(self.results)}
         active_result = self.results[self.active_index] if 0 <= self.active_index < len(self.results) else None
 
         # Drop per-sample settings for removed samples (keyed by object id).
@@ -5249,6 +5454,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._discard_sample_settings(removed)
 
         self.results = new_results
+        self.sample_colors = [kept_colors.get(id(result), DEFAULT_COLORS[index % len(DEFAULT_COLORS)]) for index, result in enumerate(new_results)]
         self.visible_results = [kept_visibility.get(id(result), True) for result in new_results]
         if active_result in new_results:
             self.active_index = new_results.index(active_result)
@@ -5257,6 +5463,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.refresh_all()
 
     def _discard_sample_settings(self, result) -> None:
+        self._analysis_detail_cache.pop(id(result), None)
         self.custom_bet_fit_ranges.pop(id(result), None)
         self.custom_langmuir_fit_ranges.pop(id(result), None)
         self.custom_t_plot_fit_ranges.pop(id(result), None)
@@ -5292,6 +5499,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         if replace:
             self.results = parsed
+            self.sample_colors = list(DEFAULT_COLORS)
+            self._analysis_detail_cache.clear()
             self.visible_results = [True] * len(parsed)
             self.active_index = 0
             self.custom_bet_fit_ranges.clear()
@@ -5314,10 +5523,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self._remove_dh_region()
             self._remove_hk_region()
             self._remove_dft_region()
-            self._isotherm_region_custom = False
-            self._last_isotherm_region_range = None
+            self._clear_isotherm_region_states()
         else:
+            old_count = len(self.results)
+            colors = [self._analysis_sample_color(index) for index in range(old_count)]
             self.results.extend(parsed)
+            self.sample_colors = colors + [DEFAULT_COLORS[index % len(DEFAULT_COLORS)] for index in range(old_count, len(self.results))]
             self.visible_results.extend([True] * len(parsed))
             if self.active_index < 0:
                 self.active_index = 0
@@ -5428,16 +5639,19 @@ class MainWindow(QtWidgets.QMainWindow):
         self._apply_sample_row_hover(target, True)
 
     def _apply_sample_row_hover(self, row: int, hovered: bool) -> None:
-        if row < 0 or row >= self.sample_table.rowCount():
+        self._apply_table_row_hover(self.sample_table, row, hovered, first_column=1)
+        for table in getattr(self, "analysis_result_tables", {}).values():
+            self._apply_table_row_hover(table, row, hovered)
+
+    def _apply_table_row_hover(self, table, row: int, hovered: bool, first_column: int = 0) -> None:
+        if row < 0 or row >= table.rowCount():
             return
         was_updating = self._updating_table
         self._updating_table = True
-        self.sample_table.blockSignals(True)
+        previous_blocked = table.blockSignals(True)
         try:
-            for column in range(self.sample_table.columnCount()):
-                if column == VISIBLE_COLUMN:
-                    continue
-                item = self.sample_table.item(row, column)
+            for column in range(first_column, table.columnCount()):
+                item = table.item(row, column)
                 if item is None:
                     continue
                 base_font = item.data(QtCore.Qt.UserRole + 301)
@@ -5459,10 +5673,10 @@ class MainWindow(QtWidgets.QMainWindow):
                         item.setForeground(QtGui.QBrush(base_foreground))
                         item.setData(QtCore.Qt.UserRole + 302, None)
         finally:
-            self.sample_table.blockSignals(False)
+            table.blockSignals(previous_blocked)
             self._updating_table = was_updating
-        self.sample_table.viewport().update()
-        frozen = getattr(self.sample_table, "_frozen_table", None)
+        table.viewport().update()
+        frozen = getattr(table, "_frozen_table", None)
         if frozen is not None:
             frozen.viewport().update()
 
@@ -5529,15 +5743,18 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         active_result = self.results[self.active_index] if 0 <= self.active_index < len(self.results) else None
         first_removed_row = rows[0]
+        colors = [self._analysis_sample_color(index) for index in range(len(self.results))]
         for row in reversed(rows):
             deleted = self.results.pop(row)
             self.visible_results.pop(row)
+            colors.pop(row)
             self._discard_sample_settings(deleted)
+        self.sample_colors = colors or list(DEFAULT_COLORS)
 
         if not self.results:
             self.active_index = -1
             self._reset_all_fit_regions()
-            self._isotherm_region_custom = False
+            self._clear_isotherm_region_states()
             self.refresh_all()
             self.statusBar().showMessage(f"已删除 {len(rows)} 个样品", 3000)
             return
@@ -5556,74 +5773,84 @@ class MainWindow(QtWidgets.QMainWindow):
         self.statusBar().showMessage(f"已删除 {len(rows)} 个样品", 3000)
 
     def sort_samples_by_test_time(self, ascending: bool) -> None:
-        active = self.active_result()
-        rows = list(zip(self.results, self.visible_results))
-        rows.sort(key=lambda row: self._test_time_sort_key(row[0]), reverse=not ascending)
-        self.results = [row[0] for row in rows]
-        self.visible_results = [row[1] for row in rows]
-        self.active_index = 0
-        if active is not None:
-            for index, result in enumerate(self.results):
-                if result is active:
-                    self.active_index = index
-                    break
-        self.refresh_all()
+        self._sort_samples(lambda result: self._test_time_sort_key(result) if result.test_started_raw else None, ascending, self.sample_table, TEST_TIME_COLUMN)
 
     def sort_samples_by_bet(self, ascending: bool) -> None:
-        active = self.active_result()
-        rows = list(zip(self.results, self.visible_results))
-        rows.sort(key=lambda row: self._bet_sort_key(row[0]), reverse=not ascending)
-        self.results = [row[0] for row in rows]
-        self.visible_results = [row[1] for row in rows]
-        self.active_index = 0
-        if active is not None:
-            for index, result in enumerate(self.results):
-                if result is active:
-                    self.active_index = index
-                    break
-        self.refresh_all()
+        self._sort_samples(lambda result: self._sample_bet_display(result)[0], ascending, self.sample_table, BET_COLUMN)
 
     def sort_samples_by_langmuir(self, ascending: bool) -> None:
-        active = self.active_result()
-        rows = list(zip(self.results, self.visible_results))
-        rows.sort(key=lambda row: self._langmuir_sort_key(row[0]), reverse=not ascending)
-        self.results = [row[0] for row in rows]
-        self.visible_results = [row[1] for row in rows]
-        self.active_index = 0
-        if active is not None:
-            for index, result in enumerate(self.results):
-                if result is active:
-                    self.active_index = index
-                    break
-        self.refresh_all()
+        self._sort_samples(lambda result: self._langmuir_analysis_for_result(result).surface_area_m2_g, ascending, self.sample_table, LANGMUIR_COLUMN)
 
     def sort_samples_by_t_plot(self, ascending: bool) -> None:
-        active = self.active_result()
-        rows = list(zip(self.results, self.visible_results))
-        rows.sort(key=lambda row: self._t_plot_sort_key(row[0]), reverse=not ascending)
-        self.results = [row[0] for row in rows]
-        self.visible_results = [row[1] for row in rows]
-        self.active_index = 0
-        if active is not None:
-            for index, result in enumerate(self.results):
-                if result is active:
-                    self.active_index = index
-                    break
-        self.refresh_all()
+        self._sort_samples(lambda result: self._t_plot_analysis_for_result(result).external_surface_area_m2_g, ascending, self.sample_table, T_PLOT_COLUMN)
 
     def sort_samples_by_bjh_pore_volume(self, ascending: bool) -> None:
+        self._sort_samples(self._selected_pore_volume_for_result, ascending, self.sample_table, BJH_PORE_VOLUME_COLUMN)
+
+    def _sort_samples(self, value_for_result, ascending, source_table, column) -> None:
+        values = [value_for_result(result) for result in self.results]
+        valid, missing = [], []
+        for index, value in enumerate(values):
+            unavailable = value is None or value == "" or (isinstance(value, (int, float)) and not math.isfinite(value))
+            (missing if unavailable else valid).append(index)
+        valid.sort(key=lambda index: values[index], reverse=not ascending)
+        self._reorder_samples(valid + missing)
+        for table in [self.sample_table, *self.analysis_result_tables.values()]:
+            for header in (table.horizontalHeader(), table.frozen_header()):
+                header.setSortIndicatorShown(False)
+
+    def _reorder_samples(self, order: list[int]) -> None:
         active = self.active_result()
-        rows = list(zip(self.results, self.visible_results))
-        rows.sort(key=lambda row: self._bjh_pore_volume_sort_key(row[0]), reverse=not ascending)
-        self.results = [row[0] for row in rows]
-        self.visible_results = [row[1] for row in rows]
-        self.active_index = 0
-        if active is not None:
-            for index, result in enumerate(self.results):
-                if result is active:
-                    self.active_index = index
-                    break
+        selected_ids = {id(self.results[row]) for row in self._selected_sample_rows()}
+        colors = [self._analysis_sample_color(index) for index in range(len(self.results))]
+        self._set_hovered_sample_row(None)
+        self.results = [self.results[index] for index in order]
+        self.visible_results = [self.visible_results[index] for index in order]
+        self.sample_colors = [colors[index] for index in order] or list(DEFAULT_COLORS)
+        self.active_index = next((index for index, result in enumerate(self.results) if result is active), -1)
         self.refresh_all()
+        selection = self.sample_table.selectionModel()
+        if selected_ids:
+            selection.clearSelection()
+            for row, result in enumerate(self.results):
+                if id(result) in selected_ids:
+                    selection.select(self.sample_table.model().index(row, 0), QtCore.QItemSelectionModel.Select | QtCore.QItemSelectionModel.Rows)
+
+    def _on_analysis_header_clicked(self, method: str, column: int) -> None:
+        table = self.analysis_result_tables[method]
+        if len(self.results) < 2 or not (0 <= column < table.columnCount()):
+            return
+        key = table._column_keys[column]
+        if key == "file":
+            return
+        previous = self._result_sort_state
+        ascending = not previous[2] if previous and previous[:2] == (method, key) else True
+        self._result_sort_state = (method, key, ascending)
+        values = {id(result): table.item(row, column).data(QtCore.Qt.UserRole) for row, result in enumerate(self.results)}
+        self._sort_samples(lambda result: values[id(result)], ascending, table, column)
+
+    def _on_analysis_current_cell_changed(self, row, _column, _previous_row, _previous_column) -> None:
+        if not self._updating_analysis_tables and 0 <= row < len(self.results):
+            self._analysis_selection_source = self.sender()
+            try:
+                self._select_sample_from_curve(row)
+            finally:
+                self._analysis_selection_source = None
+
+    def _sync_analysis_table_selection(self) -> None:
+        self._updating_analysis_tables = True
+        try:
+            for table in self.analysis_result_tables.values():
+                table._active_sample_row = self.active_index
+                table.viewport().update()
+                table._frozen_table.viewport().update()
+                if table is self._analysis_selection_source or table._cell_drag_active:
+                    continue
+                if 0 <= self.active_index < table.rowCount():
+                    index = table.model().index(self.active_index, max(0, table.currentColumn()))
+                    table.selectionModel().setCurrentIndex(index, QtCore.QItemSelectionModel.NoUpdate)
+        finally:
+            self._updating_analysis_tables = False
 
     def move_sample_row(self, source_index: int, insert_index: int) -> None:
         if len(self.results) < 2 or not (0 <= source_index < len(self.results)):
@@ -5633,23 +5860,13 @@ class MainWindow(QtWidgets.QMainWindow):
         if insert_index in (source_index, source_index + 1):
             return
 
-        active = self.active_result()
-        moved_result = self.results.pop(source_index)
-        moved_visible = self.visible_results.pop(source_index)
-
+        order = list(range(len(self.results)))
+        moved = order.pop(source_index)
         if insert_index > source_index:
             insert_index -= 1
 
-        self.results.insert(insert_index, moved_result)
-        self.visible_results.insert(insert_index, moved_visible)
-
-        self.active_index = insert_index
-        if active is not None:
-            for index, result in enumerate(self.results):
-                if result is active:
-                    self.active_index = index
-                    break
-        self.refresh_all()
+        order.insert(insert_index, moved)
+        self._reorder_samples(order)
 
     def refresh_all(self) -> None:
         self._load_t_plot_settings_for_active()
@@ -5665,7 +5882,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def refresh_sample_table(self) -> None:
         horizontal_scroll_bar = self.sample_table.horizontalScrollBar()
         horizontal_scroll_value = horizontal_scroll_bar.value()
-        self._hovered_sample_row = -1
+        self._set_hovered_sample_row(None)
         if hasattr(self.sample_table, "_hovered_row"):
             self.sample_table._hovered_row = -1
         self._updating_table = True
@@ -5859,11 +6076,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def refresh_active_views(self) -> None:
         self.refresh_metrics()
-        self.refresh_condition_table()
         self.refresh_isotherm_table()
         self.refresh_target_table()
-        self.refresh_report_module_table()
-        self.refresh_log_table()
 
     def refresh_plots(self) -> None:
         self.refresh_isotherm_plot()
@@ -7735,57 +7949,172 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def refresh_metrics(self) -> None:
         active = self.active_result()
-        if active is None:
-            self.metrics_table.setRowCount(0)
-            return
-        bet_fit_range = self._current_bet_fit_range() or self._bet_fit_range_for_result(active)
-        langmuir_fit_range = self._current_langmuir_fit_range() or self._langmuir_fit_range_for_result(active)
-        t_plot_fit_range = self._current_t_plot_fit_range() or self._t_plot_fit_range_for_result(active)
-        pressure_range = self._current_pressure_region()
-        bet = self._cached_bet_analysis(active, bet_fit_range[0], bet_fit_range[1])
-        langmuir = self._cached_langmuir_analysis(active, langmuir_fit_range[0], langmuir_fit_range[1])
-        if pressure_range is None:
-            t_plot = self._cached_t_plot_thickness_analysis(
-                active,
-                t_plot_fit_range[0],
-                t_plot_fit_range[1],
-                thickness_params=self.t_plot_thickness_params,
-                thickness_method=self.t_plot_thickness_method,
-            )
-        else:
-            t_plot = self._cached_t_plot_thickness_analysis(
-                active,
-                t_plot_fit_range[0],
-                t_plot_fit_range[1],
-                pressure_range[0],
-                pressure_range[1],
-                self.t_plot_thickness_params,
-                self.t_plot_thickness_method,
-            )
-        rows = active_metric_rows(
-            active,
-            pressure_range,
-            bet_fit_range,
-            langmuir_fit_range,
-            t_plot_fit_range,
-            t_plot_thickness_method=self.t_plot_thickness_method,
-            t_plot_thickness_params=self.t_plot_thickness_params,
-            t_plot_surface_area_mode=self.t_plot_surface_area_mode,
-            t_plot_input_surface_area=self.t_plot_surface_area_input,
-            t_plot_surface_area_correction=self.t_plot_surface_area_correction,
-            bet_analysis_result=bet,
-            langmuir_analysis_result=langmuir,
-            t_plot_analysis_result=t_plot,
-        )
+        rows = [] if active is None else summary_rows(active)
         self._fill_two_column_table(self.metrics_table, rows)
+        self.refresh_analysis_result_tables()
 
-    def refresh_condition_table(self) -> None:
-        active = self.active_result()
-        if active is None:
-            self.condition_table.setRowCount(0)
+    def _copy_summary_path(self, item) -> None:
+        if item.column() != 1:
             return
-        rows = condition_rows(active)
-        self._fill_two_column_table(self.condition_table, rows)
+        label = self.metrics_table.item(item.row(), 0)
+        if label is not None and label.text() == "文件路径":
+            QtWidgets.QApplication.clipboard().setText(item.text())
+            self.statusBar().showMessage("已复制完整文件路径", 2200)
+
+    def _analysis_cells_for_result(self, result):
+        settings = self._t_plot_settings_for_result(result)
+        t_range = self._t_plot_fit_range_for_result(result)
+        signature = self._fit_analysis_cache_key(
+            "detail_rows", result, self.custom_bet_fit_ranges.get(id(result)),
+            self.custom_langmuir_fit_ranges.get(id(result)), t_range, settings,
+            result.method_options.get("jwgb_single_point_bet_pressure"),
+            result.method_options.get("jwgb_single_point_bet_source_point_id"),
+        )
+        cached = self._analysis_detail_cache.get(id(result))
+        if cached is not None and cached[0] == signature:
+            return cached[1]
+        bet = self._bet_analysis_for_result(result)
+        langmuir = self._langmuir_analysis_for_result(result)
+        t_plot = self._t_plot_analysis_for_result(result)
+
+        def numeric(value):
+            if value is None or not math.isfinite(float(value)):
+                return ("—", None)
+            return (_fmt(value, 8), float(value))
+
+        def text(value):
+            return (str(value), str(value)) if value is not None and str(value) else ("—", None)
+
+        def base(fit):
+            return {
+                "file": text(_display_file_name(result)), "status": text(status_text(fit.status)),
+                "status_code": text(fit.status),
+                "area": numeric(fit.surface_area_m2_g),
+                "area_error": numeric(fit.surface_area_standard_error),
+                "slope": numeric(fit.slope), "slope_error": numeric(fit.slope_standard_error),
+                "intercept": numeric(fit.intercept), "intercept_error": numeric(fit.intercept_standard_error),
+                "capacity": numeric(fit.monolayer_capacity_cm3_g_stp),
+                "r": numeric(_correlation_from_r_squared(fit.r_squared)), "r2": numeric(fit.r_squared),
+                "p_min": numeric(fit.pressure_min), "p_max": numeric(fit.pressure_max),
+                "count": numeric(fit.point_count),
+            }
+
+        bet_cells, langmuir_cells, t_cells = base(bet), base(langmuir), base(t_plot)
+        bet_cells["c"] = numeric(bet.c_constant)
+        langmuir_cells["b"] = numeric(langmuir.langmuir_b)
+        if result.method_options.get("jwgb_single_point_bet_pressure") is not None:
+            single = single_point_bet_analysis(result)
+            source_points = ""
+            if single.rows:
+                lo = int(single.rows[0].get("source_point_min", 0))
+                hi = int(single.rows[0].get("source_point_max", 0))
+                source_points = str(lo) if lo == hi else f"{lo}–{hi}"
+            bet_cells.update({
+                "single_status": text(status_text(single.status)),
+                "single_area": numeric(single.surface_area_m2_g),
+                "single_p": numeric(single.pressure_min), "single_capacity": numeric(single.monolayer_capacity_cm3_g_stp),
+                "single_source": numeric(result.method_options.get("jwgb_single_point_bet_source_point_id")),
+                "single_points": text(source_points),
+            })
+        regression = _t_plot_mmol_regression(t_plot)
+        total_area = _t_plot_total_surface_area(
+            str(settings["surface_area_mode"]), bet.surface_area_m2_g,
+            langmuir.surface_area_m2_g, settings["surface_area_input"],
+        )
+        correction = float(settings["surface_area_correction"])
+        params = []
+        for name, value in dict(settings["thickness_params"]).items():
+            if isinstance(value, (list, tuple)):
+                value = f"{len(value)}项"
+            elif isinstance(value, (int, float)):
+                value = _fmt(value, 8)
+            params.append(f"{name}={value}")
+        t_cells.update({
+            "external_area": numeric(t_plot.external_surface_area_m2_g),
+            "micro_volume": numeric(t_plot.micropore_volume_cm3_g),
+            "micro_area": numeric(_micropore_area_m2_g(total_area, t_plot.external_surface_area_m2_g, correction)),
+            "slope": numeric(regression["slope"]), "slope_error": numeric(regression["slope_se"]),
+            "intercept": numeric(regression["intercept"]), "intercept_error": numeric(regression["intercept_se"]),
+            "t_min": numeric(t_range[0]), "t_max": numeric(t_range[1]),
+            "method": text(_t_plot_thickness_label(str(settings["thickness_method"]))),
+            "params": text("; ".join(params)),
+            "area_source": text(_t_plot_surface_area_label(str(settings["surface_area_mode"]))),
+            "total_area": numeric(total_area), "correction": numeric(correction),
+            "density": numeric(density_conversion_factor(result)),
+        })
+        cells = {"bet": bet_cells, "langmuir": langmuir_cells, "t_plot": t_cells}
+        self._analysis_detail_cache[id(result)] = (signature, cells)
+        return cells
+
+    def refresh_analysis_result_tables(self) -> None:
+        cells = [self._analysis_cells_for_result(result) for result in self.results]
+        show_single = any("single_status" in data["bet"] for data in cells)
+        self._updating_analysis_tables = True
+        try:
+            for method, table in self.analysis_result_tables.items():
+                columns = list(ANALYSIS_COLUMNS[method])
+                if method == "bet" and show_single:
+                    columns += SINGLE_BET_COLUMNS
+                keys = [key for key, _label in columns]
+                previous_blocked = table.blockSignals(True)
+                scroll = table.horizontalScrollBar().value()
+                changed = table._column_keys != keys or table.rowCount() != len(self.results)
+                try:
+                    if table._column_keys != keys:
+                        table._sizing_content = True
+                        try:
+                            table.setColumnCount(len(columns))
+                            table.setHorizontalHeaderLabels([label for _key, label in columns])
+                            for column in range(len(columns)):
+                                table._frozen_table.setColumnHidden(column, column > 0)
+                        finally:
+                            table._sizing_content = False
+                        table._column_keys = keys
+                        table._row_signatures = []
+                    table.setRowCount(len(self.results))
+                    if [entry[0] for entry in table._row_signatures] != [id(result) for result in self.results]:
+                        table.clearSelection()
+                    signatures = []
+                    for row, (result, data) in enumerate(zip(self.results, cells)):
+                        values = [data[method].get(key, ("—", None)) for key in keys]
+                        status = data[method]["status_code"][1]
+                        status_label = data[method]["status"][0]
+                        single_status = data[method].get("single_status", ("", None))[0]
+                        signature = (id(result), values, status, single_status)
+                        signatures.append(signature)
+                        if row < len(table._row_signatures) and table._row_signatures[row] == signature:
+                            continue
+                        changed = True
+                        for column, (display, value) in enumerate(values):
+                            item = self._table_item(
+                                display, tooltip=result.header.file_path if column == 0 else display,
+                                alignment=(QtCore.Qt.AlignRight if isinstance(value, (float, int)) else QtCore.Qt.AlignLeft) | QtCore.Qt.AlignVCenter,
+                            )
+                            item.setData(QtCore.Qt.UserRole, value)
+                            item.setData(QtCore.Qt.UserRole + 1, id(result))
+                            if column == 0:
+                                badge = "ok" if status == "ok" else ("warning" if str(status).startswith("warning") else "")
+                                if not badge and single_status == status_text("ok"):
+                                    badge = "ok"
+                                item.setData(RESULT_STATUS_ROLE, badge)
+                                tooltip = result.header.file_path + "\n" + status_label
+                                if single_status:
+                                    tooltip += "\n单点BET：" + single_status
+                                item.setToolTip(tooltip)
+                            elif keys[column].startswith("single_"):
+                                item.setToolTip(display + "\n单点BET：" + single_status)
+                            table.setItem(row, column, item)
+                        if row == self._hovered_sample_row:
+                            self._apply_table_row_hover(table, row, True)
+                    table._row_signatures = signatures
+                    if changed:
+                        fit_content_widths(table)
+                    table.horizontalScrollBar().setValue(scroll)
+                finally:
+                    table.blockSignals(previous_blocked)
+        finally:
+            self._updating_analysis_tables = False
+        self._sync_analysis_table_selection()
 
     def refresh_isotherm_table(self) -> None:
         active = self.active_result()
@@ -7806,6 +8135,7 @@ class MainWindow(QtWidgets.QMainWindow):
             ]
             for column, value in enumerate(values):
                 self._set_table_item(self.isotherm_table, row, column, str(value))
+        fit_content_widths(self.isotherm_table)
 
     def refresh_target_table(self) -> None:
         active = self.active_result()
@@ -7820,38 +8150,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 _fmt(item.starting_pressure_p_po, 9),
                 _fmt(item.ending_pressure_p_po, 9),
                 _fmt(item.pressure_increment_p_po, 9),
-                item.ending_pressure_rel_offset,
             ]
             for column, value in enumerate(values):
                 self._set_table_item(self.target_table, row, column, str(value))
-
-    def refresh_log_table(self) -> None:
-        active = self.active_result()
-        if active is None:
-            self.log_table.setRowCount(0)
-            return
-        rows = []
-        rows.extend(("SUBSET705", item.rel_offset, item.text) for item in active.log_messages)
-        rows.extend(("SUBSET1021", item.rel_offset, item.text) for item in active.sample_tube_strings)
-        self.log_table.setRowCount(len(rows))
-        for row, values in enumerate(rows):
-            for column, value in enumerate(values):
-                self._set_table_item(self.log_table, row, column, str(value))
-
-    def refresh_report_module_table(self) -> None:
-        active = self.active_result()
-        if active is None:
-            self.report_module_table.setRowCount(0)
-            return
-        report_subset_ids = (311, 312, 314, 315, 316, 331, 332)
-        rows = []
-        for subset_id in report_subset_ids:
-            for item in active.raw_strings.get(subset_id, []):
-                rows.append((f"SUBSET{subset_id}", item.rel_offset, item.text))
-        self.report_module_table.setRowCount(len(rows))
-        for row, values in enumerate(rows):
-            for column, value in enumerate(values):
-                self._set_table_item(self.report_module_table, row, column, str(value))
+        fit_content_widths(self.target_table)
 
     def active_result(self):
         if self.active_index < 0 or self.active_index >= len(self.results):
@@ -7911,7 +8213,11 @@ class MainWindow(QtWidgets.QMainWindow):
         label = self._pore_volume_method_label()
         if item is not None:
             item.setText("选区孔容量(cm3/g)")
-            item.setToolTip(f"当前按 {label} 标签页绿色选区积分；切换 BJH/DH/HK 标签页会自动切换算法")
+            item.setToolTip(
+                f"当前按 {label} 标签页绿色选区计算孔容量；切换 BJH/DH/HK/DFT 自动切换算法。\n"
+                "按选框与孔径区间的对数宽度交集比例计入增量孔容，不对绘图样条积分。\n"
+                "零起点区间按线性宽度分配；仅有累计数据时按相邻孔径推定区间。"
+            )
             item.setTextAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
         self._position_header_controls()
 
@@ -7989,6 +8295,8 @@ class MainWindow(QtWidgets.QMainWindow):
         return [data_min + span * 0.25, data_min + span * 0.55]
 
     def _default_isotherm_region(self, pressure: np.ndarray) -> list[float]:
+        if getattr(self, "plot_tabs", None) is not None and self.plot_tabs.currentWidget() is self.t_plot_tab:
+            return self._clamp_pressure_region(T_PLOT_DEFAULT_ISOTHERM_RANGE, pressure)
         if self._is_bjh_tab_active():
             bjh_pressure_range = self._default_bjh_pressure_range()
             if bjh_pressure_range is not None:
@@ -8004,6 +8312,53 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._is_dft_tab_active():
             return self._full_pressure_region(pressure)
         return self._default_pressure_region(pressure)
+
+    def _isotherm_region_key(self) -> str:
+        tabs = getattr(self, "plot_tabs", None)
+        current = tabs.currentWidget() if tabs is not None else None
+        if current is getattr(self, "langmuir_tab", None):
+            return "langmuir"
+        if current is getattr(self, "t_plot_tab", None):
+            return "t_plot"
+        if current is getattr(self, "bjh_tab", None):
+            return "bjh"
+        if current is getattr(self, "dh_tab", None):
+            return "dh"
+        if current is getattr(self, "hk_tab", None):
+            return "hk"
+        if current is getattr(self, "dft_tab", None):
+            return "dft"
+        return "bet"
+
+    @property
+    def _isotherm_region_custom(self) -> bool:
+        return self._isotherm_region_key() in self._custom_isotherm_region_keys
+
+    @_isotherm_region_custom.setter
+    def _isotherm_region_custom(self, custom: bool) -> None:
+        key = self._isotherm_region_key()
+        if custom:
+            self._custom_isotherm_region_keys.add(key)
+        else:
+            self._custom_isotherm_region_keys.discard(key)
+
+    @property
+    def _last_isotherm_region_range(self) -> tuple[float, float] | None:
+        return self._isotherm_region_ranges.get(self._isotherm_region_key())
+
+    @_last_isotherm_region_range.setter
+    def _last_isotherm_region_range(self, pressure_range: tuple[float, float] | None) -> None:
+        key = self._isotherm_region_key()
+        if pressure_range is None:
+            self._isotherm_region_ranges.pop(key, None)
+            return
+        lo, hi = sorted((float(pressure_range[0]), float(pressure_range[1])))
+        self._isotherm_region_ranges[key] = (lo, hi)
+
+    def _clear_isotherm_region_states(self) -> None:
+        self._custom_isotherm_region_keys.clear()
+        self._isotherm_region_ranges.clear()
+        self._displayed_isotherm_region_key = None
 
     @staticmethod
     def _full_pressure_region(pressure: np.ndarray) -> list[float]:
@@ -8097,6 +8452,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 bounds=[float(np.nanmin(pressure)), float(np.nanmax(pressure))],
                 movable=True,
             )
+            self._displayed_isotherm_region_key = self._isotherm_region_key()
             self.isotherm_plot.addItem(self.region, ignoreBounds=True)
             self.region.sigRegionChanged.connect(self.on_region_changed)
             if hasattr(self.region, "sigRegionChangeFinished"):
@@ -8121,6 +8477,7 @@ class MainWindow(QtWidgets.QMainWindow):
         except RuntimeError:
             pass
         self.region = None
+        self._displayed_isotherm_region_key = None
 
     def _set_default_isotherm_region(self, pressure_range: tuple[float, float]) -> None:
         pressure = self._all_pressure_values()
@@ -8192,7 +8549,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.refresh_metrics()
 
     def _current_pressure_region(self) -> tuple[float, float] | None:
-        if self.region is None:
+        current_key = self._isotherm_region_key()
+        if self.region is None or self._displayed_isotherm_region_key != current_key:
             return self._last_isotherm_region_range if self._isotherm_region_custom else None
         try:
             region_min, region_max = self.region.getRegion()
@@ -8330,7 +8688,14 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _bet_analysis_for_result(self, result):
         if not self._is_custom_bet_fit(result):
-            return bet_analysis(result)
+            # Keep JWGB MAP-only default point selection; a range-only call
+            # would accidentally include intervening AP points.
+            key = self._fit_analysis_cache_key("bet_default", result)
+            analysis = self._fit_analysis_cache.get(key)
+            if analysis is None:
+                analysis = bet_analysis(result)
+                self._store_fit_analysis_cache(key, analysis)
+            return analysis
         fit_range = self._bet_fit_range_for_result(result)
         return self._cached_bet_analysis(result, fit_range[0], fit_range[1])
 
@@ -8542,6 +8907,11 @@ class MainWindow(QtWidgets.QMainWindow):
             interaction_parameter_erg_cm4=float(settings["interaction_parameter"]),
             interaction_parameter_mode=str(settings["interaction_parameter_mode"]),
             cheng_yang_correction=bool(settings["cheng_yang_correction"]),
+            smooth=False,
+        )
+        rows = prepare_hk_distribution_rows(
+            rows,
+            pressure_range=self._hk_pressure_range(),
             smooth=bool(settings["smooth_derivative"]),
         )
         return self._hk_pore_volume_from_rows(rows, (w_min, w_max))
@@ -8568,38 +8938,14 @@ class MainWindow(QtWidgets.QMainWindow):
         rows: list[dict[str, float]],
         diameter_range: tuple[float, float],
     ) -> float | None:
-        if not rows:
-            return None
-        d_min, d_max = sorted((float(diameter_range[0]), float(diameter_range[1])))
-        volume = 0.0
-        for row in rows:
-            try:
-                diameter = float(row["pore_diameter_nm"])
-                increment = float(row["incremental_pore_volume_cm3_g"])
-            except (KeyError, TypeError, ValueError):
-                continue
-            if np.isfinite(diameter) and np.isfinite(increment) and d_min <= diameter <= d_max:
-                volume += increment
-        return volume
+        return pore_volume_in_range(rows, diameter_range)
 
     @staticmethod
     def _hk_pore_volume_from_rows(
         rows: list[dict[str, float]],
         width_range: tuple[float, float],
     ) -> float | None:
-        if not rows:
-            return None
-        w_min, w_max = sorted((float(width_range[0]), float(width_range[1])))
-        volume = 0.0
-        for row in rows:
-            try:
-                width = float(row.get("pore_width_nm", row.get("pore_diameter_nm")))
-                increment = float(row["incremental_pore_volume_cm3_g"])
-            except (TypeError, ValueError, KeyError):
-                continue
-            if np.isfinite(width) and np.isfinite(increment) and w_min <= width <= w_max:
-                volume += increment
-        return volume
+        return pore_volume_in_range(rows, width_range)
 
     def _selected_bjh_pore_volume_range(self) -> tuple[float, float]:
         return self.bjh_pore_volume_range
@@ -8761,14 +9107,24 @@ class MainWindow(QtWidgets.QMainWindow):
         table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         table.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
-        table.horizontalHeader().setStretchLastSection(True)
+        configure_content_widths(table)
         return table
 
     def _fill_two_column_table(self, table: QtWidgets.QTableWidget, rows: list[tuple[str, str]]) -> None:
+        if getattr(table, "_content_rows", None) == rows:
+            return
         table.setRowCount(len(rows))
         for row, (name, value) in enumerate(rows):
             self._set_table_item(table, row, 0, name)
             self._set_table_item(table, row, 1, value)
+            table.item(row, 1).setToolTip(value + ("\n双击复制完整文件路径" if name == "文件路径" else ""))
+        table._content_rows = list(rows)
+        if table is self.metrics_table:
+            timestamp = dict(rows).get("测试时间") or "2000-01-01 00:00:00"
+            if timestamp == "—":
+                timestamp = "2000-01-01 00:00:00"
+            table._column_width_references = {1: timestamp}
+        fit_content_widths(table)
 
     def _set_table_item(self, table: QtWidgets.QTableWidget, row: int, column: int, text: str) -> None:
         table.setItem(row, column, self._table_item(text))
@@ -8920,6 +9276,35 @@ def active_metric_rows(
     return rows
 
 
+def summary_rows(result) -> list[tuple[str, str]]:
+    """User-facing overview; method-specific calculations live in their tables."""
+    rows = [
+        ("文件名", _display_file_name(result)),
+        ("设备厂家", _instrument_manufacturer(result)),
+        ("设备型号", _instrument_model(result)),
+        ("数据点数", str(result.point_count)),
+    ]
+    aliases = {
+        "吸附质助记符": "吸附质简称", "吸附质属性": "吸附质名称",
+        "Stem volume": "样品管杆部体积", "Vbath": "浸液体积",
+        "Vfree factor": "自由空间校正体积", "实际温自由空间": "实测常温自由空间",
+        "Po 参考压力": "饱和参考压力P₀", "冷自由空间": "低温自由空间",
+    }
+    seen = {label for label, _value in rows}
+    for label, value in condition_rows(result):
+        if label == "Psat 表行数":
+            continue
+        label = aliases.get(label, label)
+        if label in seen:
+            continue
+        seen.add(label)
+        value = str(value or "").strip()
+        if value in {"", "g", "g/cm3", "cm3", "K", "mmHg", "s", "h", "nm2", "kPa"}:
+            value = "—"
+        rows.append((label, value))
+    return rows
+
+
 def condition_rows(result) -> list[tuple[str, str]]:
     sample = result.sample
     run = result.run_conditions
@@ -8969,6 +9354,7 @@ def condition_rows(result) -> list[tuple[str, str]]:
 
 def status_text(status: str) -> str:
     return {
+        "not_available": "无可用结果",
         "ok": "区间计算完成",
         "warning_negative_c": "区间计算完成；BET C<=0，需核对报告选点",
         "not_enough_points": "区间有效点不足",

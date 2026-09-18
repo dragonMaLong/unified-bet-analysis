@@ -2180,6 +2180,7 @@ def horvath_kawazoe_pore_distribution(
     interaction_parameter_mode: str = "input",
     cheng_yang_correction: bool = False,
     smooth: bool = False,
+    pressure_range: tuple[float, float] | None = None,
 ) -> PoreDistributionResult:
     points = adsorption_points(result)
     if len(points) < 3:
@@ -2244,11 +2245,9 @@ def horvath_kawazoe_pore_distribution(
         else:
             incremental_volume = max(0.0, cumulative_volume - previous_volume)
             width_delta = shell_width_nm - previous_width_nm
-            if width_delta <= 1e-12:
-                continue
             log_delta = math.log10(shell_width_nm) - math.log10(previous_width_nm)
-            differential_log = incremental_volume / log_delta if abs(log_delta) > 1e-12 else 0.0
-        differential_linear = incremental_volume / width_delta if width_delta > 1e-12 else 0.0
+            differential_log = incremental_volume / abs(log_delta) if abs(log_delta) > 1e-12 else 0.0
+        differential_linear = incremental_volume / abs(width_delta) if abs(width_delta) > 1e-12 else 0.0
         rows.append(
             {
                 "phase": "adsorption",
@@ -2269,6 +2268,7 @@ def horvath_kawazoe_pore_distribution(
                 "differential_pore_volume_cm3_g": differential_log,
                 "raw_differential_pore_volume_per_nm_cm3_g_nm": differential_linear,
                 "raw_differential_pore_volume_cm3_g": differential_log,
+                "hk_width_reversal": float(width_delta < -1e-12),
                 "hk_geometry": geometry_key,
                 "hk_interaction_parameter_erg_cm4": interaction_parameter,
             }
@@ -2278,9 +2278,134 @@ def horvath_kawazoe_pore_distribution(
 
     if len(rows) < 2:
         return PoreDistributionResult("Horvath-Kawazoe", "adsorption", "not_enough_distribution_points", len(rows), rows=rows)
-    if smooth:
-        _smooth_distribution_rows(rows)
+    if pressure_range is not None or smooth:
+        rows = prepare_hk_distribution_rows(rows, pressure_range=pressure_range, smooth=smooth)
+    if len(rows) < 2:
+        return PoreDistributionResult("Horvath-Kawazoe", "adsorption", "not_enough_distribution_points", len(rows), rows=rows)
     return PoreDistributionResult("Horvath-Kawazoe", "adsorption", "ok", len(rows), rows=rows)
+
+
+def prepare_hk_distribution_rows(
+    rows: Sequence[dict[str, float]],
+    *,
+    pressure_range: tuple[float, float] | None = None,
+    smooth: bool = False,
+) -> list[dict[str, float]]:
+    """Return independent HK rows with the selected pressure range applied first.
+
+    MicroActive recalculates a smoothed HK differential curve from the points in
+    the active relative-pressure interval.  Copying here is intentional: plot
+    refreshes must not mutate cached raw distribution rows.
+    """
+
+    selected: list[dict[str, float]] = []
+    if pressure_range is None:
+        selected = [dict(row) for row in rows]
+    else:
+        pressure_min, pressure_max = sorted((float(pressure_range[0]), float(pressure_range[1])))
+        for row in rows:
+            try:
+                pressure = float(row["relative_pressure"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if pressure_min <= pressure <= pressure_max:
+                selected.append(dict(row))
+
+    if smooth:
+        _smooth_hk_distribution_rows(selected)
+    return selected
+
+
+def _smooth_hk_distribution_rows(rows: list[dict[str, float]]) -> None:
+    _smooth_distribution_rows(rows)
+
+    # HK distributions are physical volume densities.  The generic Akima
+    # interpolation can undershoot slightly at an endpoint, but MicroActive
+    # keeps the reported HK differential non-negative.
+    for row in rows:
+        try:
+            linear = float(row["differential_pore_volume_per_nm_cm3_g_nm"])
+            logarithmic = float(row["differential_pore_volume_cm3_g"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if linear < 0.0 or logarithmic < 0.0:
+            row["differential_pore_volume_per_nm_cm3_g_nm"] = 0.0
+            row["differential_pore_volume_cm3_g"] = 0.0
+
+    _stabilize_hk_width_reversal(rows)
+
+
+def _stabilize_hk_width_reversal(rows: list[dict[str, float]]) -> None:
+    """Stabilize the first Cheng-Yang turning point without dropping it.
+
+    A Cheng-Yang width can reach a maximum while cumulative adsorbed volume
+    continues to rise.  Treating volume as a single-valued function of width
+    then creates a negative interpolation spike.  MicroActive retains the
+    pressure points and reports a finite plateau through the turn.  Estimate
+    that plateau parametrically from pressure and log-pressure slopes over the
+    three points surrounding the first reversal.
+    """
+
+    reversal_index = next(
+        (index for index, row in enumerate(rows) if float(row.get("hk_width_reversal", 0.0)) > 0.0),
+        None,
+    )
+    if reversal_index is None or reversal_index < 2:
+        return
+
+    local_rows = rows[reversal_index - 2 : reversal_index + 1]
+    try:
+        pressure = np.asarray([float(row["relative_pressure"]) for row in local_rows], dtype=float)
+        width = np.asarray([float(row["pore_width_nm"]) for row in local_rows], dtype=float)
+        volume = np.asarray([float(row["cumulative_pore_volume_cm3_g"]) for row in local_rows], dtype=float)
+    except (KeyError, TypeError, ValueError):
+        return
+    if (
+        np.any(~np.isfinite(pressure))
+        or np.any(~np.isfinite(width))
+        or np.any(~np.isfinite(volume))
+        or np.any(pressure <= 0.0)
+    ):
+        return
+
+    estimates: list[float] = []
+    for parameter in (pressure, np.log10(pressure)):
+        width_slope = float(np.polyfit(parameter, width, 1)[0])
+        volume_slope = float(np.polyfit(parameter, volume, 1)[0])
+        if abs(width_slope) > 1e-12:
+            estimate = abs(volume_slope / width_slope)
+            if _valid_number(estimate) and estimate > 0.0:
+                estimates.append(estimate)
+    if not estimates:
+        return
+
+    plateau = float(np.mean(estimates))
+    positive_values = [
+        float(row.get("differential_pore_volume_per_nm_cm3_g_nm", 0.0))
+        for row in rows
+        if _valid_number(row.get("differential_pore_volume_per_nm_cm3_g_nm", 0.0))
+        and float(row.get("differential_pore_volume_per_nm_cm3_g_nm", 0.0)) > 0.0
+    ]
+    if positive_values:
+        plateau = min(plateau, 10.0 * max(positive_values))
+    if not (_valid_number(plateau) and plateau > 0.0):
+        return
+
+    shoulder_index = reversal_index - 2
+    shoulder = float(rows[shoulder_index].get("differential_pore_volume_per_nm_cm3_g_nm", 0.0))
+    shoulder_weight = 1.0 / (SMOOTH_DERIVATIVE_WINDOW // 2 + 1.0)
+    _set_hk_linear_differential(
+        rows[shoulder_index],
+        (1.0 - shoulder_weight) * max(0.0, shoulder) + shoulder_weight * plateau,
+    )
+    _set_hk_linear_differential(rows[reversal_index - 1], plateau)
+    _set_hk_linear_differential(rows[reversal_index], plateau)
+
+
+def _set_hk_linear_differential(row: dict[str, float], value: float) -> None:
+    width = float(row.get("pore_width_nm", row.get("pore_diameter_nm", 0.0)))
+    row["differential_pore_volume_per_nm_cm3_g_nm"] = float(value)
+    row["differential_pore_volume_cm3_g"] = float(value) * math.log(10.0) * width if width > 0.0 else 0.0
 
 
 def _hk_resolved_properties(
@@ -2604,6 +2729,82 @@ def _moving_point_average(values: np.ndarray) -> np.ndarray:
     return smoothed
 
 
+def pore_volume_in_range(
+    rows: list[dict[str, float]],
+    pore_range_nm: tuple[float, float],
+) -> float | None:
+    """Integrate conserved bin volumes, independently of display smoothing.
+
+    Positive-width bins assume uniform density in log10(pore size).  A bin
+    explicitly starting at zero (the first HK interval) uses linear width.
+    Reversed HK intervals keep their own volume and are integrated separately.
+    Cumulative-only imported tables use consecutive coordinates in source order
+    when no bin edges are available.  An unresolvable/zero-width bin stays a
+    point contribution; no artificial extent is invented for it.
+    """
+    if not rows:
+        return None
+    lo, hi = sorted((float(pore_range_nm[0]), float(pore_range_nm[1])))
+    if not (math.isfinite(lo) and math.isfinite(hi)):
+        return None
+    if lo == hi:
+        return 0.0
+
+    volume = 0.0
+    previous_by_phase: dict[str, float] = {}
+    for row in rows:
+        try:
+            size = float(row.get("pore_width_nm", row.get("pore_diameter_nm")))
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(size) or size <= 0.0:
+            continue
+        phase = str(row.get("phase", ""))
+        previous_size = previous_by_phase.get(phase)
+        previous_by_phase[phase] = size
+        try:
+            increment = float(row["incremental_pore_volume_cm3_g"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not math.isfinite(increment):
+            continue
+
+        edges = None
+        for low_key, high_key in (
+            ("pore_width_low_nm", "pore_width_high_nm"),
+            ("pore_diameter_range_low_nm", "pore_diameter_range_high_nm"),
+        ):
+            try:
+                low, high = sorted((float(row[low_key]), float(row[high_key])))
+            except (KeyError, TypeError, ValueError):
+                continue
+            if math.isfinite(low) and math.isfinite(high) and low >= 0.0:
+                edges = (low, high)
+                break
+        if edges is None and previous_size is not None and "cumulative_pore_volume_cm3_g" in row:
+            edges = tuple(sorted((previous_size, size)))
+
+        if edges is None or edges[0] == edges[1]:
+            # Half-open selection makes adjacent selections additive even for
+            # legacy point masses.  Ordinary finite bins have no boundary mass.
+            if lo < size <= hi:
+                volume += increment
+            continue
+        low, high = edges
+        overlap_low, overlap_high = max(lo, low), min(hi, high)
+        if overlap_high <= overlap_low:
+            continue
+        if overlap_low == low and overlap_high == high:
+            fraction = 1.0
+        elif low == 0.0:
+            fraction = (overlap_high - overlap_low) / high
+        else:
+            # log1p preserves precision for very narrow intervals.
+            fraction = math.log1p((overlap_high - overlap_low) / overlap_low) / math.log1p((high - low) / low)
+        volume += increment * max(0.0, min(1.0, fraction))
+    return volume
+
+
 def bjh_pore_volume_cm3_g(
     result: TriStarResult,
     diameter_min_nm: float = 2.0,
@@ -2623,15 +2824,7 @@ def bjh_pore_volume_cm3_g(
         open_pore_fraction=open_pore_fraction,
         smooth=False,
     )
-    if not distribution.rows:
-        return None
-    lo, hi = sorted((float(diameter_min_nm), float(diameter_max_nm)))
-    volume = 0.0
-    for row in distribution.rows:
-        diameter = float(row["pore_diameter_nm"])
-        if lo <= diameter <= hi:
-            volume += float(row["incremental_pore_volume_cm3_g"])
-    return volume
+    return pore_volume_in_range(distribution.rows, (diameter_min_nm, diameter_max_nm))
 
 
 def kelvin_radius_nm(relative_pressure: float, temperature_k: float = 77.350) -> float | None:
@@ -2722,7 +2915,42 @@ def _akima_interpolate_array(
     if len(x_unique) < 5:
         return np.interp(target_x, x_unique, y_unique)
 
-    return np.asarray([_akima_interpolate_scalar(float(x), x_unique, y_unique) for x in target_x], dtype=float)
+    # All target points share the same knot slopes and derivatives.  Compute
+    # these once, then evaluate the Hermite segments in one NumPy operation.
+    # The scalar implementation is retained as a reference for numerical parity.
+    count = len(x_unique)
+    extended = np.empty(count + 3, dtype=float)
+    extended[2:-2] = np.diff(y_unique) / np.diff(x_unique)
+    extended[1] = 2.0 * extended[2] - extended[3]
+    extended[0] = 2.0 * extended[1] - extended[2]
+    extended[-2] = 2.0 * extended[-3] - extended[-4]
+    extended[-1] = 2.0 * extended[-2] - extended[-3]
+
+    deltas = np.abs(np.diff(extended))
+    left_weight = deltas[2 : count + 2]
+    right_weight = deltas[:count]
+    total_weight = left_weight + right_weight
+    threshold = 1e-9 * float(np.max(total_weight))
+    derivatives = 0.5 * (extended[3 : count + 3] + extended[:count])
+    np.divide(
+        left_weight * extended[1 : count + 1] + right_weight * extended[2 : count + 2],
+        total_weight,
+        out=derivatives,
+        where=total_weight > threshold,
+    )
+
+    targets = np.clip(np.asarray(target_x, dtype=float), x_unique[0], x_unique[-1])
+    intervals = np.clip(np.searchsorted(x_unique, targets, side="right") - 1, 0, count - 2)
+    spans = x_unique[intervals + 1] - x_unique[intervals]
+    ratio = (targets - x_unique[intervals]) / spans
+    ratio2 = ratio * ratio
+    ratio3 = ratio2 * ratio
+    return (
+        (2.0 * ratio3 - 3.0 * ratio2 + 1.0) * y_unique[intervals]
+        + (ratio3 - 2.0 * ratio2 + ratio) * spans * derivatives[intervals]
+        + (-2.0 * ratio3 + 3.0 * ratio2) * y_unique[intervals + 1]
+        + (ratio3 - ratio2) * spans * derivatives[intervals + 1]
+    )
 
 
 def _unique_sorted_xy(x_values: np.ndarray, y_values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

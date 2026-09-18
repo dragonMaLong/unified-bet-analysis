@@ -11,6 +11,7 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 from tristar_bet.analysis import (
     FitResult,
+    _akima_interpolate_array,
     adsorption_points,
     automatic_bet_range,
     bet_analysis,
@@ -20,6 +21,7 @@ from tristar_bet.analysis import (
     dh_pore_distribution,
     horvath_kawazoe_pore_distribution,
     langmuir_analysis,
+    prepare_hk_distribution_rows,
     t_plot_analysis,
     t_plot_analysis_by_thickness,
 )
@@ -53,6 +55,8 @@ DEFAULT_COLORS = (
     "#6366f1",
 )
 ACTIVE_LINE_WIDTH = 4
+SPLINE_SAMPLES_PER_INTERVAL = 12
+SPLINE_MAX_POINTS = 1600
 ACTIVE_SYMBOL_SIZE = 11
 ACTIVE_SYMBOL_PEN_WIDTH = 3
 DEFAULT_LINE_WIDTH = 2
@@ -1362,12 +1366,14 @@ def _register_sample_curve(
 ) -> None:
     if item is None:
         return
+    interaction_x = getattr(item, "_interaction_x_values", x_values)
+    interaction_y = getattr(item, "_interaction_y_values", y_values)
     _sample_curve_controller(plot).register(
         item,
         sample_index=sample_index,
         label=label,
-        x_values=x_values,
-        y_values=y_values,
+        x_values=interaction_x,
+        y_values=interaction_y,
     )
 
 
@@ -1451,6 +1457,7 @@ def plot_isotherm_multi(
             symbol_size=symbol_size,
             symbol_pen_width=symbol_pen_width,
             filled=base_point_filled,
+            x_log=bool(x_log),
         )
         if item is not None:
             legend_entries.append((index, item, name))
@@ -1473,6 +1480,7 @@ def plot_isotherm_multi(
             symbol_size=symbol_size,
             symbol_pen_width=symbol_pen_width,
             filled=False,
+            x_log=bool(x_log),
         )
         if desorption_item is not None:
             _register_sample_curve(
@@ -2251,15 +2259,17 @@ def plot_bjh_distribution_multi(
                 y = y[order]
                 pen = pg.mkPen(color, width=width)
                 pen.setStyle(line_style)
-                item = plot.plot(
+                item = _plot_spline_with_points(
+                    plot,
                     x,
                     y,
                     pen=pen,
                     symbol=BJH_DISPLAY_METRIC_SYMBOLS.get(metric, "o"),
-                    symbolSize=ACTIVE_SYMBOL_SIZE if is_active else DEFAULT_SYMBOL_SIZE,
-                    symbolPen=pg.mkPen(color, width=ACTIVE_SYMBOL_PEN_WIDTH if is_active else DEFAULT_SYMBOL_PEN_WIDTH),
-                    symbolBrush=pg.mkBrush("#ffffff"),
-                    name=None,
+                    symbol_size=ACTIVE_SYMBOL_SIZE if is_active else DEFAULT_SYMBOL_SIZE,
+                    symbol_pen=pg.mkPen(color, width=ACTIVE_SYMBOL_PEN_WIDTH if is_active else DEFAULT_SYMBOL_PEN_WIDTH),
+                    symbol_brush=pg.mkBrush("#ffffff"),
+                    x_log=True,
+                    nonnegative=True,
                 )
                 curve_label = f"{_legend_name(result)} BJH{phase_label} {bjh_display_metric_label(metric)}"
                 _register_sample_curve(
@@ -2380,15 +2390,17 @@ def plot_dh_distribution_multi(
                 y = y[order]
                 pen = pg.mkPen(color, width=width)
                 pen.setStyle(line_style)
-                item = plot.plot(
+                item = _plot_spline_with_points(
+                    plot,
                     x,
                     y,
                     pen=pen,
                     symbol=BJH_DISPLAY_METRIC_SYMBOLS.get(metric, "o"),
-                    symbolSize=ACTIVE_SYMBOL_SIZE if is_active else DEFAULT_SYMBOL_SIZE,
-                    symbolPen=pg.mkPen(color, width=ACTIVE_SYMBOL_PEN_WIDTH if is_active else DEFAULT_SYMBOL_PEN_WIDTH),
-                    symbolBrush=pg.mkBrush("#ffffff"),
-                    name=None,
+                    symbol_size=ACTIVE_SYMBOL_SIZE if is_active else DEFAULT_SYMBOL_SIZE,
+                    symbol_pen=pg.mkPen(color, width=ACTIVE_SYMBOL_PEN_WIDTH if is_active else DEFAULT_SYMBOL_PEN_WIDTH),
+                    symbol_brush=pg.mkBrush("#ffffff"),
+                    x_log=True,
+                    nonnegative=True,
                 )
                 curve_label = f"{_legend_name(result)} DH{phase_label} {bjh_display_metric_label(metric)}"
                 _register_sample_curve(
@@ -2473,7 +2485,7 @@ def plot_hk_distribution_multi(
                 interaction_parameter_erg_cm4=sample_interaction_parameter,
                 interaction_parameter_mode=sample_interaction_mode,
                 cheng_yang_correction=sample_cheng_yang,
-                smooth=sample_smooth,
+                smooth=False,
             )
             rows = list(distribution.rows)
         else:
@@ -2488,10 +2500,14 @@ def plot_hk_distribution_multi(
                     interaction_parameter_erg_cm4=sample_interaction_parameter,
                     interaction_parameter_mode=sample_interaction_mode,
                     cheng_yang_correction=sample_cheng_yang,
-                    smooth=sample_smooth,
+                    smooth=False,
                 )
             )
-        rows = _bjh_rows_in_pressure_range(rows, pressure_range)
+        rows = prepare_hk_distribution_rows(
+            rows,
+            pressure_range=pressure_range,
+            smooth=sample_smooth,
+        )
         rows_by_key[(index, "adsorption")] = list(rows)
         if not rows:
             continue
@@ -2510,18 +2526,17 @@ def plot_hk_distribution_multi(
             continue
         x = x[mask]
         y = y[mask]
-        order = np.argsort(x)
-        x = x[order]
-        y = y[order]
-        item = plot.plot(
+        item = _plot_spline_with_points(
+            plot,
             x,
             y,
             pen=pg.mkPen(color, width=width),
             symbol=HK_DISPLAY_METRIC_SYMBOLS.get(metric, "o"),
-            symbolSize=ACTIVE_SYMBOL_SIZE if is_active else DEFAULT_SYMBOL_SIZE,
-            symbolPen=pg.mkPen(color, width=ACTIVE_SYMBOL_PEN_WIDTH if is_active else DEFAULT_SYMBOL_PEN_WIDTH),
-            symbolBrush=pg.mkBrush("#ffffff"),
-            name=None,
+            symbol_size=ACTIVE_SYMBOL_SIZE if is_active else DEFAULT_SYMBOL_SIZE,
+            symbol_pen=pg.mkPen(color, width=ACTIVE_SYMBOL_PEN_WIDTH if is_active else DEFAULT_SYMBOL_PEN_WIDTH),
+            symbol_brush=pg.mkBrush("#ffffff"),
+            x_log=True,
+            nonnegative=True,
         )
         curve_label = f"{_legend_name(result)} HK {hk_display_metric_label(metric)}"
         _register_sample_curve(
@@ -2618,15 +2633,17 @@ def plot_dft_distribution_multi(
         order = np.argsort(x)
         x = x[order]
         y = y[order]
-        item = plot.plot(
+        item = _plot_spline_with_points(
+            plot,
             x,
             y,
             pen=pg.mkPen(color, width=width),
             symbol="o",
-            symbolSize=ACTIVE_SYMBOL_SIZE if is_active else DEFAULT_SYMBOL_SIZE,
-            symbolPen=pg.mkPen(color, width=ACTIVE_SYMBOL_PEN_WIDTH if is_active else DEFAULT_SYMBOL_PEN_WIDTH),
-            symbolBrush=pg.mkBrush("#ffffff"),
-            name=None,
+            symbol_size=ACTIVE_SYMBOL_SIZE if is_active else DEFAULT_SYMBOL_SIZE,
+            symbol_pen=pg.mkPen(color, width=ACTIVE_SYMBOL_PEN_WIDTH if is_active else DEFAULT_SYMBOL_PEN_WIDTH),
+            symbol_brush=pg.mkBrush("#ffffff"),
+            x_log=True,
+            nonnegative=True,
         )
         curve_label = f"{_legend_name(result)} DFT"
         _register_sample_curve(
@@ -3000,6 +3017,144 @@ def _plot_dft_isotherm_fit(plot: pg.PlotWidget, fit_rows: list[dict[str, float]]
     return item, x.tolist(), y.tolist()
 
 
+def _monotonic_xy_segments(x: np.ndarray, y: np.ndarray) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Split a curve where its x direction reverses, sharing the turning point."""
+
+    count = min(int(x.size), int(y.size))
+    if count <= 1:
+        return [(x[:count], y[:count])] if count else []
+    segments: list[tuple[np.ndarray, np.ndarray]] = []
+    start = 0
+    direction = 0
+    for index in range(1, count):
+        delta = float(x[index] - x[index - 1])
+        next_direction = 1 if delta > 0.0 else -1 if delta < 0.0 else 0
+        if next_direction == 0:
+            if index - start >= 2:
+                segments.append((x[start:index], y[start:index]))
+            segments.append((x[index - 1 : index + 1], y[index - 1 : index + 1]))
+            start = index
+            direction = 0
+            continue
+        if direction and next_direction != direction:
+            segments.append((x[start:index], y[start:index]))
+            start = index - 1
+        direction = next_direction
+    if count - start >= 1:
+        segments.append((x[start:count], y[start:count]))
+    return segments
+
+
+def _spline_display_xy(
+    x_values,
+    y_values,
+    *,
+    x_log: bool = False,
+    nonnegative: bool = False,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Generate a display-only Akima curve without changing source points."""
+
+    x = np.asarray(x_values, dtype=float)
+    y = np.asarray(y_values, dtype=float)
+    count = min(int(x.size), int(y.size))
+    if count <= 0:
+        return np.asarray([], dtype=float), np.asarray([], dtype=float)
+    x = x[:count]
+    y = y[:count]
+    mask = np.isfinite(x) & np.isfinite(y)
+    if x_log:
+        mask &= x > 0.0
+    x = x[mask]
+    y = y[mask]
+    if x.size <= 2:
+        return x, np.maximum(y, 0.0) if nonnegative else y
+
+    curve_x_parts: list[np.ndarray] = []
+    curve_y_parts: list[np.ndarray] = []
+    for segment_x, segment_y in _monotonic_xy_segments(x, y):
+        if segment_x.size <= 2:
+            dense_x = np.asarray(segment_x, dtype=float)
+            dense_y = np.asarray(segment_y, dtype=float)
+        else:
+            interpolation_x = np.log10(segment_x) if x_log else np.asarray(segment_x, dtype=float)
+            unique_count = int(np.unique(interpolation_x).size)
+            if unique_count <= 2:
+                dense_x = np.asarray(segment_x, dtype=float)
+                dense_y = np.asarray(segment_y, dtype=float)
+            else:
+                sample_count = min(
+                    SPLINE_MAX_POINTS,
+                    max(unique_count, (unique_count - 1) * SPLINE_SAMPLES_PER_INTERVAL + 1),
+                )
+                dense_interpolation_x = np.linspace(
+                    float(np.min(interpolation_x)),
+                    float(np.max(interpolation_x)),
+                    sample_count,
+                )
+                dense_y = _akima_interpolate_array(interpolation_x, segment_y, dense_interpolation_x)
+                dense_x = 10.0**dense_interpolation_x if x_log else dense_interpolation_x
+
+                lower = float(np.min(segment_y))
+                upper = float(np.max(segment_y))
+                dense_y = np.clip(dense_y, lower, upper)
+                differences = np.diff(segment_y)
+                if np.all(differences >= 0.0):
+                    dense_y = np.maximum.accumulate(dense_y)
+                elif np.all(differences <= 0.0):
+                    dense_y = np.minimum.accumulate(dense_y)
+
+        if nonnegative:
+            dense_y = np.maximum(dense_y, 0.0)
+        if curve_x_parts:
+            curve_x_parts.append(np.asarray([np.nan], dtype=float))
+            curve_y_parts.append(np.asarray([np.nan], dtype=float))
+        curve_x_parts.append(np.asarray(dense_x, dtype=float))
+        curve_y_parts.append(np.asarray(dense_y, dtype=float))
+
+    if not curve_x_parts:
+        return np.asarray([], dtype=float), np.asarray([], dtype=float)
+    return np.concatenate(curve_x_parts), np.concatenate(curve_y_parts)
+
+
+def _plot_spline_with_points(
+    plot: pg.PlotWidget,
+    x_values,
+    y_values,
+    *,
+    pen,
+    symbol: str,
+    symbol_size: int,
+    symbol_pen,
+    symbol_brush,
+    x_log: bool = False,
+    nonnegative: bool = False,
+):
+    raw_x = np.asarray(x_values, dtype=float)
+    raw_y = np.asarray(y_values, dtype=float)
+    curve_x, curve_y = _spline_display_xy(raw_x, raw_y, x_log=x_log, nonnegative=nonnegative)
+    line_item = plot.plot(
+        curve_x,
+        curve_y,
+        pen=pen,
+        symbol=None,
+        connect="finite",
+        name=None,
+    )
+    plot.plot(
+        raw_x,
+        raw_y,
+        pen=None,
+        symbol=symbol,
+        symbolSize=symbol_size,
+        symbolPen=symbol_pen,
+        symbolBrush=symbol_brush,
+        name=None,
+    )
+    setattr(line_item, "_interaction_x_values", curve_x)
+    setattr(line_item, "_interaction_y_values", curve_y)
+    return line_item
+
+
 def _plot_points(
     plot: pg.PlotWidget,
     points,
@@ -3011,6 +3166,7 @@ def _plot_points(
     symbol_size: int = DEFAULT_SYMBOL_SIZE,
     symbol_pen_width: int = DEFAULT_SYMBOL_PEN_WIDTH,
     filled: bool | None = None,
+    x_log: bool = False,
 ):
     if not points:
         return None
@@ -3021,15 +3177,17 @@ def _plot_points(
     pen = pg.mkPen(color, width=width)
     if not solid:
         pen.setStyle(QtCore.Qt.DashLine)
-    return plot.plot(
+    return _plot_spline_with_points(
+        plot,
         x,
         y,
         pen=pen,
         symbol="o",
-        symbolSize=symbol_size,
-        symbolPen=pg.mkPen(color, width=symbol_pen_width),
-        symbolBrush=pg.mkBrush(color if filled else "#ffffff"),
-        name=name,
+        symbol_size=symbol_size,
+        symbol_pen=pg.mkPen(color, width=symbol_pen_width),
+        symbol_brush=pg.mkBrush(color if filled else "#ffffff"),
+        x_log=x_log,
+        nonnegative=True,
     )
 
 
