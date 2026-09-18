@@ -716,6 +716,9 @@ class ClickProjectionCursor:
     def _on_mouse_clicked(self, event) -> None:
         if event.button() != QtCore.Qt.LeftButton:
             return
+        ignore = getattr(self.plot, "_click_projection_ignore_callback", None)
+        if callable(ignore) and ignore(event.scenePos()):
+            return
         if _legend_contains_scene_pos(self.plot, event.scenePos()):
             if hasattr(event, "accept"):
                 event.accept()
@@ -946,6 +949,9 @@ class SampleCurveInteractionController(QtCore.QObject):
         if event.button() != QtCore.Qt.LeftButton:
             return
         scene_pos = event.scenePos()
+        ignore = getattr(self.plot, "_click_projection_ignore_callback", None)
+        if callable(ignore) and ignore(scene_pos):
+            return
         sample_index = _legend_sample_at_scene_pos(self.plot, scene_pos)
         if sample_index is None:
             return
@@ -963,6 +969,10 @@ class SampleCurveInteractionController(QtCore.QObject):
 
     def _resolve_hover(self) -> None:
         scene_pos = self.pending_scene_pos
+        ignore = getattr(self.plot, "_click_projection_ignore_callback", None)
+        if scene_pos is not None and callable(ignore) and ignore(scene_pos):
+            self.clear_hover()
+            return
         if scene_pos is None or not self.entries:
             self.clear_hover()
             return

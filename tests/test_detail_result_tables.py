@@ -12,7 +12,7 @@ from PyQt5 import QtCore, QtGui, QtWidgets, QtTest
 
 from tristar_bet.analysis import FitResult
 from tristar_bet.models import SmpHeader, SampleInfo, RunConditions, FreeSpaceInfo, IsothermPoint, TriStarResult, TargetPressureRow
-from tristar_bet.ui.main_window import MainWindow, BET_COLUMN, summary_rows
+from tristar_bet.ui.main_window import MainWindow, BET_COLUMN, BJH_PORE_VOLUME_COLUMN, DEFAULT_BJH_PORE_VOLUME_RANGE, summary_rows
 from tristar_bet.ui.detail_tables import RESULT_STATUS_ROLE, SELECTION_BLUE
 
 
@@ -68,7 +68,7 @@ class DetailResultTableTests(unittest.TestCase):
 
     def test_tabs_and_deduplicated_overview(self):
         tabs = [self.w.detail_tabs.tabText(index) for index in range(self.w.detail_tabs.count())]
-        self.assertEqual(tabs, ["结果参数", "BET", "Langmuir", "t-Plot", "实际等温线", "目标压力表"])
+        self.assertEqual(tabs, ["结果参数", "BET", "Langmuir", "t-Plot", "选区孔容量", "实际等温线", "目标压力表"])
         labels = [label for label, _value in summary_rows(self.samples[0])]
         self.assertEqual(len(labels), len(set(labels)))
         self.assertIn("样品质量", labels)
@@ -443,6 +443,244 @@ class DetailResultTableTests(unittest.TestCase):
             pixel = view.viewport().grab().toImage().pixelColor(rect.left() + 3, rect.top() + 3)
             self.assertEqual(pixel.name(), SELECTION_BLUE)
         self.assertFalse(table.selectionModel().isSelected(table.model().index(1, 0)))
+
+    def _mock_pore_methods(self):
+        methods = {}
+        for index, method in enumerate(("bjh", "dh", "hk", "dft"), start=1):
+            name = f"_{method}_pore_volume_for_result"
+            methods[method] = Mock(return_value=index * 0.01)
+            setattr(self.w, name, methods[method])
+        return methods
+
+    def test_pore_table_uses_each_methods_range_and_preserves_upper_column(self):
+        w = self.w
+        methods = self._mock_pore_methods()
+        for index, method in enumerate(methods, start=1):
+            setattr(w, f"{method}_pore_volume_range", (float(index), float(index * 10)))
+        table = w.pore_volume_results_table
+        self._show_table(table)
+        self.assertEqual(table._column_keys, ["file", "bjh", "dh", "hk", "dft"])
+        self.assertEqual(table.rowCount(), len(self.samples))
+        self.assertEqual(table.styleSheet(), w.bet_results_table.styleSheet())
+        self.assertEqual(w.sample_table.columnCount(), 7)
+        self.assertEqual(w.sample_table.horizontalHeaderItem(BJH_PORE_VOLUME_COLUMN).text(), "选区孔容量(cm3/g)")
+        self.assertFalse(table._has_completion_badges)
+        for column, (method, getter) in enumerate(methods.items(), start=1):
+            bounds = getattr(w, f"{method}_pore_volume_range")
+            for row, result in enumerate(self.samples):
+                getter.assert_any_call(result, bounds)
+                self.assertAlmostEqual(table.item(row, column).data(QtCore.Qt.UserRole), column * 0.01)
+                self.assertIn("绿色选区", table.item(row, column).toolTip())
+                self.assertIn("cm³/g", table.item(row, column).toolTip())
+
+    def test_pore_table_defers_work_until_open_and_reuses_calculated_distributions(self):
+        w = self.w
+        with patch.object(w, "_pore_volume_cells_for_result", side_effect=AssertionError("hidden table calculated")):
+            w.refresh_metrics()
+            w._refresh_all_sample_bjh_pore_cells()
+            self.app.processEvents()
+        # The real calculation path populates caches on first open.
+        self._show_table(w.pore_volume_results_table)
+        with patch("tristar_bet.ui.main_window.dft_pore_distribution", side_effect=AssertionError("DFT recalculated")), \
+             patch("tristar_bet.ui.main_window.bjh_pore_distribution", side_effect=AssertionError("BJH recalculated")), \
+             patch("tristar_bet.ui.main_window.dh_pore_distribution", side_effect=AssertionError("DH recalculated")), \
+             patch("tristar_bet.ui.main_window.horvath_kawazoe_pore_distribution", side_effect=AssertionError("HK recalculated")):
+            w.bjh_pore_volume_range = (2.1, 75.3)
+            w.refresh_pore_volume_table()
+
+    def test_pore_table_values_match_sample_column_on_each_plot_tab(self):
+        w = self.w
+        self._show_table(w.pore_volume_results_table)
+        for column, method in enumerate(("bjh", "dh", "hk", "dft"), start=1):
+            w.plot_tabs.setCurrentWidget(getattr(w, method + "_tab"))
+            w.refresh_pore_volume_table()
+            for row in range(len(self.samples)):
+                self.assertEqual(w.pore_volume_results_table.item(row, column).text(),
+                                 w.sample_table.item(row, BJH_PORE_VOLUME_COLUMN).text())
+
+    def test_pore_table_sort_missing_values_and_shared_row_interactions(self):
+        w = self.w
+        methods = self._mock_pore_methods()
+        values = {id(self.samples[0]): 0.3, id(self.samples[1]): None, id(self.samples[2]): 0.1}
+        methods["bjh"].side_effect = lambda result, *args, **kwargs: values[id(result)]
+        table = w.pore_volume_results_table
+        self._show_table(table)
+        w._on_analysis_header_clicked("pore_volume", 1)
+        self.assertEqual([r.file_name for r in w.results], ["C.SMP", "A.SMP", "B.SMP"])
+        self.assertEqual([table.item(r, 0).text() for r in range(3)], ["C", "A", "B"])
+        self.assertEqual(table.item(2, 1).text(), "—")
+        self.assert_orders_match()
+        w._on_analysis_header_clicked("pore_volume", 1)
+        self.assertEqual([r.file_name for r in w.results], ["A.SMP", "C.SMP", "B.SMP"])
+        w._on_analysis_header_clicked("pore_volume", 0)
+        self.assertEqual([r.file_name for r in w.results], ["A.SMP", "C.SMP", "B.SMP"])
+        table.setCurrentCell(1, 2)
+        self.assertIs(w.active_result(), self.samples[2])
+        self.assertEqual(w.sample_table.currentRow(), 1)
+        with patch.object(w, "_pore_volume_cells_for_result", side_effect=AssertionError("hover recalculated")):
+            table.rowHovered.emit(0)
+            for linked in [w.sample_table, *w.linked_result_tables.values()]:
+                self.assertTrue(linked.item(0, 1).font().bold())
+        w.sort_samples_by_bet(False)
+        self.assertEqual([table.item(r, 0).text() for r in range(3)], ["C", "B", "A"])
+        w.delete_sample_rows([0, 1, 2])
+        self.assertEqual(table.rowCount(), 0)
+
+    def test_pore_table_drag_copy_and_live_refresh_preserve_selection(self):
+        self._mock_pore_methods()
+        table = self.w.pore_volume_results_table
+        self._show_table(table)
+        self.w.centralWidget().setSizes([900, 700])
+        self.app.processEvents()
+        before = list(self.w.results)
+        start = table._frozen_table.visualRect(table.model().index(0, 0)).center()
+        end = table._frozen_table.viewport().mapFromGlobal(table.viewport().mapToGlobal(table.visualRect(table.model().index(2, 4)).center()))
+        QtTest.QTest.mousePress(table._frozen_table.viewport(), QtCore.Qt.LeftButton, pos=start)
+        QtTest.QTest.qWait(250)
+        QtTest.QTest.mouseMove(table._frozen_table.viewport(), end)
+        QtTest.QTest.mouseRelease(table._frozen_table.viewport(), QtCore.Qt.LeftButton, pos=end)
+        self.assertEqual(self.w.results, before)
+        selection = {(i.row(), i.column()) for i in table.selectedIndexes()}
+        self.assertEqual(selection, {(r, c) for r in range(3) for c in range(5)})
+        self.w._hk_pore_volume_for_result.return_value = 0.123
+        self.w._refresh_all_sample_bjh_pore_cells()
+        QtTest.QTest.qWait(80)
+        self.assertEqual(table.item(0, 3).text(), "0.123")
+        self.assertEqual({(i.row(), i.column()) for i in table.selectedIndexes()}, selection)
+        expected = [[table.item(r, c).text() for c in range(5)] for r in range(3)]
+        self.assertEqual(list(csv.reader(io.StringIO(table._copy_controller.mime_data().text()), delimiter="\t")), expected)
+        for view, column in [(table, 1), (table._frozen_table, 0)]:
+            rect = view.visualRect(table.model().index(0, column))
+            self.assertEqual(view.viewport().grab().toImage().pixelColor(rect.left() + 3, rect.top() + 3).name(), SELECTION_BLUE)
+
+    def test_bjh_and_dh_green_ranges_drag_reset_and_switch_independently(self):
+        w = self.w
+        self.assertEqual(w.bjh_pore_volume_range, w.dh_pore_volume_range)
+        with patch.object(w, "_current_bjh_diameter_range", return_value=(3.0, 40.0)), \
+             patch.object(w, "_current_dh_diameter_range", return_value=(5.0, 60.0)):
+            w._update_bjh_pore_volume_from_region()
+            self.assertEqual(w.dh_pore_volume_range, DEFAULT_BJH_PORE_VOLUME_RANGE)
+            w._update_dh_pore_volume_from_region()
+            self.assertEqual(w.bjh_pore_volume_range, (3.0, 40.0))
+            self.assertEqual(w.dh_pore_volume_range, (5.0, 60.0))
+        for method, expected in (("bjh", (3., 40.)), ("dh", (5., 60.)), ("bjh", (3., 40.))):
+            w.plot_tabs.setCurrentWidget(getattr(w, method + "_tab"))
+            self.assertEqual(w._selected_pore_volume_range(), expected)
+        with patch.object(w, "refresh_dh_plot"), patch.object(w, "refresh_bjh_plot"):
+            w.reset_dh_to_default(reset_region=True)
+            self.assertEqual(w.bjh_pore_volume_range, (3., 40.))
+            self.assertEqual(w.dh_pore_volume_range, DEFAULT_BJH_PORE_VOLUME_RANGE)
+            w.dh_pore_volume_range = (7., 80.)
+            w.reset_bjh_to_default(reset_region=True)
+            self.assertEqual(w.dh_pore_volume_range, (7., 80.))
+            self.assertEqual(w.bjh_pore_volume_range, DEFAULT_BJH_PORE_VOLUME_RANGE)
+
+    def test_dh_volume_does_not_inherit_current_hk_or_bjh_range(self):
+        w = self.w
+        w.bjh_pore_volume_range = (2., 20.)
+        w.dh_pore_volume_range = (4., 40.)
+        w.hk_pore_volume_range = (0.4, 2.)
+        w.plot_tabs.setCurrentWidget(w.hk_tab)
+        with patch.object(w, "_cached_dh_distribution_rows", return_value=[{}]), \
+             patch.object(w, "_bjh_pore_volume_from_rows", return_value=0.25) as integrate:
+            w._dh_pore_volume_for_result(self.samples[0])
+            integrate.assert_called_once_with([{}], (4., 40.))
+
+    def test_bjh_dh_rendered_green_regions_survive_tab_switches(self):
+        w = self.w
+        w.refresh_isotherm_plot = MainWindow.refresh_isotherm_plot.__get__(w)
+        w.refresh_analysis_plots = MainWindow.refresh_analysis_plots.__get__(w)
+        expected = {}
+        for method, fractions in (("bjh", (0.15, 0.55)), ("dh", (0.45, 0.85))):
+            w.plot_tabs.setCurrentWidget(getattr(w, method + "_tab"))
+            bounds = getattr(w, "_" + method + "_diameter_log_bounds")
+            self.assertIsNotNone(bounds)
+            lo, hi = bounds
+            selection = tuple(lo + f * (hi - lo) for f in fractions)
+            getattr(w, method + "_region").setRegion(selection)
+            getattr(w, "_update_" + method + "_pore_volume_from_region")()
+            expected[method] = tuple(10 ** x for x in selection)
+        for method in ("bjh", "dh", "bjh", "dh"):
+            w.plot_tabs.setCurrentWidget(getattr(w, method + "_tab"))
+            actual = getattr(w, "_current_" + method + "_diameter_range")()
+            for a, b in zip(actual, expected[method]):
+                self.assertAlmostEqual(a, b, places=10)
+        for method in expected:
+            for a, b in zip(getattr(w, method + "_pore_volume_range"), expected[method]):
+                self.assertAlmostEqual(a, b, places=10)
+
+    def test_pore_headers_live_ranges_and_multiline_alignment(self):
+        w = self.w
+        table = w.pore_volume_results_table
+        self._show_table(table)
+        self.assertEqual(table.horizontalHeaderItem(1).text().splitlines()[0], "BJH(cm³/g)")
+        table.setColumnWidth(1, 240)
+        # Attach the real green control without running any distribution solver.
+        w._add_bjh_region([0.3010299957, 1.0008677215], [0., 3.])
+        w.bjh_region.setRegion([0.4, 1.4])
+        expected = f"{10 ** .4:.2f}-{10 ** 1.4:.2f} nm"
+        self.assertEqual(table.horizontalHeaderItem(1).text().splitlines()[1], expected)
+        self.assertNotEqual(table.horizontalHeaderItem(2).text().splitlines()[1], expected)
+        self.app.processEvents()
+        self.assertEqual(table.horizontalHeader().height(), table._frozen_table.horizontalHeader().height())
+        self.assertEqual(table.visualRect(table.model().index(0, 1)).top(),
+                         table._frozen_table.visualRect(table.model().index(0, 0)).top())
+        self.assertGreaterEqual(table.columnWidth(1), 240)
+        self.assertIn("bjh", table._manual_content_widths)
+        self.assertFalse(any("nm" in key for key in table._manual_content_widths))
+
+    def test_all_selection_plots_have_reusable_endpoint_controls(self):
+        w = self.w
+        for method, plot_name in (("bjh", "pore"), ("dh", "dh"), ("hk", "hk"), ("dft", "dft")):
+            add = getattr(w, f"_add_{method}_region")
+            remove = getattr(w, f"_remove_{method}_region")
+            add([.2, 1.2], [0., 2.])
+            controls = getattr(w, plot_name + "_plot")._region_endpoint_controls
+            self.assertTrue(controls.is_log)
+            self.assertIs(controls.region, getattr(w, method + "_region"))
+            remove()
+            self.assertEqual(controls.labels, [])
+            add([.3, 1.3], [0., 2.])
+            self.assertIs(getattr(w, plot_name + "_plot")._region_endpoint_controls, controls)
+        import numpy as np
+        w._add_region([.05, .3], np.array([.001, .99]))
+        controls = w.isotherm_plot._region_endpoint_controls
+        self.assertFalse(controls.is_log)
+        self.assertEqual(controls.values(), [.05, .3])
+        w._remove_region()
+        self.assertEqual(controls.labels, [])
+
+    def test_pore_table_distinguishes_zero_missing_and_branch_choices(self):
+        w = self.w
+        result = self.samples[0]
+        bjh = w._bjh_settings_for_result(result)
+        dh = w._dh_settings_for_result(result)
+        bjh.update(show_adsorption=False, show_desorption=False)
+        dh.update(show_adsorption=False, show_desorption=True)
+        w.custom_bjh_settings[id(result)] = bjh
+        w.custom_dh_settings[id(result)] = dh
+        with patch.object(w, "_hk_pore_volume_for_result", return_value=0.0), \
+             patch.object(w, "_dft_pore_volume_for_result", return_value=None), \
+             patch.object(w, "_cached_dh_distribution_rows", return_value=[]) as dh_rows:
+            cells = w._pore_volume_cells_for_result(result)
+        self.assertEqual(cells[1][0], "—")
+        self.assertIn("分支：未开启", cells[1][2])
+        self.assertEqual(dh_rows.call_args.kwargs["phase"], "desorption")
+        self.assertIn("分支：脱附", cells[2][2])
+        self.assertEqual(cells[3][0], "0")
+        self.assertEqual(cells[4][0], "—")
+
+    def test_hk_comparison_uses_hk_saved_pressure_not_active_bet_pressure(self):
+        w = self.w
+        w._custom_isotherm_region_keys.update({"bet", "hk"})
+        w._isotherm_region_ranges.update(bet=(0.05, 0.3), hk=(0.001, 0.12))
+        self.assertEqual(w._hk_pressure_range(), (0.001, 0.12))
+        with patch.object(w, "_cached_hk_distribution_rows", return_value=[]), \
+             patch("tristar_bet.ui.main_window.prepare_hk_distribution_rows", return_value=[]) as prepare:
+            w._hk_pore_volume_for_result(self.samples[0])
+            self.assertEqual(prepare.call_args.kwargs["pressure_range"], (0.001, 0.12))
+        w._custom_isotherm_region_keys.remove("hk")
+        self.assertNotEqual(w._hk_pressure_range(), w._isotherm_region_ranges["bet"])
 
     def test_long_summary_path_is_elided_without_widening_and_copies_in_full(self):
         path = "D:/" + "very-long-folder/" * 50 + "sample.SMP"

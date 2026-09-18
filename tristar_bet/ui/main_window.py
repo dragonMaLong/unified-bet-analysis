@@ -100,10 +100,11 @@ from tristar_bet.ui.plots import (
     set_sample_curve_hover_plots,
 )
 from tristar_bet.ui.detail_tables import (
-    ANALYSIS_COLUMNS, SINGLE_BET_COLUMNS, configure_content_widths, fit_content_widths,
+    ANALYSIS_COLUMNS, SINGLE_BET_COLUMNS, PORE_VOLUME_COLUMNS, configure_content_widths, fit_content_widths,
     RESULT_STATUS_ROLE, ResultFileDelegate, configure_cell_copy,
 )
 from tristar_bet.version import __version__
+from tristar_bet.ui.region_endpoints import RegionEndpointControls
 
 
 APP_NAME = "BET 综合分析-DragonScience"
@@ -643,6 +644,7 @@ class SampleTableWidget(QtWidgets.QTableWidget):
         if not hasattr(self, "_frozen_table"):
             return
         width = self._frozen_width()
+        self._frozen_table.horizontalHeader().setFixedHeight(self.horizontalHeader().height())
         self._frozen_table.setGeometry(
             self.frameWidth(),
             self.frameWidth(),
@@ -1960,6 +1962,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._bjh_distribution_cache: dict[tuple[object, ...], list[dict[str, float]]] = {}
         self._bjh_diameter_log_bounds: tuple[float, float] | None = None
         self.dh_region = None
+        self.dh_pore_volume_range: tuple[float, float] = DEFAULT_BJH_PORE_VOLUME_RANGE
         self._dh_selection_items = []
         self._dh_distribution_rows_by_key: dict[tuple[int, str], list[dict[str, float]]] = {}
         self._dh_distribution_cache: dict[tuple[object, ...], list[dict[str, float]]] = {}
@@ -2400,9 +2403,11 @@ class MainWindow(QtWidgets.QMainWindow):
         configure_cell_copy(self.isotherm_table)
         configure_cell_copy(self.target_table)
         self.analysis_result_tables = {}
-        for method in ANALYSIS_COLUMNS:
-            table = AnalysisResultsTable(0, len(ANALYSIS_COLUMNS[method]))
-            table.setHorizontalHeaderLabels([label for _key, label in ANALYSIS_COLUMNS[method]])
+        self.linked_result_tables = {}
+        self._pore_volume_table_refresh_pending = False
+        for method, columns in {**ANALYSIS_COLUMNS, "pore_volume": PORE_VOLUME_COLUMNS}.items():
+            table = AnalysisResultsTable(0, len(columns))
+            table.setHorizontalHeaderLabels([label for _key, label in columns])
             table.verticalHeader().hide()
             table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
             table.setHorizontalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
@@ -2418,28 +2423,33 @@ class MainWindow(QtWidgets.QMainWindow):
             table._frozen_table.setItemDelegate(_NoFocusDelegate(table._frozen_table))
             table.setItemDelegateForColumn(0, ResultFileDelegate(table, table))
             table._frozen_table.setItemDelegateForColumn(0, ResultFileDelegate(table, table._frozen_table))
-            table._has_completion_badges = True
+            table._has_completion_badges = method != "pore_volume"
             configure_cell_copy(table, table._frozen_table)
             configure_content_widths(table)
-            table._column_keys = [key for key, _label in ANALYSIS_COLUMNS[method]]
+            table._column_keys = [key for key, _label in columns]
             table._row_signatures = []
             table.rowHovered.connect(self._on_sample_table_row_hovered)
             table.currentCellChanged.connect(self._on_analysis_current_cell_changed)
             table.horizontalHeader().sectionClicked.connect(lambda column, name=method: self._on_analysis_header_clicked(name, column))
             table.frozen_header().sectionClicked.connect(lambda column, name=method: self._on_analysis_header_clicked(name, column))
-            self.analysis_result_tables[method] = table
+            self.linked_result_tables[method] = table
+            if method != "pore_volume":
+                self.analysis_result_tables[method] = table
             fit_content_widths(table)
         self.bet_results_table = self.analysis_result_tables["bet"]
         self.langmuir_results_table = self.analysis_result_tables["langmuir"]
         self.t_plot_results_table = self.analysis_result_tables["t_plot"]
+        self.pore_volume_results_table = self.linked_result_tables["pore_volume"]
 
         self.detail_tabs = QtWidgets.QTabWidget()
         self.detail_tabs.addTab(self.metrics_table, "结果参数")
         self.detail_tabs.addTab(self.bet_results_table, "BET")
         self.detail_tabs.addTab(self.langmuir_results_table, "Langmuir")
         self.detail_tabs.addTab(self.t_plot_results_table, "t-Plot")
+        self.detail_tabs.addTab(self.pore_volume_results_table, "选区孔容量")
         self.detail_tabs.addTab(self.isotherm_table, "实际等温线")
         self.detail_tabs.addTab(self.target_table, "目标压力表")
+        self.detail_tabs.currentChanged.connect(self._on_detail_tab_changed)
 
         sample_panel = QtWidgets.QWidget()
         sample_panel_layout = QtWidgets.QVBoxLayout(sample_panel)
@@ -4353,7 +4363,7 @@ class MainWindow(QtWidgets.QMainWindow):
         finally:
             self._syncing_dh_controls = False
         if reset_region:
-            self.bjh_pore_volume_range = DEFAULT_BJH_PORE_VOLUME_RANGE
+            self.dh_pore_volume_range = DEFAULT_BJH_PORE_VOLUME_RANGE
             self._remove_dh_region()
         self._dh_distribution_cache.clear()
         self.refresh_dh_plot()
@@ -5517,6 +5527,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._hk_distribution_cache.clear()
             self._dft_result_cache.clear()
             self.bjh_pore_volume_range = DEFAULT_BJH_PORE_VOLUME_RANGE
+            self.dh_pore_volume_range = DEFAULT_BJH_PORE_VOLUME_RANGE
             self.hk_pore_volume_range = DEFAULT_HK_PORE_VOLUME_RANGE
             self.dft_pore_volume_range = DEFAULT_DFT_PORE_VOLUME_RANGE
             self._remove_bjh_region()
@@ -5640,7 +5651,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _apply_sample_row_hover(self, row: int, hovered: bool) -> None:
         self._apply_table_row_hover(self.sample_table, row, hovered, first_column=1)
-        for table in getattr(self, "analysis_result_tables", {}).values():
+        for table in getattr(self, "linked_result_tables", {}).values():
             self._apply_table_row_hover(table, row, hovered)
 
     def _apply_table_row_hover(self, table, row: int, hovered: bool, first_column: int = 0) -> None:
@@ -5795,7 +5806,7 @@ class MainWindow(QtWidgets.QMainWindow):
             (missing if unavailable else valid).append(index)
         valid.sort(key=lambda index: values[index], reverse=not ascending)
         self._reorder_samples(valid + missing)
-        for table in [self.sample_table, *self.analysis_result_tables.values()]:
+        for table in [self.sample_table, *self.linked_result_tables.values()]:
             for header in (table.horizontalHeader(), table.frozen_header()):
                 header.setSortIndicatorShown(False)
 
@@ -5817,7 +5828,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     selection.select(self.sample_table.model().index(row, 0), QtCore.QItemSelectionModel.Select | QtCore.QItemSelectionModel.Rows)
 
     def _on_analysis_header_clicked(self, method: str, column: int) -> None:
-        table = self.analysis_result_tables[method]
+        table = self.linked_result_tables[method]
         if len(self.results) < 2 or not (0 <= column < table.columnCount()):
             return
         key = table._column_keys[column]
@@ -5840,7 +5851,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _sync_analysis_table_selection(self) -> None:
         self._updating_analysis_tables = True
         try:
-            for table in self.analysis_result_tables.values():
+            for table in self.linked_result_tables.values():
                 table._active_sample_row = self.active_index
                 table.viewport().update()
                 table._frozen_table.viewport().update()
@@ -6028,6 +6039,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _refresh_all_sample_bjh_pore_cells(self) -> None:
         for row in range(len(self.results)):
             self._refresh_sample_bjh_pore_cell(row)
+        self._queue_pore_volume_table_refresh()
 
     def _style_sample_bet_item(self, item: QtWidgets.QTableWidgetItem, result) -> None:
         if not self._is_custom_bet_fit(result) and result.method_options.get("use_official_raw_bet_points"):
@@ -6195,7 +6207,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._refresh_all_sample_bjh_pore_cells()
 
     def refresh_dh_plot(self) -> None:
-        target_diameter_range = self.bjh_pore_volume_range
+        target_diameter_range = self.dh_pore_volume_range
         self._remove_dh_region()
         self._remove_dh_selection()
         self._dh_distribution_rows_by_key = {}
@@ -6234,8 +6246,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._sync_dh_region_to_diameter_range(target_diameter_range)
         current_range = self._current_dh_diameter_range()
         if current_range is not None:
-            self.bjh_pore_volume_range = tuple(sorted((float(target_diameter_range[0]), float(target_diameter_range[1]))))
-            self._refresh_dh_selection(self.bjh_pore_volume_range)
+            self.dh_pore_volume_range = tuple(sorted((float(target_diameter_range[0]), float(target_diameter_range[1]))))
+            self._refresh_dh_selection(self.dh_pore_volume_range)
             self._refresh_all_sample_bjh_pore_cells()
 
     def refresh_hk_plot(self) -> None:
@@ -6377,12 +6389,15 @@ class MainWindow(QtWidgets.QMainWindow):
         return self._is_dh_tab_active() and not self._isotherm_region_custom
 
     def _hk_pressure_range(self) -> tuple[float, float] | None:
-        if not self._isotherm_region_custom:
-            pressure = self._all_pressure_values()
-            if pressure.size == 0:
-                return None
-            return tuple(self._clamp_pressure_region(HK_DEFAULT_PRESSURE_RANGE, pressure))
-        return self._current_pressure_region()
+        # The comparison table may request HK while a different plot is active.
+        if "hk" in self._custom_isotherm_region_keys:
+            if self._is_hk_tab_active():
+                return self._current_pressure_region()
+            return self._isotherm_region_ranges.get("hk")
+        pressure = self._all_pressure_values()
+        if pressure.size == 0:
+            return None
+        return tuple(self._clamp_pressure_region(HK_DEFAULT_PRESSURE_RANGE, pressure))
 
     def _is_hk_default_region_active(self) -> bool:
         return self._is_hk_tab_active() and not self._isotherm_region_custom
@@ -7001,6 +7016,7 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
     def _remove_bjh_region(self) -> None:
+        self._detach_region_endpoints(self.pore_plot)
         if self.bjh_region is None:
             return
         try:
@@ -7026,6 +7042,7 @@ class MainWindow(QtWidgets.QMainWindow):
         region.sigRegionChanged.connect(self.on_bjh_region_changed)
         self.pore_plot.addItem(region, ignoreBounds=True)
         self.bjh_region = region
+        self._attach_region_endpoints(self.pore_plot, region, green=True)
 
     def on_bjh_region_changed(self) -> None:
         if self._syncing_region_changes or self._setting_bjh_region:
@@ -7136,6 +7153,7 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
     def _remove_dh_region(self) -> None:
+        self._detach_region_endpoints(self.dh_plot)
         if self.dh_region is None:
             return
         try:
@@ -7161,6 +7179,7 @@ class MainWindow(QtWidgets.QMainWindow):
         region.sigRegionChanged.connect(self.on_dh_region_changed)
         self.dh_plot.addItem(region, ignoreBounds=True)
         self.dh_region = region
+        self._attach_region_endpoints(self.dh_plot, region, green=True)
 
     def on_dh_region_changed(self) -> None:
         if self._syncing_region_changes or self._setting_dh_region:
@@ -7174,7 +7193,7 @@ class MainWindow(QtWidgets.QMainWindow):
         diameter_range = self._current_dh_diameter_range()
         if diameter_range is None:
             return
-        self.bjh_pore_volume_range = diameter_range
+        self.dh_pore_volume_range = diameter_range
         self._refresh_dh_selection(diameter_range)
         self._refresh_all_sample_bjh_pore_cells()
 
@@ -7234,6 +7253,7 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
     def _remove_hk_region(self) -> None:
+        self._detach_region_endpoints(self.hk_plot)
         if self.hk_region is None:
             return
         try:
@@ -7259,6 +7279,7 @@ class MainWindow(QtWidgets.QMainWindow):
         region.sigRegionChanged.connect(self.on_hk_region_changed)
         self.hk_plot.addItem(region, ignoreBounds=True)
         self.hk_region = region
+        self._attach_region_endpoints(self.hk_plot, region, green=True)
 
     def on_hk_region_changed(self) -> None:
         if self._syncing_region_changes or self._setting_hk_region:
@@ -7363,6 +7384,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.dft_plot.setYRange(0.0, selected_max * 1.08, padding=0.0)
 
     def _remove_dft_region(self) -> None:
+        self._detach_region_endpoints(self.dft_plot)
         if self.dft_region is None:
             return
         try:
@@ -7388,6 +7410,7 @@ class MainWindow(QtWidgets.QMainWindow):
         region.sigRegionChanged.connect(self.on_dft_region_changed)
         self.dft_plot.addItem(region, ignoreBounds=True)
         self.dft_region = region
+        self._attach_region_endpoints(self.dft_plot, region, green=True)
 
     def on_dft_region_changed(self) -> None:
         if self._syncing_region_changes or self._setting_dft_region:
@@ -7952,6 +7975,7 @@ class MainWindow(QtWidgets.QMainWindow):
         rows = [] if active is None else summary_rows(active)
         self._fill_two_column_table(self.metrics_table, rows)
         self.refresh_analysis_result_tables()
+        self.refresh_pore_volume_table()
 
     def _copy_summary_path(self, item) -> None:
         if item.column() != 1:
@@ -7960,6 +7984,146 @@ class MainWindow(QtWidgets.QMainWindow):
         if label is not None and label.text() == "文件路径":
             QtWidgets.QApplication.clipboard().setText(item.text())
             self.statusBar().showMessage("已复制完整文件路径", 2200)
+
+    def _attach_region_endpoints(self, plot, region, *, green=False) -> None:
+        controls = getattr(plot, "_region_endpoint_controls", None)
+        if controls is None:
+            controls = RegionEndpointControls(
+                plot, green=green, status_callback=self.statusBar().showMessage,
+                changed_callback=self._refresh_pore_volume_headers if green else None,
+            )
+            plot._region_endpoint_controls = controls
+        controls.attach(region)
+
+    def _detach_region_endpoints(self, plot) -> None:
+        controls = getattr(plot, "_region_endpoint_controls", None)
+        if controls is not None:
+            controls.detach()
+
+    def _refresh_pore_volume_headers(self) -> None:
+        table = getattr(self, "pore_volume_results_table", None)
+        if table is None:
+            return
+        changed = False
+        for column, (key, title) in enumerate(PORE_VOLUME_COLUMNS[1:], 1):
+            region = getattr(self, f"{key}_region", None)
+            if region is not None:
+                lo, hi = sorted(10 ** x for x in region.getRegion())
+            else:
+                lo, hi = sorted(getattr(self, f"{key}_pore_volume_range"))
+            text = f"{title}\n{lo:.2f}-{hi:.2f} nm"
+            item = table.horizontalHeaderItem(column)
+            if item.text() != text:
+                item.setText(text)
+                changed = True
+        if changed:
+            # Dragging only changes headers. Do not scan every sample or shrink
+            # columns on every mouse move; normal row refresh fits cell contents.
+            font = QtGui.QFont(table.horizontalHeader().font())
+            font.setBold(True)
+            metrics = QtGui.QFontMetrics(font)
+            table._sizing_content = True
+            try:
+                for column in range(1, table.columnCount()):
+                    lines = table.horizontalHeaderItem(column).text().splitlines()
+                    width = max(metrics.horizontalAdvance(line) for line in lines) + 24
+                    if table.columnWidth(column) < width:
+                        table.setColumnWidth(column, width)
+            finally:
+                table._sizing_content = False
+            table._update_frozen_geometry()
+
+    def _on_detail_tab_changed(self, _index: int) -> None:
+        self.refresh_pore_volume_table()
+
+    def _queue_pore_volume_table_refresh(self) -> None:
+        if (getattr(self, "detail_tabs", None) is None
+                or self.detail_tabs.currentWidget() is not self.pore_volume_results_table
+                or self._pore_volume_table_refresh_pending):
+            return
+        self._pore_volume_table_refresh_pending = True
+        QtCore.QTimer.singleShot(40, self._flush_pore_volume_table_refresh)
+
+    def _flush_pore_volume_table_refresh(self) -> None:
+        self._pore_volume_table_refresh_pending = False
+        self.refresh_pore_volume_table()
+
+    def _pore_volume_cells_for_result(self, result):
+        """Use each method's saved selection and per-sample settings, not the active tab."""
+        cells = [(_display_file_name(result), None, result.header.file_path)]
+        methods = (
+            ("BJH", self.bjh_pore_volume_range, self._bjh_pore_volume_for_result),
+            ("DH", self.dh_pore_volume_range, self._dh_pore_volume_for_result),
+            ("HK", self.hk_pore_volume_range, self._hk_pore_volume_for_result),
+            ("DFT", self.dft_pore_volume_range, self._dft_pore_volume_for_result),
+        )
+        for method, bounds, calculate in methods:
+            value = calculate(result, bounds)
+            value = float(value) if value is not None and math.isfinite(float(value)) else None
+            dimension = "孔径" if method in {"BJH", "DH"} else "孔宽"
+            lo, hi = sorted(bounds)
+            tooltip = f"{method} 绿色选区：{dimension} {_fmt(lo, 8)}–{_fmt(hi, 8)} nm\n孔容量单位：cm³/g"
+            if method in {"BJH", "DH"}:
+                settings = (self._bjh_settings_for_result(result) if method == "BJH"
+                            else self._dh_settings_for_result(result))
+                phase = (self._bjh_pore_volume_phase(settings) if method == "BJH"
+                         else self._dh_pore_volume_phase(settings))
+                tooltip += "\n分支：" + {"adsorption": "吸附", "desorption": "脱附", None: "未开启"}[phase]
+                if settings["show_adsorption"] and settings["show_desorption"]:
+                    tooltip += "（吸附/脱附均开启时，沿用样品栏规则优先取吸附）"
+            elif method == "HK":
+                pressure = self._hk_pressure_range()
+                if pressure is not None:
+                    tooltip += f"\nHK 相对压力范围：{_fmt(pressure[0], 8)}–{_fmt(pressure[1], 8)}"
+            if value is None:
+                tooltip += "\n无可用分支或有效分布数据"
+            cells.append(("—" if value is None else _fmt(value), value, tooltip))
+        return cells
+
+    def refresh_pore_volume_table(self) -> None:
+        self._refresh_pore_volume_headers()
+        # Do not run four model calculations when an unrelated detail tab is open.
+        # Existing distribution caches are reused on first display and on edits.
+        table = getattr(self, "pore_volume_results_table", None)
+        if table is None or self.detail_tabs.currentWidget() is not table:
+            return
+        previous_updating = self._updating_analysis_tables
+        self._updating_analysis_tables = True
+        previous_blocked = table.blockSignals(True)
+        scroll = table.horizontalScrollBar().value()
+        try:
+            identities = [id(result) for result in self.results]
+            reordered = [entry[0] for entry in table._row_signatures] != identities
+            if reordered:
+                table.clearSelection()
+            table.setRowCount(len(self.results))
+            changed = reordered
+            signatures = []
+            for row, result in enumerate(self.results):
+                cells = self._pore_volume_cells_for_result(result)
+                signature = (id(result), cells)
+                signatures.append(signature)
+                if row < len(table._row_signatures) and signature == table._row_signatures[row]:
+                    continue
+                changed = True
+                for column, (display, value, tooltip) in enumerate(cells):
+                    item = self._table_item(
+                        display, tooltip=tooltip,
+                        alignment=(QtCore.Qt.AlignLeft if column == 0 else QtCore.Qt.AlignRight) | QtCore.Qt.AlignVCenter,
+                    )
+                    item.setData(QtCore.Qt.UserRole, value)
+                    item.setData(QtCore.Qt.UserRole + 1, id(result))
+                    table.setItem(row, column, item)
+                if row == self._hovered_sample_row:
+                    self._apply_table_row_hover(table, row, True)
+            table._row_signatures = signatures
+            if changed:
+                fit_content_widths(table)
+            table.horizontalScrollBar().setValue(scroll)
+        finally:
+            table.blockSignals(previous_blocked)
+            self._updating_analysis_tables = previous_updating
+        self._sync_analysis_table_selection()
 
     def _analysis_cells_for_result(self, result):
         settings = self._t_plot_settings_for_result(result)
@@ -8454,6 +8618,7 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             self._displayed_isotherm_region_key = self._isotherm_region_key()
             self.isotherm_plot.addItem(self.region, ignoreBounds=True)
+            self._attach_region_endpoints(self.isotherm_plot, self.region)
             self.region.sigRegionChanged.connect(self.on_region_changed)
             if hasattr(self.region, "sigRegionChangeFinished"):
                 self.region.sigRegionChangeFinished.connect(self.on_region_change_finished)
@@ -8461,6 +8626,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._setting_isotherm_region = False
 
     def _remove_region(self) -> None:
+        self._detach_region_endpoints(self.isotherm_plot)
         if self.region is None:
             return
         try:
@@ -8878,7 +9044,7 @@ class MainWindow(QtWidgets.QMainWindow):
         phase = self._dh_pore_volume_phase(settings)
         if phase is None:
             return None
-        diameter_range = diameter_range or self._selected_pore_volume_range()
+        diameter_range = diameter_range or self.dh_pore_volume_range
         d_min, d_max = sorted((float(diameter_range[0]), float(diameter_range[1])))
         rows = self._cached_dh_distribution_rows(
             result,
@@ -8955,6 +9121,8 @@ class MainWindow(QtWidgets.QMainWindow):
             return self.dft_pore_volume_range
         if self._active_pore_volume_method() == PORE_VOLUME_METHOD_HK:
             return self.hk_pore_volume_range
+        if self._active_pore_volume_method() == PORE_VOLUME_METHOD_DH:
+            return self.dh_pore_volume_range
         return self.bjh_pore_volume_range
 
     def _has_custom_bjh_settings(self, result) -> bool:

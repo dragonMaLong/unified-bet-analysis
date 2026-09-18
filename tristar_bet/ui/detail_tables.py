@@ -49,6 +49,11 @@ SINGLE_BET_COLUMNS = [
     ("single_source", "单点BET名义来源点"), ("single_points", "单点BET插值点"),
 ]
 
+PORE_VOLUME_COLUMNS = [
+    ("file", "文件名"), ("bjh", "BJH(cm³/g)"), ("dh", "DH(cm³/g)"),
+    ("hk", "HK(cm³/g)"), ("dft", "DFT(cm³/g)"),
+]
+
 
 class ResultFileDelegate(QtWidgets.QStyledItemDelegate):
     """Completion badge and row context without adding cells to the copy range."""
@@ -72,7 +77,8 @@ class ResultFileDelegate(QtWidgets.QStyledItemDelegate):
         opt.text = ""
         style.drawControl(QtWidgets.QStyle.CE_ItemViewItem, opt, painter, opt.widget)
         opt.text = text
-        opt.rect = opt.rect.adjusted(0, 0, -26, 0)
+        if getattr(self.table, "_has_completion_badges", False):
+            opt.rect = opt.rect.adjusted(0, 0, -26, 0)
         style.drawControl(QtWidgets.QStyle.CE_ItemViewItem, opt, painter, opt.widget)
         status = index.data(RESULT_STATUS_ROLE)
         if status not in {"ok", "warning"}:
@@ -190,6 +196,11 @@ def configure_cell_copy(table, frozen_view=None):
     table._copy_controller = TableCopyController(table, views)
 
 
+def _column_width_key(table, column, title):
+    keys = getattr(table, "_column_keys", [])
+    return keys[column] if column < len(keys) else title
+
+
 def configure_content_widths(table):
     """Remember user widths by header, including dynamically added columns."""
     table._manual_content_widths = {}
@@ -204,7 +215,7 @@ def configure_content_widths(table):
         if not table._sizing_content:
             item = table.horizontalHeaderItem(column)
             if item is not None:
-                table._manual_content_widths[item.text()] = width
+                table._manual_content_widths[_column_width_key(table, column, item.text())] = width
 
     table.horizontalHeader().sectionResized.connect(resized)
 
@@ -222,7 +233,7 @@ def fit_content_widths(table):
         for column in range(table.columnCount()):
             header = table.horizontalHeaderItem(column)
             title = header.text() if header is not None else ""
-            width = header_metrics.horizontalAdvance(title) + 24
+            width = max(header_metrics.horizontalAdvance(line) for line in title.split("\n")) + 24
             reference = getattr(table, "_column_width_references", {}).get(column)
             if reference is not None:
                 width = max(width, metrics.horizontalAdvance(reference) + 24)
@@ -233,7 +244,7 @@ def fit_content_widths(table):
                     width = max(width, metrics.horizontalAdvance(item.text()) + 24 + extra)
             width = max(40, width)
             # Do not overwrite a user's wider choice; grow if new content needs it.
-            width = max(width, table._manual_content_widths.get(title, 0))
+            width = max(width, table._manual_content_widths.get(_column_width_key(table, column, title), 0))
             table.setColumnWidth(column, width)
     finally:
         table._sizing_content = False
