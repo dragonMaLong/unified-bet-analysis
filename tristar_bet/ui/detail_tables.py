@@ -8,6 +8,7 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 
 RESULT_STATUS_ROLE = QtCore.Qt.UserRole + 401
+RESULT_WARNING_ROLE = QtCore.Qt.UserRole + 402
 SELECTION_BLUE = "#e0ecff"
 
 
@@ -85,12 +86,16 @@ class ResultFileDelegate(QtWidgets.QStyledItemDelegate):
         paint_status_badge(painter, option.rect, index.data(RESULT_STATUS_ROLE))
 
 
+def status_badge_rect(rect):
+    return QtCore.QRectF(rect.right() - 21, rect.center().y() - 7, 14, 14)
+
+
 def paint_status_badge(painter, rect, status):
     if status not in {"ok", "warning"}:
         return
     painter.save()
     painter.setRenderHint(QtGui.QPainter.Antialiasing)
-    badge = QtCore.QRectF(rect.right() - 21, rect.center().y() - 7, 14, 14)
+    badge = status_badge_rect(rect)
     painter.setPen(QtCore.Qt.NoPen)
     painter.setBrush(QtGui.QColor("#16a34a" if status == "ok" else "#d97706"))
     painter.drawEllipse(badge)
@@ -153,6 +158,12 @@ class TableCopyController(QtCore.QObject):
         grid = self.selected_grid()
         if not grid:
             return None
+        columns = [index.column() for index in self.table.selectionModel().selectedIndexes()]
+        headers = []
+        for column in range(min(columns), max(columns) + 1):
+            value = self.table.model().headerData(column, QtCore.Qt.Horizontal, QtCore.Qt.DisplayRole)
+            headers.append("" if value is None else str(value))
+        grid = [headers] + grid
         stream = io.StringIO(newline="")
         csv.writer(stream, delimiter="\t", lineterminator="\r\n").writerows(grid)
         mime = QtCore.QMimeData()
@@ -197,12 +208,39 @@ class TableCopyController(QtCore.QObject):
 
 
 class DetailTableInteractionController(QtCore.QObject):
-    """Keep copy selections local to the current interaction, without tooltips."""
+    """Keep copy selections local; only warning badges expose a tooltip."""
     def __init__(self, window, tables):
         super().__init__(window)
         self.window = window
         self.tables = tables
         QtWidgets.QApplication.instance().installEventFilter(self)
+
+    @staticmethod
+    def _warning_at(table, watched, position):
+        views = [table]
+        frozen = getattr(table, "_frozen_table", None)
+        if frozen is not None:
+            views.append(frozen)
+        for view in views:
+            header = view.horizontalHeader()
+            item = None
+            if getattr(table, "_transposed", False) and watched is header.viewport():
+                column = header.logicalIndexAt(position)
+                if column > 0:
+                    item = table.horizontalHeaderItem(column)
+                    rect = QtCore.QRect(header.sectionViewportPosition(column), 0,
+                                        header.sectionSize(column), header.height())
+            elif not getattr(table, "_transposed", False) and watched is view.viewport():
+                index = view.indexAt(position)
+                if index.isValid() and index.column() == 0:
+                    item = table.item(index.row(), 0)
+                    rect = view.visualRect(index)
+            if item is not None and item.data(RESULT_STATUS_ROLE) == "warning":
+                badge = status_badge_rect(rect)
+                reason = item.data(RESULT_WARNING_ROLE)
+                if reason and badge.contains(QtCore.QPointF(position)):
+                    return str(reason), badge.toAlignedRect()
+        return None
 
     def eventFilter(self, watched, event):
         kind = event.type()
@@ -213,7 +251,12 @@ class DetailTableInteractionController(QtCore.QObject):
         owner = next((table for table in self.tables if watched is table or table.isAncestorOf(watched)), None)
         if kind == QtCore.QEvent.ToolTip:
             if owner is not None:
-                QtWidgets.QToolTip.hideText()
+                warning = self._warning_at(owner, watched, event.pos())
+                if warning is not None:
+                    reason, rect = warning
+                    QtWidgets.QToolTip.showText(event.globalPos(), reason, watched, rect)
+                else:
+                    QtWidgets.QToolTip.hideText()
                 return True
             return False
         if event.button() != QtCore.Qt.LeftButton:
@@ -293,10 +336,28 @@ def fit_content_widths(table):
                 item = table.item(row, column)
                 if item is not None:
                     extra = 26 if column == 0 and getattr(table, "_has_completion_badges", False) and not getattr(table, "_transposed", False) else 0
-                    width = max(width, metrics.horizontalAdvance(item.text()) + 24 + extra)
+                    text_width = max(metrics.horizontalAdvance(line) for line in item.text().split("\n"))
+                    width = max(width, text_width + 24 + extra)
             width = max(40, width)
             # Do not overwrite a user's wider choice; grow if new content needs it.
             width = max(width, table._manual_content_widths.get(_column_width_key(table, column, title), 0))
             table.setColumnWidth(column, width)
     finally:
         table._sizing_content = False
+
+
+def fit_multiline_row_heights(table):
+    """Fit explicit in-cell newlines without changing ordinary single-line rows."""
+    font = QtGui.QFont(table.font())
+    font.setBold(True)
+    metrics = QtGui.QFontMetrics(font)
+    default_height = table.verticalHeader().defaultSectionSize()
+    for row in range(table.rowCount()):
+        lines = max((table.item(row, column).text().count("\n") + 1
+                     for column in range(table.columnCount())
+                     if table.item(row, column) is not None), default=1)
+        height = (max(default_height, metrics.height() + (lines - 1) * metrics.lineSpacing() + 8)
+                  if lines > 1 else default_height)
+        if table.rowHeight(row) != height:
+            # AnalysisResultsTable also synchronizes its frozen filename/label.
+            table.setRowHeight(row, height)

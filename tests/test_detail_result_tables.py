@@ -14,7 +14,7 @@ from PyQt5 import QtCore, QtGui, QtWidgets, QtTest
 from tristar_bet.analysis import FitResult
 from tristar_bet.models import SmpHeader, SampleInfo, RunConditions, FreeSpaceInfo, IsothermPoint, TriStarResult, TargetPressureRow
 from tristar_bet.ui.main_window import MainWindow, BET_COLUMN, BJH_PORE_VOLUME_COLUMN, DEFAULT_BJH_PORE_VOLUME_RANGE, summary_rows
-from tristar_bet.ui.detail_tables import RESULT_STATUS_ROLE, SELECTION_BLUE
+from tristar_bet.ui.detail_tables import RESULT_STATUS_ROLE, RESULT_WARNING_ROLE, SELECTION_BLUE, status_badge_rect
 
 
 def empty_record(cls, **values):
@@ -48,6 +48,8 @@ class DetailResultTableTests(unittest.TestCase):
         # GUI event tests must not start background network update checks.
         self.settings_directory = tempfile.TemporaryDirectory()
         self.test_settings = QtCore.QSettings(str(Path(self.settings_directory.name) / "settings.ini"), QtCore.QSettings.IniFormat)
+        # Most legacy interaction tests intentionally exercise samples as rows.
+        self.test_settings.setValue("results/samples_as_columns", False)
         with patch.object(MainWindow, "_auto_check_for_updates"), patch("tristar_bet.ui.main_window.QtCore.QSettings", return_value=self.test_settings):
             self.w = MainWindow()
         self.samples = [sample("A", 1), sample("B", 2), sample("C", 3)]
@@ -73,6 +75,10 @@ class DetailResultTableTests(unittest.TestCase):
         expected = [Path(result.file_name).stem for result in self.w.results]
         for table in self.w.analysis_result_tables.values():
             self.assertEqual([table.item(row, 0).text() for row in range(table.rowCount())], expected)
+
+    def _with_headers(self, table, rows, left=0):
+        return [[table.horizontalHeaderItem(column).text()
+                 for column in range(left, left + len(rows[0]))]] + rows
         self.assertEqual([self.w.sample_table.item(row, 1).text() for row in range(len(expected))], expected)
 
     def test_transpose_button_in_frozen_header_and_shared_layout(self):
@@ -110,6 +116,8 @@ class DetailResultTableTests(unittest.TestCase):
                 self.assertIn("区间计算完成", header.toolTip())
                 for parameter, value in enumerate(values[1:]):
                     item = table.item(parameter, sample_index + 1)
+                    if method == "t_plot" and table._parameter_keys[parameter + 1] == "params":
+                        value = (value[0].replace("; ", "\n"), value[1])
                     self.assertEqual((item.text(), item.data(QtCore.Qt.UserRole)), value)
             self.assertEqual(table.item(0, 0).text(), "多点BET比表面积(m²/g)" if method == "bet" else
                              ("比表面积(m²/g)" if method == "langmuir" else "外比表面积(m²/g)"))
@@ -168,7 +176,7 @@ class DetailResultTableTests(unittest.TestCase):
         self.assertEqual(table.item(row, 2).text(), "—")
         self._select_rectangle(table, 0, 0, 2, 2)
         copied = list(csv.reader(io.StringIO(table._copy_controller.mime_data().text()), delimiter="\t"))
-        self.assertEqual(copied, [[table.item(r, c).text() for c in range(3)] for r in range(3)])
+        self.assertEqual(copied, self._with_headers(table, [[table.item(r, c).text() for c in range(3)] for r in range(3)]))
         self.samples[0].method_options.pop("jwgb_single_point_bet_pressure")
         w.refresh_metrics()
         self.assertNotIn("single_area", table._parameter_keys)
@@ -353,6 +361,72 @@ class DetailResultTableTests(unittest.TestCase):
         w.refresh_metrics()
         self.assertNotIn("single_area", w.bet_results_table._column_keys)
 
+    def test_t_plot_parameters_use_one_cell_with_one_line_per_parameter(self):
+        table = self.w.t_plot_results_table
+        self.w._toggle_analysis_table_orientation()
+        row = table._parameter_keys.index("params") - 1
+        column = 1
+        item = table.item(row, column)
+        lines = item.text().split("\n")
+        self.assertGreater(len(lines), 1)
+        self.assertTrue(all("=" in line for line in lines))
+        self.assertEqual(item.data(QtCore.Qt.UserRole), "; ".join(lines))
+        font = QtGui.QFont(table.font())
+        font.setBold(True)
+        metrics = QtGui.QFontMetrics(font)
+        self.assertGreaterEqual(table.columnWidth(column), max(metrics.horizontalAdvance(line) for line in lines) + 24)
+        self.assertLess(table.columnWidth(column), metrics.horizontalAdvance("; ".join(lines)) + 24)
+        self.assertGreater(table.rowHeight(row), table.verticalHeader().defaultSectionSize())
+        self.assertEqual(table.rowHeight(row), table._frozen_table.rowHeight(row))
+        self._select_rectangle(table, row, column, row, column)
+        mime = table._copy_controller.mime_data()
+        self.assertEqual(list(csv.reader(io.StringIO(mime.text()), delimiter="\t")), self._with_headers(table, [[item.text()]], column))
+        self.assertEqual(mime.html().count("<td>"), 2)
+        self.assertEqual(mime.html().count("<br>"), len(lines) - 1)
+
+    def test_t_plot_multiline_row_height_tracks_orientation_changes(self):
+        table = self.w.t_plot_results_table
+        column = table._column_keys.index("params")
+        original = table.item(0, column).text()
+        original_height = table.rowHeight(0)
+        self.assertNotIn("\n", original)
+        self.assertIn("; ", original)
+        self.assertEqual(original_height, table.verticalHeader().defaultSectionSize())
+        self.w._toggle_analysis_table_orientation()
+        row = table._parameter_keys.index("params") - 1
+        multiline = original.replace("; ", "\n")
+        self.assertEqual(table.item(row, 1).text(), multiline)
+        self.assertGreater(table.rowHeight(row), original_height)
+        for index in range(table.rowCount()):
+            self.assertEqual(table._frozen_table.rowHeight(index), table.rowHeight(index))
+            if index != row:
+                self.assertEqual(table.rowHeight(index), table.verticalHeader().defaultSectionSize())
+        self._select_rectangle(table, row, 1, row, 1)
+        mime = table._copy_controller.mime_data()
+        self.assertEqual(list(csv.reader(io.StringIO(mime.text()), delimiter="\t")), self._with_headers(table, [[multiline]], 1))
+        self.w._toggle_analysis_table_orientation()
+        self.assertEqual(table.item(0, column).text(), original)
+        self.assertEqual(table.rowHeight(0), original_height)
+
+    def test_t_plot_multiline_sizing_preserves_user_width_and_shrinks_changed_rows(self):
+        from tristar_bet.ui.detail_tables import fit_content_widths, fit_multiline_row_heights
+        table = self.w.t_plot_results_table
+        self.w._toggle_analysis_table_orientation()
+        row = table._parameter_keys.index("params") - 1
+        column = 1
+        table.setColumnWidth(column, 360)
+        table.item(row, column).setText("offset=0.034\nscale=1\npower=2\nconstant=3")
+        fit_content_widths(table)
+        fit_multiline_row_heights(table)
+        expanded = table.rowHeight(row)
+        self.assertEqual(table.columnWidth(column), 360)
+        for sample_column in range(1, table.columnCount()):
+            table.item(row, sample_column).setText("offset=0.034")
+        fit_multiline_row_heights(table)
+        self.assertLess(table.rowHeight(row), expanded)
+        self.assertEqual(table.rowHeight(row), table.verticalHeader().defaultSectionSize())
+        self.assertEqual(table._frozen_table.rowHeight(row), table.rowHeight(row))
+
     def test_cached_refresh_does_not_recompute_unchanged_rows(self):
         w = self.w
         with patch.object(w, "_bet_analysis_for_result", side_effect=AssertionError("uncached BET")), patch.object(w, "_t_plot_analysis_for_result", side_effect=AssertionError("uncached t-plot")):
@@ -426,7 +500,7 @@ class DetailResultTableTests(unittest.TestCase):
                 self.assertEqual(table.item(0, column + 1).data(QtCore.Qt.UserRole), cells[key + "_error"][1])
                 self._select_rectangle(table, 0, column, 0, column + 1)
                 grid = list(csv.reader(io.StringIO(table._copy_controller.mime_data().text()), delimiter="\t"))
-                self.assertEqual(grid, [[cells[key][0], cells[key + "_error"][0]]])
+                self.assertEqual(grid, self._with_headers(table, [[cells[key][0], cells[key + "_error"][0]]], column))
         self.assertEqual(self.w._analysis_cells_for_result(self.samples[0])["bet"]["area_error"][1], 0.25)
 
     def test_error_sort_is_numeric_and_keeps_missing_errors_last(self):
@@ -499,7 +573,7 @@ class DetailResultTableTests(unittest.TestCase):
             self._select_rectangle(table, 0, 0, 1, 2)
             mime = table._copy_controller.mime_data()
             parsed = list(csv.reader(io.StringIO(mime.text()), delimiter="\t"))
-            self.assertEqual(parsed, [[table.item(row, column).text() for column in range(3)] for row in range(2)])
+            self.assertEqual(parsed, self._with_headers(table, [[table.item(row, column).text() for column in range(3)] for row in range(2)]))
             self.assertTrue(mime.hasHtml())
             self.assertNotIn("区间计算完成", mime.text())
             self.assertEqual(table.selectionBehavior(), QtWidgets.QAbstractItemView.SelectItems)
@@ -534,7 +608,7 @@ class DetailResultTableTests(unittest.TestCase):
             table._copy_controller.show_menu(table._frozen_table, pos)
         self.assertEqual(table._copy_controller.selected_grid(), before)
         self.assertTrue(clipboard.setMimeData.called)
-        self.assertEqual(list(csv.reader(io.StringIO(clipboard.setMimeData.call_args.args[0].text()), delimiter="\t")), before)
+        self.assertEqual(list(csv.reader(io.StringIO(clipboard.setMimeData.call_args.args[0].text()), delimiter="\t")), self._with_headers(table, before, 1))
 
     def test_copy_empty_selection_does_not_change_clipboard(self):
         table = self.w.bet_results_table
@@ -680,6 +754,139 @@ class DetailResultTableTests(unittest.TestCase):
         event = QtGui.QHelpEvent(QtCore.QEvent.ToolTip, QtCore.QPoint(), QtCore.QPoint())
         self.assertFalse(w._detail_interactions.eventFilter(w.sample_table.viewport(), event))
 
+    def test_only_warning_badges_show_reason_in_both_table_orientations(self):
+        fits = [FitResult("BET", "ok"), FitResult("BET", "warning_negative_c"),
+                FitResult("BET", "not_enough_points")]
+        self.w._bet_analysis_for_result = lambda result: fits[self.samples.index(result)]
+        self.w._analysis_detail_cache.clear()
+        self.w.refresh_metrics()
+        table = self.w.bet_results_table
+        for transposed in (False, True):
+            if table._transposed != transposed:
+                self.w._toggle_analysis_table_orientation()
+            self._show_table(table)
+            for view in (table, table._frozen_table):
+                if transposed:
+                    header = view.horizontalHeader()
+                    if header.isSectionHidden(2):
+                        continue
+                    widget = header.viewport()
+                    rect = QtCore.QRect(header.sectionViewportPosition(2), 0,
+                                        header.sectionSize(2), header.height())
+                    item = table.horizontalHeaderItem(2)
+                else:
+                    widget = view.viewport()
+                    rect = view.visualRect(table.model().index(1, 0))
+                    item = table.item(1, 0)
+                pos = status_badge_rect(rect).center().toPoint()
+                event = QtGui.QHelpEvent(QtCore.QEvent.ToolTip, pos, widget.mapToGlobal(pos))
+                with patch.object(QtWidgets.QToolTip, "showText") as shown:
+                    QtWidgets.QApplication.sendEvent(widget, event)
+                shown.assert_called_once()
+                self.assertEqual(shown.call_args.args[1], item.data(RESULT_WARNING_ROLE))
+                self.assertIn("C<=0", shown.call_args.args[1])
+                self.assertNotIn("B.SMP", shown.call_args.args[1])
+                # Hovering the filename text must still be silent.
+                pos = QtCore.QPoint(rect.left() + 8, rect.center().y())
+                event = QtGui.QHelpEvent(QtCore.QEvent.ToolTip, pos, widget.mapToGlobal(pos))
+                with patch.object(QtWidgets.QToolTip, "showText") as shown:
+                    QtWidgets.QApplication.sendEvent(widget, event)
+                shown.assert_not_called()
+            # Neither the green badge nor an ordinary numeric cell gets a tooltip.
+            widget = table.horizontalHeader().viewport() if transposed else table._frozen_table.viewport()
+            if transposed:
+                header = table.horizontalHeader()
+                rect = QtCore.QRect(header.sectionViewportPosition(1), 0, header.sectionSize(1), header.height())
+            else:
+                rect = table._frozen_table.visualRect(table.model().index(0, 0))
+            pos = status_badge_rect(rect).center().toPoint()
+            event = QtGui.QHelpEvent(QtCore.QEvent.ToolTip, pos, widget.mapToGlobal(pos))
+            with patch.object(QtWidgets.QToolTip, "showText") as shown:
+                QtWidgets.QApplication.sendEvent(widget, event)
+            shown.assert_not_called()
+
+    def test_missing_values_center_except_in_summary_parameters(self):
+        fit = FitResult("BET", "not_enough_points")
+        self.w._bet_analysis_for_result = lambda result: fit
+        self.w._langmuir_analysis_for_result = lambda result: fit
+        self.w._t_plot_analysis_for_result = lambda result: fit
+        self.w._analysis_detail_cache.clear()
+        self.w.refresh_metrics()
+        for transposed in (False, True):
+            if self.w._analysis_tables_transposed != transposed:
+                self.w._toggle_analysis_table_orientation()
+            for table in self.w.analysis_result_tables.values():
+                missing = [table.item(row, column) for row in range(table.rowCount())
+                           for column in range(table.columnCount())
+                           if table.item(row, column).text() == "—"]
+                self.assertTrue(missing)
+                for item in missing:
+                    self.assertEqual(item.textAlignment(), int(QtCore.Qt.AlignCenter))
+        self._mock_pore_methods()
+        self.w._dft_pore_volume_for_result.return_value = None
+        table = self.w.pore_volume_results_table
+        self._show_table(table)
+        self.w.refresh_pore_volume_table()
+        self.assertEqual(table.item(0, 4).text(), "—")
+        self.assertEqual(table.item(0, 4).textAlignment(), int(QtCore.Qt.AlignCenter))
+        self.w._fill_two_column_table(self.w.metrics_table, [("测试参数", "—")])
+        self.assertFalse(self.w.metrics_table.item(0, 1).textAlignment() & QtCore.Qt.AlignHCenter)
+
+    def test_fresh_install_defaults_to_samples_as_columns_and_saved_choice_wins(self):
+        self.test_settings.remove("results/samples_as_columns")
+        windows = []
+        try:
+            with patch.object(MainWindow, "_auto_check_for_updates"), patch("tristar_bet.ui.main_window.QtCore.QSettings", return_value=self.test_settings):
+                fresh = MainWindow()
+                windows.append(fresh)
+                for table in fresh.analysis_result_tables.values():
+                    self.assertTrue(table._transposed)
+                    self.assertEqual(table.horizontalHeaderItem(0).text(), "参数")
+                self.assertFalse(fresh.pore_volume_results_table._transposed)
+                fresh._toggle_analysis_table_orientation()
+                saved = MainWindow()
+                windows.append(saved)
+                for table in saved.analysis_result_tables.values():
+                    self.assertFalse(table._transposed)
+                    self.assertEqual(table.horizontalHeaderItem(0).text(), "文件名")
+        finally:
+            for window in windows:
+                window.close()
+                window.deleteLater()
+            QtCore.QCoreApplication.sendPostedEvents(None, QtCore.QEvent.DeferredDelete)
+
+    def test_pressure_point_columns_center_and_elapsed_header_is_chinese(self):
+        active = self.w.active_result()
+        self.w.results[self.w.active_index] = replace(active, target_pressure_table=[
+            TargetPressureRow(7, "adsorption", 0.1, 0.2, 0.01, 123)])
+        self.w.refresh_isotherm_table()
+        self.w.refresh_target_table()
+        for table in (self.w.isotherm_table, self.w.target_table):
+            self.assertEqual(table.horizontalHeaderItem(0).text(), "测试点")
+            self.assertGreater(table.rowCount(), 0)
+            for row in range(table.rowCount()):
+                self.assertEqual(table.item(row, 0).textAlignment(), int(QtCore.Qt.AlignCenter))
+        table = self.w.isotherm_table
+        self.assertEqual(table.horizontalHeaderItem(7).text(), "累计测试时间(分:秒)")
+        self.assertEqual(table.item(0, 7).text(), "01:00")
+        self._select_rectangle(table, 0, 7, 0, 7)
+        copied = list(csv.reader(io.StringIO(table._copy_controller.mime_data().text()), delimiter="\t"))
+        self.assertEqual(copied, [["累计测试时间(分:秒)"], ["01:00"]])
+
+    def test_copy_prepends_only_selected_columns_and_never_changes_selection(self):
+        table = self.w.bet_results_table
+        self._select_rectangle(table, 0, 2, 1, 3)
+        before = {(index.row(), index.column()) for index in table.selectedIndexes()}
+        copied = list(csv.reader(io.StringIO(table._copy_controller.mime_data().text()), delimiter="\t"))
+        self.assertEqual(copied[0], [table.horizontalHeaderItem(2).text(), table.horizontalHeaderItem(3).text()])
+        self.assertEqual(len(copied), 3)
+        self.assertNotIn("文件名", copied[0])
+        self.assertEqual(before, {(index.row(), index.column()) for index in table.selectedIndexes()})
+        self.w._toggle_analysis_table_orientation()
+        self._select_rectangle(table, 0, 1, 1, 2)
+        copied = list(csv.reader(io.StringIO(table._copy_controller.mime_data().text()), delimiter="\t"))
+        self.assertEqual(copied[0], ["A", "B"])
+
     def test_header_click_sorts_without_selecting_whole_columns(self):
         w = self.w
         for index in range(7):
@@ -816,7 +1023,7 @@ class DetailResultTableTests(unittest.TestCase):
         self.assertEqual(table.item(0, 3).text(), "0.123")
         self.assertEqual({(i.row(), i.column()) for i in table.selectedIndexes()}, selection)
         expected = [[table.item(r, c).text() for c in range(5)] for r in range(3)]
-        self.assertEqual(list(csv.reader(io.StringIO(table._copy_controller.mime_data().text()), delimiter="\t")), expected)
+        self.assertEqual(list(csv.reader(io.StringIO(table._copy_controller.mime_data().text()), delimiter="\t")), self._with_headers(table, expected))
         for view, column in [(table, 1), (table._frozen_table, 0)]:
             rect = view.visualRect(table.model().index(0, column))
             self.assertEqual(view.viewport().grab().toImage().pixelColor(rect.left() + 3, rect.top() + 3).name(), SELECTION_BLUE)

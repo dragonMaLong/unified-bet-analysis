@@ -101,7 +101,8 @@ from tristar_bet.ui.plots import (
 )
 from tristar_bet.ui.detail_tables import (
     ANALYSIS_COLUMNS, SINGLE_BET_COLUMNS, PORE_VOLUME_COLUMNS, configure_content_widths, fit_content_widths,
-    RESULT_STATUS_ROLE, ResultFileDelegate, configure_cell_copy, DetailTableInteractionController,
+    RESULT_STATUS_ROLE, RESULT_WARNING_ROLE, ResultFileDelegate, configure_cell_copy, DetailTableInteractionController,
+    fit_multiline_row_heights,
 )
 from tristar_bet.version import __version__
 from tristar_bet.ui.region_endpoints import RegionEndpointControls
@@ -2441,16 +2442,16 @@ class MainWindow(QtWidgets.QMainWindow):
                 "吸附量(cm3/g STP)",
                 "吸附量(mmol/g)",
                 "Po(mmHg)",
-                "Elapsed",
+                "累计测试时间(分:秒)",
             ]
         )
-        self.target_table = self._make_table(["行", "阶段", "起始P/P0", "终止P/P0", "步长P/P0"])
+        self.target_table = self._make_table(["测试点", "阶段", "起始P/P0", "终止P/P0", "步长P/P0"])
         self.isotherm_table.horizontalHeader().setStretchLastSection(True)
         configure_cell_copy(self.isotherm_table)
         configure_cell_copy(self.target_table)
         self.analysis_result_tables = {}
         self.linked_result_tables = {}
-        self._analysis_tables_transposed = self.settings.value("results/samples_as_columns", False, type=bool)
+        self._analysis_tables_transposed = self.settings.value("results/samples_as_columns", True, type=bool)
         self._pore_volume_table_refresh_pending = False
         for method, columns in {**ANALYSIS_COLUMNS, "pore_volume": PORE_VOLUME_COLUMNS}.items():
             table = AnalysisResultsTable(0, len(columns))
@@ -8305,7 +8306,9 @@ class MainWindow(QtWidgets.QMainWindow):
             "intercept": numeric(regression["intercept"]), "intercept_error": numeric(regression["intercept_se"]),
             "t_min": numeric(t_range[0]), "t_max": numeric(t_range[1]),
             "method": text(_t_plot_thickness_label(str(settings["thickness_method"]))),
-            "params": text("; ".join(params)),
+            # Keep the original single-line value for sorting and row layout;
+            # the multiline display is used only with samples as columns.
+            "params": ("\n".join(params), "; ".join(params)) if params else text(None),
             "area_source": text(_t_plot_surface_area_label(str(settings["surface_area_mode"]))),
             "total_area": numeric(total_area), "correction": numeric(correction),
             "density": numeric(density_conversion_factor(result)),
@@ -8371,6 +8374,8 @@ class MainWindow(QtWidgets.QMainWindow):
                             continue
                         changed = True
                         for column, (display, value) in enumerate(values):
+                            if method == "t_plot" and keys[column] == "params" and not transposed and value is not None:
+                                display = str(value)
                             item = self._table_item(
                                 display, tooltip=result.header.file_path if column == 0 else display,
                                 alignment=(QtCore.Qt.AlignRight if isinstance(value, (float, int)) else QtCore.Qt.AlignLeft) | QtCore.Qt.AlignVCenter,
@@ -8382,6 +8387,8 @@ class MainWindow(QtWidgets.QMainWindow):
                                 if not badge and single_status == status_text("ok"):
                                     badge = "ok"
                                 item.setData(RESULT_STATUS_ROLE, badge)
+                                if badge == "warning":
+                                    item.setData(RESULT_WARNING_ROLE, status_label)
                                 tooltip = result.header.file_path + "\n" + status_label
                                 if single_status:
                                     tooltip += "\n单点BET：" + single_status
@@ -8400,6 +8407,8 @@ class MainWindow(QtWidgets.QMainWindow):
                     table._row_signatures = signatures
                     if changed:
                         fit_content_widths(table)
+                        if method == "t_plot":
+                            fit_multiline_row_heights(table)
                     for header in (table.horizontalHeader(), table.frozen_header()):
                         header.update_layout_state()
                     table.horizontalScrollBar().setValue(scroll)
@@ -8428,6 +8437,7 @@ class MainWindow(QtWidgets.QMainWindow):
             ]
             for column, value in enumerate(values):
                 self._set_table_item(self.isotherm_table, row, column, str(value))
+            self.isotherm_table.item(row, 0).setTextAlignment(QtCore.Qt.AlignCenter)
         fit_content_widths(self.isotherm_table)
 
     def refresh_target_table(self) -> None:
@@ -8446,6 +8456,7 @@ class MainWindow(QtWidgets.QMainWindow):
             ]
             for column, value in enumerate(values):
                 self._set_table_item(self.target_table, row, column, str(value))
+            self.target_table.item(row, 0).setTextAlignment(QtCore.Qt.AlignCenter)
         fit_content_widths(self.target_table)
 
     def active_result(self):
@@ -9425,15 +9436,17 @@ class MainWindow(QtWidgets.QMainWindow):
         fit_content_widths(table)
 
     def _set_table_item(self, table: QtWidgets.QTableWidget, row: int, column: int, text: str) -> None:
-        table.setItem(row, column, self._table_item(text))
+        table.setItem(row, column, self._table_item(text, center_missing=table is not self.metrics_table))
 
-    def _table_item(self, text: str, *, tooltip: str | None = None, alignment=None) -> QtWidgets.QTableWidgetItem:
+    def _table_item(self, text: str, *, tooltip: str | None = None, alignment=None, center_missing=True) -> QtWidgets.QTableWidgetItem:
         item = QtWidgets.QTableWidgetItem(str(text))
         item.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable)
         item.setForeground(QtGui.QBrush(QtGui.QColor("#111827")))
         if tooltip:
             item.setToolTip(tooltip)
-        if alignment is not None:
+        if center_missing and str(text).strip() in {"—", "——"}:
+            item.setTextAlignment(QtCore.Qt.AlignCenter)
+        elif alignment is not None:
             item.setTextAlignment(alignment)
         return item
 

@@ -12,11 +12,9 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from tristar_bet.analysis import (
     FitResult,
     _akima_interpolate_array,
-    adsorption_points,
     automatic_bet_range,
     bet_analysis,
     bjh_pore_distribution,
-    desorption_points,
     dft_pore_distribution,
     dh_pore_distribution,
     horvath_kawazoe_pore_distribution,
@@ -1413,6 +1411,26 @@ def make_plot(title: str, left_label: str, bottom_label: str, *, legend_position
     return plot
 
 
+def _isotherm_display_points(result, phase: str):
+    """Keep measured zero/negative uptake for display, not analysis selection.
+
+    Retain the existing pressure-domain and branch ordering rules. Calculation
+    helpers deliberately have stricter uptake requirements and remain separate.
+    """
+    points = []
+    for point in result.isotherm:
+        if point.phase != phase:
+            continue
+        try:
+            pressure = float(point.relative_pressure)
+            quantity = float(point.quantity_adsorbed_cm3_g_stp)
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(pressure) and np.isfinite(quantity) and 0.0 < pressure < 1.0:
+            points.append(point)
+    return sorted(points, key=lambda point: float(point.relative_pressure))
+
+
 def plot_isotherm_multi(
     plot: pg.PlotWidget,
     results,
@@ -1455,8 +1473,8 @@ def plot_isotherm_multi(
         symbol_size = ACTIVE_SYMBOL_SIZE if is_active else DEFAULT_SYMBOL_SIZE
         symbol_pen_width = ACTIVE_SYMBOL_PEN_WIDTH if is_active else DEFAULT_SYMBOL_PEN_WIDTH
         name = _legend_name(result)
-        adsorption = adsorption_points(result)
-        desorption = desorption_points(result)
+        adsorption = _isotherm_display_points(result, "adsorption")
+        desorption = _isotherm_display_points(result, "desorption")
         item = _plot_points(
             plot,
             adsorption,
@@ -1544,7 +1562,7 @@ def plot_isotherm_selection(
         items.append(
             _plot_selected_isotherm_points(
                 plot,
-                adsorption_points(result),
+                _isotherm_display_points(result, "adsorption"),
                 color,
                 lo,
                 hi,
@@ -1555,7 +1573,7 @@ def plot_isotherm_selection(
         items.append(
             _plot_selected_isotherm_points(
                 plot,
-                desorption_points(result),
+                _isotherm_display_points(result, "desorption"),
                 color,
                 lo,
                 hi,
@@ -3197,7 +3215,9 @@ def _plot_points(
         symbol_pen=pg.mkPen(color, width=symbol_pen_width),
         symbol_brush=pg.mkBrush(color if filled else "#ffffff"),
         x_log=x_log,
-        nonnegative=True,
+        # Measured isotherms can contain negative uptake. Preserve it in the
+        # connecting curve just as in the original point markers.
+        nonnegative=False,
     )
 
 
