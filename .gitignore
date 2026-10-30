@@ -34,3 +34,11 @@ analysis_outputs/
 .DS_Store
 Thumbs.db
 
+# Local telemetry deployment configuration and stored usage data
+/telemetry_config.json
+/telemetry_server/.env
+/telemetry_server/data/
+/instance/
+/tmp/telemetry-deploy/
+/outputs/bet-stats-access.txt
+

@@ -1,0 +1,32 @@
+# Include inside the existing HTTPS VirtualHost only.
+# The site CustomLog must exclude the bet_telemetry_request environment flag.
+# Keep all existing WordPress/PHP/SSL directives intact.
+# Reject a declared oversized body before Apache starts proxying it. Older
+# Apache releases can otherwise surface an upstream 413 as a proxy 502.
+RewriteEngine On
+RewriteCond expr "%{REQUEST_URI} == '/bet-telemetry/api/v1/events' && req('Content-Length') =~ /^[0-9]+$/ && req('Content-Length') -gt 65536"
+RewriteRule ^ - [R=413,END]
+
+# Backreferences are required: without one Apache appends the original URI.
+<Proxy "http://127.0.0.1:8765/">
+    ProxySet connectiontimeout=3 timeout=30
+</Proxy>
+ProxyPassMatch "^/bet-stats(/summary)?/?$" "http://127.0.0.1:8765/admin$1"
+ProxyPassMatch "^/bet-telemetry/(api/v1/events|healthz)$" "http://127.0.0.1:8765/$1"
+
+<LocationMatch "^/(bet-stats|bet-telemetry)(/|$)">
+    ProxyAddHeaders Off
+    RequestHeader set X-Forwarded-For "expr=%{REMOTE_ADDR}"
+    RequestHeader set X-Forwarded-Proto "https"
+    RequestHeader unset Forwarded
+    RequestHeader unset X-Forwarded-Host
+    RequestHeader unset X-Forwarded-Port
+    RequestHeader unset X-Forwarded-Prefix
+    RequestHeader unset X-Forwarded-Server
+    LimitRequestBody 65536
+    Header always set Cache-Control "no-store"
+    Header always set Referrer-Policy "no-referrer"
+    Header always set X-Content-Type-Options "nosniff"
+    # Limit request diagnostics for these new endpoints; existing site logging is untouched.
+    LogLevel crit
+</LocationMatch>

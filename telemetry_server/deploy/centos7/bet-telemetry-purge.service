@@ -1,0 +1,25 @@
+[Unit]
+Description=Expire BET telemetry events, IP observations and redacted backups
+After=bet-telemetry.service
+
+[Service]
+Type=oneshot
+User=bet-telemetry
+Group=bet-telemetry
+WorkingDirectory=/opt/bet-telemetry/app
+EnvironmentFile=/etc/bet-telemetry/telemetry.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=TZ=UTC
+ExecStart=/opt/bet-telemetry/python/bin/python3 -m telemetry_server purge
+ExecStopPost=/opt/bet-telemetry/python/bin/python3 telemetry_server/deploy/backup_redacted.py prune --directory /var/backups/bet-telemetry
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWriteDirectories=/var/lib/bet-telemetry /var/backups/bet-telemetry
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=
+MemoryLimit=256M
+CPUQuota=50%
+Nice=10

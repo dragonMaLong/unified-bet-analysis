@@ -27,7 +27,10 @@ jobs:
           python -m pip install -r requirements.txt pyinstaller
 
       - name: Build executable
-        run: pyinstaller --noconfirm BET.spec
+        shell: pwsh
+        run: |
+          Copy-Item telemetry_config.example.json telemetry_config.json
+          pyinstaller --noconfirm BET.spec
 
       - name: Write SHA256 checksum
         shell: pwsh

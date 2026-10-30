@@ -1,0 +1,32 @@
+[Unit]
+Description=DragonScience BET telemetry collector
+After=network.target
+
+[Service]
+Type=simple
+User=bet-telemetry
+Group=bet-telemetry
+WorkingDirectory=/opt/bet-telemetry/app
+EnvironmentFile=/etc/bet-telemetry/telemetry.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=TZ=UTC
+ExecStart=/opt/bet-telemetry/python/bin/python3 -m gunicorn --bind 127.0.0.1:8765 --workers 1 --timeout 30 --forwarded-allow-ips=127.0.0.1,::1 --access-logfile /dev/null --error-logfile - telemetry_server:create_app()
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=40
+KillMode=mixed
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWriteDirectories=/var/lib/bet-telemetry
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+MemoryLimit=256M
+CPUQuota=50%
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

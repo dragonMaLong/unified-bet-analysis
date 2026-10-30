@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily UTC retention cleanup for BET telemetry
+
+[Timer]
+OnCalendar=*-*-* 03:10:00 UTC
+Persistent=true
+RandomizedDelaySec=5m
+Unit=bet-telemetry-purge.service
+
+[Install]
+WantedBy=timers.target

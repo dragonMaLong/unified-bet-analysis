@@ -1,0 +1,10 @@
+[Unit]
+Description=Hourly retention cleanup for BET telemetry
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+Unit=bet-telemetry-purge.service
+
+[Install]
+WantedBy=timers.target

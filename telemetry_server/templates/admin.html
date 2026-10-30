@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BET 使用统计</title>
+  <style>
+    :root { color-scheme: light; font: 15px/1.6 system-ui, sans-serif; color: #172332; background: #f4f6f8; }
+    body { max-width: 1150px; margin: 32px auto; padding: 0 22px 40px; }
+    h1 { margin-bottom: 4px; font-size: 28px; } h2 { margin: 0 0 12px; font-size: 19px; }
+    p { margin: 6px 0; } .muted { color: #526170; } .metrics { display: grid; grid-template-columns: repeat(auto-fit,minmax(210px,1fr)); gap: 14px; margin: 22px 0; }
+    .metric, section { background: white; border: 1px solid #e1e6eb; border-radius: 10px; padding: 18px; }
+    .metric strong { display: block; font-size: 30px; font-variant-numeric: tabular-nums; }
+    section { margin: 16px 0; overflow-x: auto; } table { width: 100%; border-collapse: collapse; }
+    th,td { padding: 9px 12px; border-bottom: 1px solid #e7ebef; text-align: left; white-space: nowrap; }
+    th { background: #f7f9fb; font-weight: 600; } td { font-variant-numeric: tabular-nums; }
+    .empty { padding: 16px 0; color: #607080; } .dates { max-height: 340px; overflow: auto; }
+    code { font: inherit; background: #f0f3f6; padding: 1px 4px; }
+  </style>
+</head>
+<body>
+  <h1>BET 使用统计</h1>
+  <p class="muted">更新时间 {{ summary.generated_at }} · 所有时间均为 UTC</p>
+  <p class="muted">一般统计为近 30 天。事件保留窗口为 90 天，IP 为 7 天，由定时任务清理。安装数按随机安装标识去重，不能视为用户人数；功能浏览表示展示或切换到分析页面，不是分析计算次数。</p>
+  <div class="metrics">
+    <div class="metric">近 7 天活跃安装<strong>{{ summary.active_installs['7d'] }}</strong></div>
+    <div class="metric">近 30 天活跃安装<strong>{{ summary.active_installs['30d'] }}</strong></div>
+    <div class="metric">近 30 天文件导入成功率<strong>{% if summary.imports.success_rate is not none %}{{ '%.1f'|format(summary.imports.success_rate * 100) }}%{% else %}—{% endif %}</strong>{{ summary.imports.success }} / {{ summary.imports.total }} 次</div>
+    <div class="metric">近 30 天成功导出<strong>{{ summary.exports.success }}</strong>失败 {{ summary.exports.failure }} 次</div>
+  </div>
+  <section><h2>版本占比 · 前 100 个版本</h2><p class="muted">每个近 30 天活跃安装取最新事件中的版本；占比分母为全部活跃安装。</p>
+    {% if summary.version_share %}<table><thead><tr><th>版本</th><th>安装数</th><th>占比</th></tr></thead><tbody>
+    {% for row in summary.version_share %}<tr><td>{{ row.version }}</td><td>{{ row.installs }}</td><td>{{ '%.1f'|format(row.share * 100) }}%</td></tr>{% endfor %}
+    </tbody></table>{% else %}<p class="empty">暂无数据</p>{% endif %}
+  </section>
+  <section><h2>最近 7 天 IP 与版本</h2><p class="muted">最多展示 200 组 IP / 版本。IP 由服务器连接信息获得，可能是共享网络出口，不能视为用户身份。</p>
+    {% if summary.recent_ips %}<table><thead><tr><th>IP</th><th>版本</th><th>涉及安装数</th><th>最后收到（UTC）</th></tr></thead><tbody>
+    {% for row in summary.recent_ips %}<tr><td>{{ row.ip }}</td><td>{{ row.version }}</td><td>{{ row.installations }}</td><td>{{ row.last_seen_at }}</td></tr>{% endfor %}
+    </tbody></table>{% else %}<p class="empty">暂无数据</p>{% endif %}
+  </section>
+  <section><h2>每日启动次数 · 近 30 个 UTC 自然日</h2><div class="dates"><table><thead><tr><th>日期（UTC）</th><th>启动次数</th></tr></thead><tbody>
+    {% for row in summary.daily_startups|reverse %}<tr><td>{{ row.date }}</td><td>{{ row.count }}</td></tr>{% endfor %}
+  </tbody></table></div></section>
+  <section><h2>文件导入 · 按扩展名</h2>
+    {% if summary.imports.by_extension %}<table><thead><tr><th>扩展名</th><th>导入次数</th><th>成功</th><th>失败</th><th>成功率</th><th>平均耗时（ms）</th></tr></thead><tbody>
+    {% for row in summary.imports.by_extension %}<tr><td>{{ row.extension }}</td><td>{{ row.total }}</td><td>{{ row.success }}</td><td>{{ row.failure }}</td><td>{{ '%.1f'|format(row.success_rate * 100) }}%</td><td>{{ row.average_duration_ms }}</td></tr>{% endfor %}
+    </tbody></table>{% else %}<p class="empty">暂无数据</p>{% endif %}
+  </section>
+  <section><h2>功能页面浏览</h2>
+    {% if summary.feature_views %}<table><thead><tr><th>功能</th><th>页面</th><th>浏览次数</th></tr></thead><tbody>
+    {% for row in summary.feature_views %}<tr><td>{{ row.feature }}</td><td>{{ '分析图' if row.surface == 'plot' else '结果表' }}</td><td>{{ row.views }}</td></tr>{% endfor %}
+    </tbody></table>{% else %}<p class="empty">暂无数据</p>{% endif %}
+  </section>
+  <section><h2>导出</h2>
+    {% if summary.exports.by_format %}<table><thead><tr><th>格式</th><th>总次数</th><th>成功</th><th>失败</th><th>平均耗时（ms）</th></tr></thead><tbody>
+    {% for row in summary.exports.by_format %}<tr><td>{{ row.format }}</td><td>{{ row.total }}</td><td>{{ row.success }}</td><td>{{ row.failure }}</td><td>{{ row.average_duration_ms }}</td></tr>{% endfor %}
+    </tbody></table>{% else %}<p class="empty">暂无数据</p>{% endif %}
+  </section>
+  <section><h2>运行环境 · 前 20 组</h2><p class="muted">每个安装取近 30 天最近一次启动的系统和显示配置；屏幕尺寸为应用上报的逻辑像素。</p>
+    {% if summary.environments %}<table><thead><tr><th>系统</th><th>系统版本</th><th>架构</th><th>屏幕宽 × 高</th><th>缩放</th><th>安装数</th></tr></thead><tbody>
+    {% for row in summary.environments %}<tr><td>{{ row.os }}</td><td>{{ row.os_version }}</td><td>{{ row.architecture }}</td><td>{{ row.screen_width }} × {{ row.screen_height }}</td><td>{{ row.scale }}</td><td>{{ row.installs }}</td></tr>{% endfor %}
+    </tbody></table>{% else %}<p class="empty">暂无数据</p>{% endif %}
+  </section>
+  <section><h2>错误分类排行</h2><p class="muted">仅固定错误分类，不采集异常原文、文件路径或样品信息。</p>
+    {% if summary.errors %}<table><thead><tr><th>操作</th><th>错误分类</th><th>次数</th></tr></thead><tbody>
+    {% for row in summary.errors %}<tr><td>{{ '导入' if row.event == 'import_file' else '导出' }}</td><td>{{ row.error_code }}</td><td>{{ row.count }}</td></tr>{% endfor %}
+    </tbody></table>{% else %}<p class="empty">暂无数据</p>{% endif %}
+  </section>
+</body>
+</html>

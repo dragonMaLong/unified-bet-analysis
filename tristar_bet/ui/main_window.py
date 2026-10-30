@@ -5,6 +5,7 @@ import os
 import math
 import sys
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
@@ -59,6 +60,9 @@ from tristar_bet.reference_thickness import (
 )
 from tristar_bet.update_checker import DEFAULT_UPDATE_REPOSITORY, UpdateInfo, check_for_update
 from tristar_bet.updater import UpdateDownloadError, download_update, launch_update_and_exit
+from tristar_bet.ui.native_import_picker import choose_import_files
+from tristar_bet.telemetry import TelemetryClient, configured_endpoint
+from tristar_bet.ui.telemetry_settings import TelemetrySettingsDialog, TelemetryUpdateDialog, startup_environment
 from tristar_bet.ui.plots import (
     ACTIVE_LINE_WIDTH,
     BJH_DIFFERENTIAL_LOG,
@@ -1496,6 +1500,90 @@ class RegularizationSlider(QtWidgets.QWidget):
         return f"{float(value):.5f}"
 
 
+class _ImportFilePickerModel(QtCore.QIdentityProxyModel):
+    def headerData(self, section, orientation, role=QtCore.Qt.DisplayRole):
+        labels = ("文件名", "大小", "类型", "修改时间")
+        if orientation == QtCore.Qt.Horizontal and role == QtCore.Qt.DisplayRole and 0 <= section < len(labels):
+            return labels[section]
+        return super().headerData(section, orientation, role)
+
+
+class ImportFilePicker(QtWidgets.QFileDialog):
+    """Portable fallback for platforms without the Windows common dialog."""
+
+    def __init__(self, parent=None, initial_dir: Path | str | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowFlag(QtCore.Qt.WindowContextHelpButtonHint, False)
+        self.setOption(QtWidgets.QFileDialog.DontUseNativeDialog, True)
+        self.setWindowTitle("选择数据文件夹")
+        self.setFileMode(QtWidgets.QFileDialog.ExistingFiles)
+        self.setAcceptMode(QtWidgets.QFileDialog.AcceptOpen)
+        self.setViewMode(QtWidgets.QFileDialog.Detail)
+        self.setProxyModel(_ImportFilePickerModel(self))
+        self.setDirectory(str(initial_dir or Path.cwd()))
+        patterns = " ".join(f"*{suffix}" for suffix in SUPPORTED_DATA_SUFFIXES)
+        self.setNameFilter(f"支持的数据文件 ({patterns})")
+        self.setLabelText(QtWidgets.QFileDialog.LookIn, "当前文件夹：")
+        self.setLabelText(QtWidgets.QFileDialog.FileName, "文件名：")
+        self.setLabelText(QtWidgets.QFileDialog.FileType, "文件类型：")
+        self.setLabelText(QtWidgets.QFileDialog.Accept, "添加")
+        self.setLabelText(QtWidgets.QFileDialog.Reject, "取消")
+        self.chosen_directory: Path | None = None
+
+        for name, tooltip in (
+            ("backButton", "后退"), ("forwardButton", "前进"),
+            ("toParentButton", "上一级文件夹"), ("newFolderButton", "新建文件夹"),
+            ("listModeButton", "列表视图"), ("detailModeButton", "详细信息视图"),
+        ):
+            self.findChild(QtWidgets.QToolButton, name).setToolTip(tooltip)
+
+        button_box = self.findChild(QtWidgets.QDialogButtonBox)
+        button_box.setOrientation(QtCore.Qt.Horizontal)
+        self._add_button = button_box.button(QtWidgets.QDialogButtonBox.Open)
+        # QFileDialog otherwise replaces the custom label with "Open" when a
+        # directory is highlighted. Run after its built-in selection handlers.
+        self.currentChanged.connect(self._restore_add_button_label)
+        self.directoryEntered.connect(self._restore_add_button_label)
+        self.findChild(QtWidgets.QLineEdit, "fileNameEdit").textChanged.connect(self._restore_add_button_label)
+        for name in ("listView", "treeView"):
+            self.findChild(QtWidgets.QAbstractItemView, name).selectionModel().selectionChanged.connect(self._restore_add_button_label)
+        folder_button = button_box.addButton("选择文件夹", QtWidgets.QDialogButtonBox.ActionRole)
+        folder_button.setAutoDefault(False)
+        folder_button.setToolTip("只选择文件夹，返回后在左侧排序、筛选文件")
+        folder_button.clicked.connect(self._choose_directory)
+
+        hint = QtWidgets.QLabel("可用 Ctrl / Shift 多选文件后点击“添加”；也可点击“选择文件夹”，返回后再排序、筛选文件。")
+        hint.setWordWrap(True)
+        layout = self.layout()
+        layout.removeWidget(button_box)
+        # Let the file-name and filter fields use the space formerly occupied
+        # by the standard vertical button box.
+        for name in ("fileNameEdit", "fileTypeCombo"):
+            widget = self.findChild(QtWidgets.QWidget, name)
+            row, column, row_span, _ = layout.getItemPosition(layout.indexOf(widget))
+            layout.removeWidget(widget)
+            layout.addWidget(widget, row, column, row_span, 2)
+        row = layout.rowCount()
+        layout.addWidget(hint, row, 0, 1, layout.columnCount())
+        layout.addWidget(button_box, row + 1, 0, 1, layout.columnCount())
+        self.resize(900, 560)
+
+    def _restore_add_button_label(self, *_args) -> None:
+        self._add_button.setText("添加")
+
+    def _choose_directory(self) -> None:
+        selected = self.selectedFiles()
+        directory = Path(self.directory().absolutePath())
+        if len(selected) == 1 and Path(selected[0]).is_dir():
+            directory = Path(selected[0])
+        if not directory.is_dir():
+            QtWidgets.QMessageBox.warning(self, "文件夹不存在", str(directory))
+            return
+        self.chosen_directory = directory
+        # This action deliberately accepts a directory without requiring files.
+        QtWidgets.QDialog.accept(self)
+
+
 class FileImportDialog(QtWidgets.QDialog):
     def __init__(
         self,
@@ -1505,6 +1593,7 @@ class FileImportDialog(QtWidgets.QDialog):
         available_sort: tuple[int, QtCore.Qt.SortOrder] | None = None,
     ) -> None:
         super().__init__(parent)
+        self.setWindowFlag(QtCore.Qt.WindowContextHelpButtonHint, False)
         self.setWindowTitle("导入数据文件")
         self.resize(1060, 640)
         self.setMinimumSize(860, 520)
@@ -1518,8 +1607,8 @@ class FileImportDialog(QtWidgets.QDialog):
         self.folder_edit = QtWidgets.QLineEdit(str(self.current_directory))
         self.folder_edit.returnPressed.connect(self._set_directory_from_edit)
         browse_button = QtWidgets.QToolButton()
-        browse_button.setText("...")
-        browse_button.setToolTip("选择文件夹")
+        browse_button.setText("选择文件夹")
+        browse_button.setToolTip("浏览文件夹，可直接添加选中文件，也可只选择文件夹")
         browse_button.clicked.connect(self._browse_directory)
         refresh_button = QtWidgets.QToolButton()
         refresh_button.setText("刷新")
@@ -1585,7 +1674,7 @@ class FileImportDialog(QtWidgets.QDialog):
         picker_layout.addWidget(selected_panel, 1)
 
         self.count_label = QtWidgets.QLabel("")
-        self.import_button = QtWidgets.QPushButton("导入")
+        self.import_button = QtWidgets.QPushButton("开始导入")
         self.import_button.clicked.connect(self.accept)
         cancel_button = QtWidgets.QPushButton("取消")
         cancel_button.clicked.connect(self.reject)
@@ -1647,12 +1736,50 @@ class FileImportDialog(QtWidgets.QDialog):
         return button
 
     def _browse_directory(self) -> None:
-        directory = QtWidgets.QFileDialog.getExistingDirectory(self, "选择数据文件夹", str(self.current_directory))
-        if not directory:
+        if sys.platform == "win32":
+            try:
+                selection = choose_import_files(int(self.winId()), self.current_directory, SUPPORTED_DATA_SUFFIXES)
+            except OSError as exc:
+                QtWidgets.QMessageBox.warning(self, "无法打开文件选择窗口", str(exc))
+                return
+            if selection is None:
+                return
+            selected_paths = [str(path) for path in selection.files]
+            directory = selection.directory if not selected_paths else None
+        else:
+            dialog = ImportFilePicker(self, self.current_directory)
+            try:
+                if dialog.exec_() != QtWidgets.QDialog.Accepted:
+                    return
+                directory = dialog.chosen_directory
+                selected_paths = dialog.selectedFiles() if directory is None else []
+            finally:
+                dialog.deleteLater()
+        paths: list[Path] = []
+        rejected: list[Path] = []
+        for filename in selected_paths:
+            path = Path(filename)
+            if path.is_file() and path.suffix.lower() in SUPPORTED_DATA_SUFFIXES:
+                paths.append(path)
+            else:
+                rejected.append(path)
+        if rejected:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "部分文件未添加",
+                "以下文件不存在或格式不受支持，未加入待导入列表：\n" + "\n".join(str(path) for path in rejected),
+            )
+        if directory is None and not paths:
             return
-        self.current_directory = Path(directory)
-        self.folder_edit.setText(str(self.current_directory))
+        directory = directory if directory is not None else paths[0].parent
+        if self.current_directory != directory:
+            self.search_edit.clear()
+        self.current_directory = directory
+        self._add_to_selected(paths)
         self._scan_directory()
+        if paths:
+            self.selected_table.scrollToBottom()
+            self.selected_table.setFocus()
 
     def _set_directory_from_edit(self) -> None:
         directory = Path(self.folder_edit.text().strip())
@@ -1957,6 +2084,10 @@ class HorvathKawazoePropertiesDialog(QtWidgets.QDialog):
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self) -> None:
         super().__init__()
+        self._telemetry: TelemetryClient | None = None
+        self._telemetry_initialized = False
+        self._telemetry_closed = False
+        self._telemetry_startup_sent = False
         self.results = []
         self.visible_results: list[bool] = []
         self.active_index = -1
@@ -2591,10 +2722,116 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setCentralWidget(splitter)
 
         self.statusBar().showMessage("打开或拖入 SMP、RAW、DAT、QPS 或官方 Excel 导出文件")
+        self.privacy_button = QtWidgets.QToolButton(self)
+        self.privacy_button.setText("隐私设置")
+        self.privacy_button.setAutoRaise(True)
+        self.privacy_button.setToolTip("管理可选的使用统计")
+        self.privacy_button.clicked.connect(self._show_telemetry_settings)
+        self.statusBar().addPermanentWidget(self.privacy_button)
+        self.privacy_button.hide()  # Temporarily hide the entry; keep its settings handler.
         self.refresh_all()
         self._sync_select_all_state()
         QtCore.QTimer.singleShot(0, self._position_header_controls)
         QtCore.QTimer.singleShot(AUTO_UPDATE_CHECK_DELAY_MS, self._auto_check_for_updates)
+        QtCore.QTimer.singleShot(800, self._initialize_telemetry)
+
+    def _initialize_telemetry(self) -> None:
+        if self._telemetry_closed or self._telemetry_initialized:
+            return
+        self._telemetry_initialized = True
+        try:
+            storage = QtCore.QStandardPaths.writableLocation(QtCore.QStandardPaths.AppLocalDataLocation)
+            if not storage:
+                return
+            self._telemetry = TelemetryClient(Path(storage) / "telemetry", APP_VERSION, configured_endpoint())
+        except Exception:
+            # Optional statistics must never prevent the analysis window opening.
+            return
+        self._record_telemetry_startup()
+
+    def _show_telemetry_settings(self) -> None:
+        if self._telemetry is not None and getattr(self._telemetry, "storage_busy", False):
+            # The other window may have closed since this one was started.
+            self._telemetry.close()
+            self._telemetry = None
+            self._telemetry_initialized = False
+        self._initialize_telemetry()
+        if self._telemetry is None:
+            QtWidgets.QMessageBox.information(self, "隐私设置", "无法访问统计设置存储，使用统计保持关闭。")
+            return
+        if getattr(self._telemetry, "storage_busy", False):
+            QtWidgets.QMessageBox.information(
+                self, "隐私设置", "使用统计由另一个软件窗口管理，本窗口不会记录或发送统计。\n"
+                "请关闭其他软件窗口后，再打开这里管理统计设置。",
+            )
+            return
+        dialog = TelemetrySettingsDialog(self._telemetry, self)
+        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+            self._apply_telemetry_consent(dialog.enable_check.isChecked())
+            self._record_telemetry_startup()
+
+    def _apply_telemetry_consent(self, enabled: bool) -> None:
+        if not self._telemetry.set_enabled(enabled):
+            QtWidgets.QMessageBox.information(self, "隐私设置", "无法保存统计偏好。本次运行保持关闭；请在存储恢复后再次检查设置。")
+        if not self._telemetry.enabled:
+            self._telemetry_startup_sent = False
+
+    def _record_telemetry(self, name: str, **data) -> None:
+        if self._telemetry is not None:
+            try:
+                self._telemetry.record(name, **data)
+            except Exception:
+                pass
+
+    def _record_telemetry_startup(self) -> None:
+        if self._telemetry is None or not self._telemetry.enabled or self._telemetry_startup_sent:
+            return
+        self._telemetry_startup_sent = True
+        try:
+            screen = self.screen() if hasattr(self, "screen") else QtWidgets.QApplication.primaryScreen()
+            self._record_telemetry("startup", **startup_environment(screen))
+        except Exception:
+            pass
+
+    def _record_feature_view(self, index: int, surface: str) -> None:
+        if not self.results:
+            return
+        # Page visits describe visible UI use; background calculations do not emit events.
+        features = ("bet", "langmuir", "t_plot", "bjh", "dh", "hk", "dft") if surface == "plot" else (
+            None, "bet", "langmuir", "t_plot",
+        )
+        if 0 <= index < len(features) and features[index] is not None:
+            self._record_telemetry("feature_view", feature=features[index], surface=surface)
+
+    def _load_file_with_telemetry(self, path: str):
+        extension = Path(path).suffix.lower().lstrip(".")
+        parsers = {"smp": "micromeritics", "raw": "jwgb", "dat": "bel", "qps": "quantachrome",
+                   "xls": "excel", "xlsx": "excel", "xlsm": "excel"}
+        parser = parsers.get(extension, "unknown")
+        if extension not in parsers:
+            extension = "other"
+        started = time.monotonic()
+        error_code = "none"
+        try:
+            result = load_file(path)
+            if result.point_count <= 0:
+                error_code = "no_points"
+            return result
+        except OSError:
+            error_code = "io_error"
+            raise
+        except (TriStarParseError, BELMasterParseError, ExcelParseError, ValueError):
+            error_code = "parse_error"
+            raise
+        except Exception:
+            error_code = "unexpected_error"
+            raise
+        finally:
+            self._record_telemetry(
+                "import_file", extension=extension, parser=parser,
+                status="success" if error_code == "none" else "failure", error_code=error_code,
+                duration_ms=min(86400000, max(0, int((time.monotonic() - started) * 1000))),
+            )
 
     def _auto_check_for_updates(self) -> None:
         self.check_for_updates(manual=False)
@@ -2664,6 +2901,18 @@ class MainWindow(QtWidgets.QMainWindow):
             f"{notes_hint}\n\n"
             "是否现在下载并重启到新版本？"
         )
+        self._initialize_telemetry()
+        client = self._telemetry
+        if client is not None and client.available and not client.consent_decided:
+            dialog = TelemetryUpdateDialog(title, message, client, self)
+            if dialog.exec_() != QtWidgets.QDialog.Accepted:
+                return
+            if dialog.choice not in (TelemetryUpdateDialog.CONSENT_AND_UPDATE, TelemetryUpdateDialog.UPDATE_ONLY):
+                return
+            self._apply_telemetry_consent(dialog.choice == TelemetryUpdateDialog.CONSENT_AND_UPDATE)
+            self._record_telemetry_startup()
+            self._download_and_install_update(info)
+            return
         box = QtWidgets.QMessageBox(self)
         box.setIcon(QtWidgets.QMessageBox.Information)
         box.setWindowTitle("软件更新")
@@ -5402,6 +5651,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._store_dft_result_cache(key, distribution)
 
     def closeEvent(self, event) -> None:
+        self._telemetry_closed = True
+        if self._telemetry is not None:
+            self._telemetry.close()
         if self._dft_batch_calculator is not None:
             self._dft_batch_calculator.close()
         super().closeEvent(event)
@@ -5486,6 +5738,7 @@ class MainWindow(QtWidgets.QMainWindow):
         existing_by_key = {self._path_key(result.header.file_path): result for result in self.results}
         new_results = []
         errors = []
+        imported_new = False
         seen_keys: set[str] = set()
         for path in paths:
             key = self._path_key(path)
@@ -5497,7 +5750,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 new_results.append(existing)
                 continue
             try:
-                result = load_file(path)
+                result = self._load_file_with_telemetry(path)
             except (OSError, TriStarParseError, BELMasterParseError, ExcelParseError, ValueError) as exc:
                 errors.append(f"{Path(path).name}: {exc}")
                 continue
@@ -5505,6 +5758,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 errors.append(f"{Path(path).name}: 没有解析到实际等温线，已跳过")
                 continue
             new_results.append(result)
+            imported_new = True
 
         if errors:
             QtWidgets.QMessageBox.warning(self, "部分文件未加载", "\n".join(errors))
@@ -5529,6 +5783,8 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             self.active_index = 0
         self.refresh_all()
+        if imported_new:
+            self._record_feature_view(self.plot_tabs.currentIndex(), "plot")
 
     def _discard_sample_settings(self, result) -> None:
         self._analysis_detail_cache.pop(id(result), None)
@@ -5551,7 +5807,7 @@ class MainWindow(QtWidgets.QMainWindow):
         errors = []
         for path in paths:
             try:
-                result = load_file(path)
+                result = self._load_file_with_telemetry(path)
             except (OSError, TriStarParseError, BELMasterParseError, ExcelParseError, ValueError) as exc:
                 errors.append(f"{Path(path).name}: {exc}")
                 continue
@@ -5602,6 +5858,7 @@ class MainWindow(QtWidgets.QMainWindow):
             if self.active_index < 0:
                 self.active_index = 0
         self.refresh_all()
+        self._record_feature_view(self.plot_tabs.currentIndex(), "plot")
 
     def export_xlsx(self) -> None:
         selected = [result for result, visible in zip(self.results, self.visible_results) if visible]
@@ -5627,6 +5884,7 @@ class MainWindow(QtWidgets.QMainWindow):
             path += ".xlsx"
         self.export_directory = Path(path).parent
         self._write_directory_setting("export_directory", self.export_directory)
+        started = time.monotonic()
         try:
             export_results_xlsx(
                 selected,
@@ -5635,8 +5893,16 @@ class MainWindow(QtWidgets.QMainWindow):
                 pore_volumes=pore_volumes,
             )
         except Exception as exc:
+            self._record_telemetry(
+                "export", format="xlsx", status="failure", error_code="write_error",
+                duration_ms=min(86400000, max(0, int((time.monotonic() - started) * 1000))),
+            )
             QtWidgets.QMessageBox.critical(self, "导出失败", str(exc))
             return
+        self._record_telemetry(
+            "export", format="xlsx", status="success", error_code="none",
+            duration_ms=min(86400000, max(0, int((time.monotonic() - started) * 1000))),
+        )
         self.statusBar().showMessage(f"已导出: {path}", 6000)
 
     def on_sample_item_changed(self, item: QtWidgets.QTableWidgetItem) -> None:
@@ -6201,6 +6467,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.refresh_analysis_plots()
 
     def on_plot_tab_changed(self, _index: int) -> None:
+        self._record_feature_view(_index, "plot")
         self.refresh_isotherm_plot()
         self._update_dft_diagnostic_visibility()
         self._update_pore_volume_header()
@@ -8139,6 +8406,7 @@ class MainWindow(QtWidgets.QMainWindow):
             table._update_frozen_geometry()
 
     def _on_detail_tab_changed(self, _index: int) -> None:
+        self._record_feature_view(_index, "results")
         self.refresh_pore_volume_table()
 
     def _queue_pore_volume_table_refresh(self) -> None:

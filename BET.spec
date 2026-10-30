@@ -8,11 +8,17 @@ The bundled reference thickness curves (tristar_bet/reference_data) and the
 app logo (tristar_bet/assets) are collected so the .exe runs standalone,
 without the Micromeritics TriStar II Plus software installed.
 """
+from pathlib import Path
+
 datas = [
     ("tristar_bet/reference_data", "tristar_bet/reference_data"),
     ("tristar_bet/assets", "tristar_bet/assets"),
     ("DFT-NLDFT-Models.zip", "."),
 ]
+
+# Optional public intake address; never include server administration credentials.
+if Path("telemetry_config.json").is_file():
+    datas.append(("telemetry_config.json", "."))
 
 hiddenimports = []
 
