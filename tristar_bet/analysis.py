@@ -240,7 +240,8 @@ class FitResult:
 
     @property
     def ok(self) -> bool:
-        return self.status in {"ok", "warning_negative_c"}
+        return self.status in {"ok", "warning_negative_c", "warning_reconstructed", "warning_reconstructed_negative_c",
+                               "warning_reconstructed_monolayer_outside_range"}
 
 
 @dataclass(frozen=True)
@@ -650,6 +651,11 @@ def _tristar_ii_plus_bet_range_until_rouquerol_peak(
 
 
 def _bet_analysis_for_range(result: TriStarResult, p_min: float, p_max: float) -> FitResult:
+    if result.method_options.get('jwgb_reconstructed'):
+        original = [p for p in result.isotherm if p.phase == 'adsorption'
+                    and p.relative_pressure is not None and p_min <= p.relative_pressure <= p_max]
+        if any(p.quantity_adsorbed_cm3_g_stp is None or p.quantity_adsorbed_cm3_g_stp <= 0 for p in original):
+            return FitResult('BET', 'nonpositive_reconstructed_uptake', len(original), p_min, p_max)
     selected = _points_in_range(adsorption_points(result), p_min, p_max)
     return _bet_analysis_for_points(result, selected, p_min, p_max)
 
@@ -709,6 +715,17 @@ def _bet_analysis_for_points(
     monolayer = 1.0 / denominator
     c_constant = (slope / intercept + 1.0) if abs(intercept) > 1e-15 else None
     status = "warning_negative_c" if c_constant is not None and c_constant <= 0.0 else "ok"
+    if result.method_options.get('jwgb_reconstructed'):
+        status = 'warning_reconstructed_negative_c' if status == 'warning_negative_c' else 'warning_reconstructed'
+        # Preserve the candidate value, but distinguish a fitted number from a
+        # range that brackets the fitted monolayer capacity (IUPAC 2015, 5.2.2).
+        # This warning is restricted to experimental native reconstruction.
+        volumes = [row['quantity_adsorbed_cm3_g_stp'] for row in rows]
+        tolerance = max(1e-12, abs(monolayer) * 1e-10)
+        if c_constant is not None and c_constant > 0 and not (
+            min(volumes) - tolerance <= monolayer <= max(volumes) + tolerance
+        ):
+            status = 'warning_reconstructed_monolayer_outside_range'
     surface_area = monolayer * surface_area_factor_m2_per_cm3(result)
     surface_area_se = None
     if slope_se is not None and intercept_se is not None and abs(denominator) > 1e-15:

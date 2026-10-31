@@ -807,7 +807,7 @@ class SampleTableWidget(QtWidgets.QTableWidget):
             if not url.isLocalFile():
                 continue
             path = Path(url.toLocalFile())
-            if path.is_file() and path.suffix.lower() in (".smp", ".raw", ".dat", ".qps", ".xls", ".xlsx", ".xlsm"):
+            if path.is_file() and path.suffix.lower() in (".smp", ".raw", ".jwgbt", ".dat", ".qps", ".xls", ".xlsx", ".xlsm"):
                 paths.append(str(path))
         return paths
 
@@ -1017,7 +1017,7 @@ PORE_VOLUME_METHOD_BJH = "bjh"
 PORE_VOLUME_METHOD_DH = "dh"
 PORE_VOLUME_METHOD_HK = "hk"
 PORE_VOLUME_METHOD_DFT = "dft"
-SUPPORTED_DATA_SUFFIXES = (".smp", ".raw", ".dat", ".qps", ".xls", ".xlsx", ".xlsm")
+SUPPORTED_DATA_SUFFIXES = (".smp", ".raw", ".jwgbt", ".dat", ".qps", ".xls", ".xlsx", ".xlsm")
 BET_DEFAULT_RANGE = (0.05, 0.30)
 BET_PLOT_RANGE = (0.0, 1.0)
 LANGMUIR_DEFAULT_RANGE = (0.05, 0.30)
@@ -2721,7 +2721,7 @@ class MainWindow(QtWidgets.QMainWindow):
         splitter.setSizes([390, 890])
         self.setCentralWidget(splitter)
 
-        self.statusBar().showMessage("打开或拖入 SMP、RAW、DAT、QPS 或官方 Excel 导出文件")
+        self.statusBar().showMessage("打开或拖入 SMP、RAW、JWGBT、DAT、QPS 或官方 Excel 导出文件")
         self.privacy_button = QtWidgets.QToolButton(self)
         self.privacy_button.setText("隐私设置")
         self.privacy_button.setAutoRaise(True)
@@ -6354,7 +6354,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if bet.surface_area_m2_g is not None:
             kind = "manual_multipoint" if self._is_custom_bet_fit(result) else "multipoint"
             label = "手动多点 BET" if kind == "manual_multipoint" else "多点 BET"
-            return float(bet.surface_area_m2_g), kind, f"{label}；{status_text(bet.status)}"
+            tooltip = "区间计算完成" if result.method_options.get('jwgb_reconstructed') else f"{label}；{status_text(bet.status)}"
+            return float(bet.surface_area_m2_g), kind, tooltip
 
         point_ids = result.method_options.get("jwgb_raw_bet_fit_point_ids")
         if (
@@ -9852,6 +9853,8 @@ def active_metric_rows(
         ("t-Plot 厚度方程", _t_plot_thickness_label(t_plot_thickness_method)),
         ("自由空间来源", result.free_space.vfree_factor_source),
     ]
+    if result.method_options.get('jwgb_reconstructed'):
+        rows.insert(0, ('数据来源与验证状态', result.method_options['import_notice']))
     return rows
 
 
@@ -9936,6 +9939,10 @@ def status_text(status: str) -> str:
         "not_available": "无可用结果",
         "ok": "区间计算完成",
         "warning_negative_c": "区间计算完成；BET C<=0，需核对报告选点",
+        "warning_reconstructed": "重建值，尚未与本文件原厂结果核验",
+        "warning_reconstructed_negative_c": "重建值未核验，且 BET C<=0",
+        "warning_reconstructed_monolayer_outside_range": "重建值，尚未与本文件原厂结果核验；单层容量超出选区，需核对重建和选点",
+        "nonpositive_reconstructed_uptake": "选区包含非正重建吸附量，无法拟合",
         "not_enough_points": "区间有效点不足",
         "not_enough_valid_points": "区间有效数值不足",
         "invalid_monolayer_capacity": "单层容量无效",
@@ -10095,6 +10102,7 @@ def export_results_xlsx(
                 "t-Plot外比表面积(m2/g)",
                 "t-Plot微孔体积(cm3/g)",
                 pore_volume_header,
+                "数据来源与验证状态",
             ]
         ],
         bold_first=True,
@@ -10127,6 +10135,7 @@ def export_results_xlsx(
                 t_plot.external_surface_area_m2_g,
                 t_plot.micropore_volume_cm3_g,
                 pore_volume,
+                result.method_options.get('import_notice', ''),
             ]
         )
 
@@ -10145,6 +10154,7 @@ def export_results_xlsx(
             "Elapsed(s)",
             "Elapsed",
             "JWGB点类型",
+            "数据来源与验证状态",
         ]
     )
     for result in results:
@@ -10167,6 +10177,7 @@ def export_results_xlsx(
                     point.elapsed_seconds,
                     point.elapsed_time,
                     point_code,
+                    result.method_options.get('import_notice', ''),
                 ]
             )
 
@@ -10192,6 +10203,8 @@ def export_results_xlsx(
         sheet.append(["文件", "样品", "字段", "值"])
         for result in results:
             fit = analysis_bundle(result)[name]
+            if result.method_options.get('import_notice'):
+                sheet.append([result.file_name, result.sample_name, '数据来源与验证状态', result.method_options['import_notice']])
             for key, value in fit.__dict__.items():
                 if key == "rows":
                     continue

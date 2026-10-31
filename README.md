@@ -142,6 +142,7 @@ tristar_bet/excel_import.py         MicroActive / BSD 等 Excel 报表解析
 tristar_bet/belmaster.py            MicrotracBEL BELSORP (BELMaster) DAT 解析
 tristar_bet/quantachrome.py         Quantachrome Autosorb iQ QPS 解析
 tristar_bet/jwgb_raw.py             精微高博 APAS 文本 RAW 解析
+tristar_bet/jwgb_native.py          精微高博 JWGBT XML 原始压力导入（尚无定量吸附量）
 tristar_bet/reference_thickness.py  参考厚度曲线与插值
 tristar_bet/analysis.py             BET、Langmuir、t-Plot、BJH 等分析计算
 tristar_bet/ui/main_window.py       中文图形界面主窗口
@@ -170,7 +171,7 @@ validate_against_xls.py             与 XLS 导出结果对照验证的辅助脚
 
 首次启动不单独弹出统计提示。“隐私设置”按钮在本版暂时隐藏，设置处理逻辑仍保留。需要禁用时，可在 EXE 旁创建 `telemetry_config.json`，内容为 `{"endpoint":""}`，然后重新启动软件；该配置优先于 EXE 内置地址。已发出的请求无法撤回。
 
-服务器提供受密码保护的 `/admin` 页面，事件保留窗口为 90 天、连接 IP 为 7 天，并由独立定时任务清理。活跃量按随机安装标识估算，不能当作真实用户人数；分析功能指标是页面展示/切换，不是后台计算次数。当前首版的错误统计覆盖导入和 Excel 导出。
+服务器提供受密码保护的统计页面（当前公网地址为 `/bet-stats/`）。已接收事件和连接 IP 长期保存，不再按天自动删除；页面可切换近 30 天、90 天、半年（180 天）、1 年（365 天），并查看全部历史 IP。页面时间及每日分组使用北京时间，数据库时间仍保存为 UTC。活跃量按随机安装标识估算，不能当作真实用户人数；分析功能指标是页面展示/切换，不是后台计算次数。当前错误统计覆盖导入和 Excel 导出。数据库有容量上限，后台显示用量和接近上限提示，长期使用需要定期检查磁盘与备份。
 
 无接收地址时不会收集或发送统计。本版发布包内置已验证的 HTTPS 接口地址。自行打包时，先复制 `telemetry_config.example.json` 为 `telemetry_config.json`，再运行 `pyinstaller --noconfirm BET.spec`；Windows 发布工作流也执行该步骤。可用 EXE 旁同名文件或 `BET_TELEMETRY_URL` 环境变量覆盖。管理密码只配置在服务器，不能写入客户端文件。更换接收地址后不会沿用原地址的开启偏好。
 
@@ -202,3 +203,39 @@ python scripts/upload_gitee_release.py --tag v1.0.12 --file ".\dist\BET-DragonSc
 ```
 
 当前更新检查默认使用 GitHub 仓库 `dragonMaLong/unified-bet-analysis` 和 Gitee 仓库 `dragonMalong/unified-bet-analysis`。如果以后迁移仓库，需要同步修改 `tristar_bet/update_checker.py` 中的 `DEFAULT_UPDATE_REPOSITORY`、`DEFAULT_GITEE_MANIFEST_URL` 和 `DEFAULT_GITHUB_MANIFEST_URL`。
+
+### JWGBT 初步支持
+
+1.3.1 的主界面使用常规图表标题和数值，样品栏 BET 悬停显示“区间计算完成”，结果参数不再单列“导入状态”。这些是显示调整；内部验证状态、计算异常诊断及导出来源记录仍保留，未将候选重建升级为已验证算法。
+
+支持版本 1、PressUnits=0 的精微高博 XML 文件；已用 BK200C 样本检查样品信息、压力、P/P₀、时间及日志。起始参考记录保存在原始记录中，不算额外测量点。支持公开 Sync440A 样本的 `1_7` 等补气编号、`Balance` 标记和浴温字段的小数逗号；全部补气记录保留，仅平衡记录进入等温线点表。对于已覆盖的 BK200C / 00.01.05.00 / 手动 Q / N₂ 77.35 K 配置，默认提供明确标记为“重建”的候选吸附量和 BET；来源及未核验说明随 CSV、JSON、Excel 导出保留。其他配置或缺失关键参数时，吸附量保留为空。负重建值不截断，BET 选区含非正重建吸附量时不拟合。BK200C 的完整定量算法仍需同次测试的原厂导出逐点校验。现有 RAW、Excel 定量导入不受此限制。
+
+逆向研究工具：`python -m scripts.jwgb_reconstruction_probe "样本.jwgbt" --output "candidate_comparison.json"`。该工具基于原厂公开容量法原理及旧版手册的 Q 差值校准式，显式假设冷自由空间项为 `Q × Vd`，比较四种温度处理方式，并输出 37 点样本的逐项气量计算（实际点数随输入变化）、候选 BET、源文件 SHA-256 和未验证假设。它只生成标有 `unvalidated_research_only` 的研究报告，不启用软件中的定量导入。高拟合优度或平滑曲线不能代替同次测试的原厂点表验证。
+
+2026-10-30 补充教程线索：`BET数据处理(1).pdf` 第 4–5 页展示 PAS 可保存 `.jwgbp`、导出 `.xlsx` / `.raw`；`孔径分析(1).pdf` 第 1 页展示 `PAS.exe` 0.5.9.0 和桌面 `jwgb.rar`。这些是截图中的程序，不是已取得的程序文件；尚未证实该版本直接读取 `.jwgbt` 的路径。后者第 5–6 页显示 NovaWin 的半径/直径、Å/nm 设置，第 7 页未展示 DFT 数值表或核模型，不能据此复现原厂孔径分布。
+
+新增可复核证据：Stepping 等人 2024 年论文 [DOI:10.1039/D4RA05672H](https://doi.org/10.1039/D4RA05672H) 的[公开原始数据](https://cloud.uni-jena.de/s/8stWzTWfXeYY37d)中有 5 个 Micro200B / PAS 10.06.00.72 项目。已逐字节恢复其 `.jwgbp` 编码：编码字节加上字节位置模 48 得到十六进制字符，再还原为 UTF-8 XML。5 个文件均完整解析且反向编码与原文件逐字节一致。`tristar_bet/jwgb_project.py` 实现严格解码，尚未将这种布局加入应用的定量导入。
+
+`python -m scripts.jwgb_project_probe "项目.jwgbp" --output "project_audit.json"` 可核验项目内的氦气 Q 校准。按 `Q = 2.69578 × (Pd/(PdT+273.15) − Pcd/(PcdT+273.15)) / (Pcd−Pcd前点)` 回算，5 个项目均落在保存 Q 值的小数点后 6 位舍入区间；把两次压力统一使用充气前、平衡后或平均温度则各有 1 个项目不符。校准原始数字、来源和完整文件 SHA-256 保存在 `tests/fixtures/jwgb_public_q_calibration.json`。这支持该版本的 Q 参数及分时温度处理，不能代替 BK200C 吸附量逐点验证。项目中的 `Data/BaseInfo` 还存在与 2024 年测量记录不一致的 2018 年时间；核验报告同时保留这些字段，不将其静默当作测试时间。
+
+独立检验尚未通过：将同一简化公式用于上述公开项目的氮气吸附记录，Pan fiber 的文件内 BET 区间产生非正的单层容量，另 4 个项目的选定区间含负候选吸附量。因此工具分别记录失败状态，不删去负值来生成貌似正常的结果。数值反例见 `tests/fixtures/jwgb_public_uptake_cases.json`。[论文补充材料](https://www.rsc.org/suppdata/d4/ra/d4ra05672h/d4ra05672h1.pdf)第 1 页虽有 4 组 BET 汇总值，但没有原厂逐点吸附量，且文件名与表内样品的配对仅能推测；它们不能直接作为 BK200C 的验收基准。此差异目前既不能证明原始实验有误，也不能确定缺少哪项补偿，定量重建仍未验证。
+
+2026-10-31 同次测试对照取得进展：[AIF 开发组公开样本](https://github.com/AIF-development-team/adsorption-file-parser/tree/3a9a3248cd2b7a7965a53c61830221a832d2ce15/tests/data/3p)含 `CBV712_N2_77K.jwgbt`、Excel 和对应 JSON。仓库说明数据由 3P Instruments 的 Sebastian Ehrling 提供。样品、质量、起止时间以及全部 50 个导出点的压力、相对压力、时间、分支和编号相符；其中脱附起点重复吸附终点，应用导入时不重复计数。研究工具 `python -m scripts.jwgb_paired_probe "样本.jwgbt" "导出.json" --output "paired_audit.json"` 可复算该布局。
+
+此 Sync440A 对照支持以下气量规则：从原始氦气校准重算未舍入的 Q，使用精确 `273.15/101.325`，逐次累计全部 74 次补气/抽气的 `ΔV = Vd × [(273.15/101.325) × (Pd/(PdT+273.15) − Pcd/(PcdT+273.15)) − Q × (Pcd−前一Pcd)] × (1+NonIdealityFactor×Pcd)`，再除以样品质量。31 个吸附点全部落在导出 5 位小数的舍入区间，最大误差约 `4.32×10⁻⁶ cm³(STP)/g`。未经闭合处理的脱附前 6 点（含重复起点）也吻合，后 13 点偏差最大约 `2.060 cm³(STP)/g`；报告保留这些原始计算值和误差。
+
+对上述偏差的进一步核验得到一个完整复现该配对导出的闭合候选规则：以相对压力对吸附支作线性插值，计算脱附末点与吸附插值值的差 `gap`；对于 `P/P₀ < 0.8` 的脱附点，按平衡点序号添加 `gap × i/(N−1)`，再取该值与吸附插值值的较大者。起点序号为 0，补气中间记录不另占序号。所有修正量均由原始数据计算，不读取导出吸附量作为输入。此时全部 50 点落入导出舍入区间，最大误差约 `4.83×10⁻⁶ cm³(STP)/g`。报告的 `closure_hypothesis` 独立保留修正量、插值值和额外抬升标记；额外抬升发生于脱附 15–18 点，19 点由闭合量自然对齐。
+
+边界尚未唯一确定：该样本只能把单阈值规则的阈值约束在 `(0.79485145, 0.84035697]`，0.8 是候选值，0.82 会产生完全相同的结果；不能据此宣称恢复了原厂阈值或所有设置。工具拒绝未覆盖的负闭合差和区间外插值。证据、原始数值、导出数值和源文件哈希见 `tests/fixtures/jwgb_sync440_paired.json`，来源许可随附。这是发现样本上的完整复现，尚非独立盲测；未推广为 BK200C、Micro200B 或所有气体的通用定量导入。
+
+在配对工具命令中追加 `--bet-point-ids 1 2 3 4 5 6`，可按 Excel 的 BET 点表显式选点复算：`Vm=184.6748861021 cm³/g`、`C=2005.00416957`，均吻合原报告 5 位小数。使用候选历史常数组合 `N_A=6.02214129×10²³`、摩尔体积 `22413.83 cm³/mol` 和氮气截面积 `0.162 nm²` 得到 `803.81798918 m²/g`，也吻合报告；单个报告只能约束组合换算因子，不能唯一识别两个常数。选点来自独立导出的 BET 点表，不声称已恢复原 XML 舍入区间的边界选择机制；应用中的统一分析常数保持原有行为。
+
+BK200C 研究工具也会在文件提供非理想因子时生成独立的 `sync440_transfer` 段，采用文件内手动 Q，明确标记跨型号迁移未验证。原用户样本 `AutoTestQ=0` 且 `Data/Q` 为空，无法从本次氦气记录复核手动校准。普通导入现已在上述受限配置下显示未核验的重建值；研究闭合规则仍未用于普通导入。`load_jwgb_native(..., reconstruct_uptake=False)` 可只读压力记录，研究脚本用此入口保持对照独立。
+
+进一步独立核验：`python -m scripts.jwgb_export_bet_audit "1.xlsx" "2.xlsx" "3.xlsx" --output "export_bet_audit.json"` 按导出的 BET 点编号从等温线表取高精度压力和吸附量。用户提供的 `09_JWGB` 三个 Excel 分别复算为 `824.287813138`、`1042.893568063`、`974.796894825 m²/g`，均吻合报告三位小数。固定此前提出的历史常数组合后再检验这三份独立导出，未逐文件拟合常数。直接使用 BET 点表中五位小数的压力，或替换为应用的通用常数组合，都会失去这三份报告的末位吻合。选点、原报告数值和文件哈希见 `tests/fixtures/jwgb_local_export_bet.json`。这只验证“导出吸附量到 BET”，不验证 BK200C 原始压力重建；一个换算因子也不能唯一确定其内部各常数。
+
+增加 [IUPAC 2015 第 5.2.2 节](https://doi.org/10.1515/pac-2014-1117)的选区一致性诊断。原 BK200C 文件按保存的 `0.08–0.30` 区间选择吸附点 2–5，应用常数组合得到候选 `118.022742153 m²/g`，`C=2.243588614`，`Vm=27.115595805 cm³/g`；但选点气量只有 `4.972416998–16.390629003 cm³/g`，不包含拟合单层容量，模型单层压力约 `0.40034248` 也在选区外。因此应用保留候选数值并显示“单层容量超出选区，需核对重建和选点”。不能据此宣称原实验有误，也不能只修改 Q 或选区使曲线看起来合理；同次原厂对照仍然缺失。诊断通过本身同样不代表真实比表面积已被验证。
+
+气量拟合的可辨识性更正：`jwgb_balance` 的 `aP+bP²` 模型会完全吸收吸附量中的线性及二次项。即使吸附、脱附残差都接近零，也不能认定没有吸附，不能把拟合的表观 Q 替换为真实校准 Q。现已删除“未检出可测吸附”和“假等温线”的过强结论；`tests/test_jwgb_balance.py` 用已知非零、可逆吸附构造反例。`jwgb_free_space_probe` 的注入结果只表示指定形状在经验阈值下的残差变化，不是实际误差范围或仪器检出限。
+
+补充数据检索：[He 等人 2025 年论文](https://doi.org/10.1038/s41467-025-60191-9)使用 JW-BK200C，公开的 Source Data 工作簿已检查。它提供计算后的相对压力和吸附量曲线，没有原始逐次压力、温度、Q 校准记录或嵌入的原生文件，因此不能用于验证本项目的压力重建。下载源、文件哈希和检查结论保存在本地研究目录 `tmp/jwgb_research/nature_60191/provenance.json`。

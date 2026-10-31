@@ -82,6 +82,10 @@ def load_file(path: str | Path) -> TriStarResult:
     workbooks go to :func:`tristar_bet.excel_import.load_excel`.
     """
     suffix = Path(path).suffix.lower()
+    if suffix == ".jwgbt":
+        from .jwgb_native import load_jwgb_native
+
+        return load_jwgb_native(path)
     if suffix in {".xls", ".xlsx", ".xlsm"}:
         from .excel_import import load_excel
 
@@ -2076,6 +2080,8 @@ def _isotherm_rows(results: Sequence[TriStarResult]) -> list[dict[str, object]]:
                     "elapsed_time": point.elapsed_time,
                     "quantity_adsorbed_cm3_g_stp": point.quantity_adsorbed_cm3_g_stp,
                     "quantity_adsorbed_mmol_g": point.quantity_adsorbed_mmol_g,
+                    "quantity_status": result.method_options.get('quantity_status', ''),
+                    "quantity_notice": result.method_options.get('import_notice', ''),
                     "vfree_factor_cm3": result.free_space.vfree_factor_cm3,
                     "vfree_factor_source": result.free_space.vfree_factor_source,
                 }

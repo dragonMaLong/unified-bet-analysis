@@ -1,0 +1,321 @@
+{
+  "source": "User-provided 09_JWGB Excel exports; only selected numerical BET inputs retained",
+  "scope": "Uptake-to-BET validation; these are NOT paired with the BK200C native file",
+  "cases": [
+    {
+      "source_file": "1.xlsx",
+      "source_sha256": "197caa72663aafd081dd8e85aacbbbed732e4a7fc0b8edc386da7a3607cdf3d6",
+      "adsorption_rows": [
+        {
+          "phase": "adsorption",
+          "measurement": 8,
+          "relative_pressure": 0.05964652,
+          "candidate_cm3_g": 177.93898
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 9,
+          "relative_pressure": 0.09223103,
+          "candidate_cm3_g": 190.00776
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 10,
+          "relative_pressure": 0.12513016,
+          "candidate_cm3_g": 201.60367
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 11,
+          "relative_pressure": 0.1583784,
+          "candidate_cm3_g": 212.61161
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 12,
+          "relative_pressure": 0.19013022,
+          "candidate_cm3_g": 224.37755
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 13,
+          "relative_pressure": 0.22267591,
+          "candidate_cm3_g": 235.70822
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 14,
+          "relative_pressure": 0.25408129,
+          "candidate_cm3_g": 247.35098
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 15,
+          "relative_pressure": 0.28563757,
+          "candidate_cm3_g": 259.06777
+        }
+      ],
+      "bet_table_rows": [
+        {
+          "phase": "adsorption",
+          "measurement": 8,
+          "relative_pressure": 0.05965,
+          "candidate_cm3_g": 177.93898
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 9,
+          "relative_pressure": 0.09223,
+          "candidate_cm3_g": 190.00776
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 10,
+          "relative_pressure": 0.12513,
+          "candidate_cm3_g": 201.60367
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 11,
+          "relative_pressure": 0.15838,
+          "candidate_cm3_g": 212.61161
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 12,
+          "relative_pressure": 0.19013,
+          "candidate_cm3_g": 224.37755
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 13,
+          "relative_pressure": 0.22268,
+          "candidate_cm3_g": 235.70822
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 14,
+          "relative_pressure": 0.25408,
+          "candidate_cm3_g": 247.35098
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 15,
+          "relative_pressure": 0.28564,
+          "candidate_cm3_g": 259.06777
+        }
+      ],
+      "reported_area_m2_g": 824.288
+    },
+    {
+      "source_file": "2.xlsx",
+      "source_sha256": "ef0c852bc43bb3026d4d106005602bc46a1636d008469ed2938d850a466fe96b",
+      "adsorption_rows": [
+        {
+          "phase": "adsorption",
+          "measurement": 10,
+          "relative_pressure": 0.05915625,
+          "candidate_cm3_g": 234.22808
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 11,
+          "relative_pressure": 0.08943355,
+          "candidate_cm3_g": 247.63809
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 12,
+          "relative_pressure": 0.12026386,
+          "candidate_cm3_g": 260.63745
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 13,
+          "relative_pressure": 0.15110362,
+          "candidate_cm3_g": 273.29465
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 14,
+          "relative_pressure": 0.18159546,
+          "candidate_cm3_g": 285.97074
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 15,
+          "relative_pressure": 0.21223952,
+          "candidate_cm3_g": 298.52375
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 16,
+          "relative_pressure": 0.24276338,
+          "candidate_cm3_g": 311.20938
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 17,
+          "relative_pressure": 0.27283564,
+          "candidate_cm3_g": 323.75082
+        }
+      ],
+      "bet_table_rows": [
+        {
+          "phase": "adsorption",
+          "measurement": 10,
+          "relative_pressure": 0.05916,
+          "candidate_cm3_g": 234.22808
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 11,
+          "relative_pressure": 0.08943,
+          "candidate_cm3_g": 247.63809
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 12,
+          "relative_pressure": 0.12026,
+          "candidate_cm3_g": 260.63745
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 13,
+          "relative_pressure": 0.1511,
+          "candidate_cm3_g": 273.29465
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 14,
+          "relative_pressure": 0.1816,
+          "candidate_cm3_g": 285.97074
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 15,
+          "relative_pressure": 0.21224,
+          "candidate_cm3_g": 298.52375
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 16,
+          "relative_pressure": 0.24276,
+          "candidate_cm3_g": 311.20938
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 17,
+          "relative_pressure": 0.27284,
+          "candidate_cm3_g": 323.75082
+        }
+      ],
+      "reported_area_m2_g": 1042.894
+    },
+    {
+      "source_file": "3.xlsx",
+      "source_sha256": "851d4a29727e4ba1134d572aed50f2f864aff99055a874822deb4860703c0610",
+      "adsorption_rows": [
+        {
+          "phase": "adsorption",
+          "measurement": 10,
+          "relative_pressure": 0.07878481,
+          "candidate_cm3_g": 218.512
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 11,
+          "relative_pressure": 0.1095795,
+          "candidate_cm3_g": 230.97369
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 12,
+          "relative_pressure": 0.13948941,
+          "candidate_cm3_g": 243.4205
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 13,
+          "relative_pressure": 0.16992721,
+          "candidate_cm3_g": 255.62132
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 14,
+          "relative_pressure": 0.1999478,
+          "candidate_cm3_g": 268.31508
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 15,
+          "relative_pressure": 0.22972582,
+          "candidate_cm3_g": 281.00679
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 16,
+          "relative_pressure": 0.25875254,
+          "candidate_cm3_g": 293.58312
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 17,
+          "relative_pressure": 0.28702827,
+          "candidate_cm3_g": 306.15338
+        }
+      ],
+      "bet_table_rows": [
+        {
+          "phase": "adsorption",
+          "measurement": 10,
+          "relative_pressure": 0.07878,
+          "candidate_cm3_g": 218.512
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 11,
+          "relative_pressure": 0.10958,
+          "candidate_cm3_g": 230.97369
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 12,
+          "relative_pressure": 0.13949,
+          "candidate_cm3_g": 243.4205
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 13,
+          "relative_pressure": 0.16993,
+          "candidate_cm3_g": 255.62132
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 14,
+          "relative_pressure": 0.19995,
+          "candidate_cm3_g": 268.31508
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 15,
+          "relative_pressure": 0.22973,
+          "candidate_cm3_g": 281.00679
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 16,
+          "relative_pressure": 0.25875,
+          "candidate_cm3_g": 293.58312
+        },
+        {
+          "phase": "adsorption",
+          "measurement": 17,
+          "relative_pressure": 0.28703,
+          "candidate_cm3_g": 306.15338
+        }
+      ],
+      "reported_area_m2_g": 974.797
+    }
+  ]
+}

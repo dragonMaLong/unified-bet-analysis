@@ -1444,7 +1444,9 @@ def plot_isotherm_multi(
     hollow_base_points: bool = False,
 ) -> None:
     plot.clear()
-    plot.setTitle("吸附/脱附等温线")
+    notice = (getattr(results[active_index], "method_options", {}).get("quantity_status") == "unavailable_native_pressure_only"
+              if 0 <= active_index < len(results) else None)
+    plot.setTitle("吸附量尚未还原：请导入原厂 Excel / RAW" if notice else "吸附/脱附等温线")
     plot.setLabel("left", "吸附量 (cm3/g STP)")
     plot.setLabel("bottom", "相对压力 (P/P0)")
     plot.setLogMode(x=bool(x_log), y=False)

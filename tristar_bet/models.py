@@ -106,7 +106,7 @@ class IsothermPoint:
     record_rel_offset: int
     absolute_pressure_mmHg: float
     relative_pressure: float
-    raw_internal_cm3_stp: float
+    raw_internal_cm3_stp: float | None
     saturation_pressure_mmHg: float | None
     elapsed_seconds: int | None
     quantity_adsorbed_cm3_g_stp: float | None
@@ -238,4 +238,6 @@ class TriStarResult:
             "point_count": self.point_count,
             "po_record_count": len(self.po_records),
             "target_pressure_rows": len(self.target_pressure_table),
+            "quantity_status": self.method_options.get('quantity_status', ''),
+            "quantity_notice": self.method_options.get('import_notice', ''),
         }

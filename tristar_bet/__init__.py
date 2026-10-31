@@ -24,6 +24,7 @@ from .analysis import (
 from .belmaster import BELMasterParseError, load_dat
 from .excel_import import ExcelParseError, load_excel
 from .jwgb_raw import JwgbRawParseError, load_jwgb_raw
+from .jwgb_native import JwgbNativeParseError, load_jwgb_native
 from .quantachrome import QuantachromeParseError, load_qps
 from .smp import TriStarParseError, export_results_csv, load_file, load_many, load_smp
 from .version import __version__
@@ -42,6 +43,8 @@ __all__ = [
     "BELMasterParseError",
     "ExcelParseError",
     "JwgbRawParseError",
+    "JwgbNativeParseError",
+    "load_jwgb_native",
     "QuantachromeParseError",
     "TriStarResult",
     "FitResult",
