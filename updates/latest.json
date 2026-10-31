@@ -1,23 +1,23 @@
 {
-  "version": "1.3.0",
-  "release_name": "v1.3.0",
-  "release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.3.0",
-  "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.3.0/BET-DragonScience.exe",
+  "version": "1.3.1",
+  "release_name": "v1.3.1",
+  "release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.3.1",
+  "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.3.1/BET-DragonScience.exe",
   "gitee_source_name": "Gitee",
-  "gitee_release_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/tag/v1.3.0",
-  "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.3.0/BET-DragonScience.exe",
+  "gitee_release_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/tag/v1.3.1",
+  "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.3.1/BET-DragonScience.exe",
   "github_source_name": "GitHub",
-  "github_release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.3.0",
-  "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.3.0/BET-DragonScience.exe",
+  "github_release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.3.1",
+  "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.3.1/BET-DragonScience.exe",
   "asset_name": "BET-DragonScience.exe",
-  "sha256": "8e75e74eafd335a13c509ebdf7d9d2a85704e2e907f7b0f51fb411047d3a34ef",
+  "sha256": "663f3cdfe7f33e516c69374bb80f278b4c1dccf37759c1e66c4d9843c59e4e8b",
   "platforms": {
     "windows-x64": {
       "asset_name": "BET-DragonScience.exe",
-      "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.3.0/BET-DragonScience.exe",
-      "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.3.0/BET-DragonScience.exe",
-      "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.3.0/BET-DragonScience.exe",
-      "sha256": "8e75e74eafd335a13c509ebdf7d9d2a85704e2e907f7b0f51fb411047d3a34ef"
+      "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.3.1/BET-DragonScience.exe",
+      "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.3.1/BET-DragonScience.exe",
+      "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.3.1/BET-DragonScience.exe",
+      "sha256": "663f3cdfe7f33e516c69374bb80f278b4c1dccf37759c1e66c4d9843c59e4e8b"
     },
     "macos-x64": {
       "asset_name": "BET-DragonScience-macos-x64.dmg",
@@ -34,6 +34,6 @@
       "sha256": "4f8ec5e3d13b126d97086d07b65fa9cf0238d13467761e2833f5058796e02538"
     }
   },
-  "published_at": "2026-10-30",
-  "release_notes": "修复了若干bug，提升了稳定性和性能。"
+  "published_at": "2026-10-31",
+  "release_notes": "解决的部分bug"
 }
