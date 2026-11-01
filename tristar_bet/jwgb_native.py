@@ -1,6 +1,6 @@
 """Read JWGB XML and expose explicitly labelled candidate reconstruction.
 
-Only the observed BK200C manual-Q configuration is enabled. Unsupported
+Only the observed BK200C manual/helium-Q configurations are enabled. Unsupported
 profiles remain pressure-only; raw records and provenance are always retained.
 """
 from __future__ import annotations
@@ -14,10 +14,11 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 
 from .models import FreeSpaceInfo, IsothermPoint, MicString, RunConditions, SampleInfo, SmpHeader, TriStarResult
-from .jwgb_reconstruction import reconstruct
+from .jwgb_reconstruction import calibrated_q, close_desorption, reconstruct
 
 IMPORT_NOTE = "仅导入原始压力记录；吸附量尚未还原，暂不能计算比表面积和孔径。请使用原厂导出的等温线 Excel 或 RAW 进行定量分析。"
-RECONSTRUCTION_NOTE = "实验性重建：按文件内 Q 和压力/温度记录计算吸附量；BET 为重建值，尚未与本文件原厂结果核验。脱附未施加推测的闭合修正。"
+RECONSTRUCTION_NOTE = ("重建吸附量：按文件内 Q 和压力/温度记录计算，不施加非理想修正，脱附按原厂导出规则闭合到吸附支；"
+                       "该算法已与一份 BK200C 手动 Q 原厂导出逐点吻合（38/38，五位小数），但尚未与本文件原厂结果核验，自动 Q 文件尚无原厂对照。")
 
 
 class JwgbNativeParseError(ValueError):
@@ -41,12 +42,12 @@ def _date(value: str | None, field: str) -> datetime:
         raise JwgbNativeParseError(f"JWGBT 字段 {field} 时间格式无效") from exc
 
 
-def _reconstruct_bk200c(root, records, points, mass):
+def _reconstruct_bk200c(root, records, points, mass, point_sources):
     required = {
         'StationConfig/Station/Model': 'BK200C',
         'Config/Base/Version': '00.01.05.00',
         'Config/Base/DoseGasType': '0',
-        'Config/AutoTestQ': '0', 'Config/FastTestQ': '0',
+        'Config/FastTestQ': '0',
         'Config/IsMicroproe': '0',
         'General/GeneralConfig/AdsorbGas': 'N2',
         'General/GeneralConfig/IsRealGas': '0',
@@ -61,6 +62,28 @@ def _reconstruct_bk200c(root, records, points, mass):
         raise ValueError('重建仅覆盖氮气截面积 0.162 nm²')
     vd = _number(root.findtext('Config/Vd'), 'Vd')
     q = _number(root.findtext('Config/QValue'), 'QValue')
+    mode = root.findtext('Config/AutoTestQ')
+    if mode not in ('0', '1'):
+        raise ValueError('未知的自动 Q 模式')
+    q_records = [dict(row.attrib) for row in root.findall('Data/Q/Item')]
+    calibration = {'jwgb_reconstruction_q_stored': q}
+    if mode == '1':
+        # These runs may measure helium either before or after adsorption.
+        # Check association with the entire run, not just its adsorption start.
+        if len(q_records) != 2:
+            raise ValueError('自动 Q 需要一条参考记录和一次完整氦气校准')
+        start = _date(root.findtext('Data/BaseInfo/StartTime'), 'StartTime')
+        end = _date(root.findtext('Data/BaseInfo/EndTime'), 'EndTime')
+        times = [_date(f"{r.get('Day', '')} {r.get('Time', '')}", 'Q/Time') for r in q_records]
+        if not start <= times[0] < times[1] <= end:
+            raise ValueError('自动 Q 校准时间超出本次测试或顺序无效')
+        if any(_number(r.get('Pcd'), 'Q/Pcd') < 0 for r in q_records):
+            raise ValueError('自动 Q 校准压力无效')
+        computed_q = calibrated_q(q_records)
+        if q <= 0 or abs(computed_q - q) > .0000005 + 1e-12:
+            raise ValueError('氦气校准复算 Q 与文件六位小数 Q 不一致')
+        calibration.update(jwgb_reconstruction_q_calibrated=computed_q,
+                           jwgb_reconstruction_q_record_times=[str(t) for t in times])
     factor = _number(root.findtext('General/GeneralConfig/NonIdealityFactor'), 'NonIdealityFactor')
     low = _number(root.findtext('Config/MultiBETReport/MinRange'), 'BET MinRange')
     high = _number(root.findtext('Config/MultiBETReport/MaxRange'), 'BET MaxRange')
@@ -68,14 +91,19 @@ def _reconstruct_bk200c(root, records, points, mass):
         raise ValueError('文件内 BET 选区无效')
     if any(r.get('Balance') not in ('0', '1') or 'SubIndex' not in r for r in records):
         raise ValueError('重建需要完整的平衡和补气标记')
+    # BK200C 1(1).xlsx (same run as sample 1, IsRealGas=0): all 21 adsorption
+    # points match only with the dose non-ideality term OFF (0/21 with it on).
+    # The stored NonIdealityFactor is kept as provenance but not applied.
     calculated = reconstruct({'records': records, 'vd_cm3': vd, 'mass_g': mass,
-                               'stored_q': q, 'nonideality_factor': factor}, rounded_q=True)
-    measured = [r for r in calculated['rows'] if not r['is_reference']]
+                               'stored_q': q, 'q_records': q_records,
+                               'nonideality_factor': factor}, rounded_q=mode == '0', nonideal=False)
+    closed_rows, closure = close_desorption(calculated['rows'])
+    measured = [r for r in closed_rows if not r['is_reference']]
     if len(measured) != len(points):
         raise ValueError('重建点数与压力点表不一致')
     rebuilt = []
-    for point, row in zip(points, measured):
-        if (point.phase, point.index) != (row['phase'], row['measurement']):
+    for point, row, source in zip(points, measured, point_sources):
+        if source != (row['phase'], row['record_id']):
             raise ValueError('重建记录与压力点不对应')
         value = row['candidate_cm3_g']
         if not math.isfinite(value):
@@ -86,13 +114,17 @@ def _reconstruct_bk200c(root, records, points, mass):
     return rebuilt, {
         'quantity_status': 'reconstructed_unvalidated',
         'jwgb_reconstructed': True, 'import_notice': RECONSTRUCTION_NOTE,
-        'jwgb_reconstruction_profile': 'BK200C-00.01.05.00-manual-Q-N2-77.35K',
-        'jwgb_reconstruction_q': q, 'jwgb_reconstruction_vd_cm3': vd,
+        'jwgb_reconstruction_profile': f"BK200C-00.01.05.00-{'auto' if mode == '1' else 'manual'}-Q-N2-77.35K",
+        'jwgb_reconstruction_q': calculated['q_used'], 'jwgb_reconstruction_vd_cm3': vd,
         'jwgb_reconstruction_nonideality': factor,
-        'jwgb_reconstruction_validation': 'cross_model_candidate_no_same_run_reference',
-        'jwgb_reconstruction_calibration_source': 'manual_file_QValue',
-        'jwgb_reconstruction_closure_applied': False,
-        'jwgb_reconstruction_rows': calculated['rows'],
+        'jwgb_reconstruction_nonideality_applied': False,
+        'jwgb_reconstruction_validation': ('bk200c_manual_q_one_same_run_export_match' if mode == '0'
+                                           else 'bk200c_auto_q_no_same_run_reference'),
+        'jwgb_reconstruction_calibration_source': ('helium_calibration_records' if mode == '1' else 'manual_file_QValue'),
+        **calibration,
+        'jwgb_reconstruction_closure_applied': closure['applied'],
+        'jwgb_reconstruction_closure': closure,
+        'jwgb_reconstruction_rows': closed_rows,
         'use_stored_fit_ranges': True,
         'stored_bet_pressure_min': low, 'stored_bet_pressure_max': high,
     }
@@ -133,10 +165,12 @@ def load_jwgb_native(path: str | Path, *, reconstruct_uptake: bool = True) -> Tr
     if mass <= 0 or temperature <= 0:
         raise JwgbNativeParseError("JWGBT 样品质量及浴温必须大于零")
     points = []
+    point_sources = []
     raw_records = []
     for branch, phase in (("Adsorb", "adsorption"), ("Doff", "desorption")):
         ids = set()
         balanced_ids = set()
+        balanced_base_ids = set()
         previous_time = None
         for row in root.findall(f"Data/{branch}/Item"):
             record = dict(row.attrib)
@@ -147,7 +181,15 @@ def load_jwgb_native(path: str | Path, *, reconstruct_uptake: bool = True) -> Tr
                 raise JwgbNativeParseError("JWGBT 压力记录缺少有效 ID")
             point_id = int(match[1])
             sub_index = match[2] or "0"
-            if record.get("SubIndex", "0") != sub_index:
+            # BK200C also writes successive balanced records such as 21_1,
+            # 21_2 with SubIndex=0. The ID suffix is not always a dose index.
+            suffixed_balanced_record = (
+                match[2] is not None and record.get('SubIndex') == '0'
+                and record.get('Balance') == '1'
+                and get('StationConfig/Station/Model') == 'BK200C'
+                and get('Config/Base/Version') == '00.01.05.00'
+            )
+            if record.get("SubIndex", "0") != sub_index and not suffixed_balanced_record:
                 raise JwgbNativeParseError("JWGBT ID 与 SubIndex 不一致")
             if record.get("Balance", "1") not in ("0", "1"):
                 raise JwgbNativeParseError("JWGBT Balance 标记无效")
@@ -175,9 +217,15 @@ def load_jwgb_native(path: str | Path, *, reconstruct_uptake: bool = True) -> Tr
             # only Balance=1 records are exported as equilibrium points.
             if record.get("Balance", "1") == "0":
                 continue
-            if point_id in balanced_ids:
+            if point_id in balanced_base_ids and not suffixed_balanced_record:
                 raise JwgbNativeParseError(f"JWGBT {branch} 存在重复平衡点 {point_id}")
+            balanced_base_ids.add(point_id)
+            # Preserve each balanced record, including oversaturation records.
+            # Give the UI unique integer indices; retain exact native IDs below.
+            if point_id in balanced_ids:
+                point_id = max(balanced_ids) + 1
             balanced_ids.add(point_id)
+            point_sources.append((phase, record_id))
             points.append(IsothermPoint(
                 index=point_id, phase=phase, record_rel_offset=0,
                 absolute_pressure_mmHg=pressure * 760 / 101.325,
@@ -195,6 +243,11 @@ def load_jwgb_native(path: str | Path, *, reconstruct_uptake: bool = True) -> Tr
         "instrument_manufacturer": "JWGB", "instrument_model": get("StationConfig/Station/Model"),
         "instrument_software": get("Config/Base/Version"), "format_family": "JWGB native XML",
         "jwgb_native_import": True, "quantity_status": "unavailable_native_pressure_only",
+        "jwgb_native_point_sources": [
+            {"phase": point.phase, "index": point.index, "record_id": source[1]}
+            for point, source in zip(points, point_sources)
+        ],
+        "jwgb_native_auto_q": get("Config/AutoTestQ") == "1",
         "import_notice": IMPORT_NOTE, "jwgb_native_pressure_records": raw_records,
         "jwgb_native_config_xml": ET.tostring(root.find("Config"), encoding="unicode"),
         "jwgb_native_general_xml": ET.tostring(root.find("General"), encoding="unicode"),
@@ -205,9 +258,20 @@ def load_jwgb_native(path: str | Path, *, reconstruct_uptake: bool = True) -> Tr
         "sample_saved_time": str(saved.replace(microsecond=0)), "sample_saved_raw": int(saved.timestamp()),
         "test_time_source": "JWGBT instrument local time (no timezone supplied)",
     }
+    # Single-point reporting is independent of the multi-point fit range.
+    # Keep malformed optional report settings from preventing pressure import.
+    single_pressure = get("Config/SingleBETReport/Pressure")
+    if single_pressure:
+        try:
+            target = _number(single_pressure, "SingleBETReport/Pressure")
+        except JwgbNativeParseError:
+            pass
+        else:
+            if 0 < target < 1:
+                options["jwgb_single_point_bet_pressure"] = target
     if reconstruct_uptake:
         try:
-            rebuilt, metadata = _reconstruct_bk200c(root, raw_records, points, mass)
+            rebuilt, metadata = _reconstruct_bk200c(root, raw_records, points, mass, point_sources)
         except (ValueError, KeyError, OverflowError) as exc:
             options['jwgb_reconstruction_unavailable_reason'] = str(exc)
         else:

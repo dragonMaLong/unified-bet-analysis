@@ -1,10 +1,12 @@
 import os
+import tempfile
+from pathlib import Path
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5 import QtWidgets
+from PyQt5 import QtCore, QtWidgets
 
 from tristar_bet.ui.main_window import MainWindow
 
@@ -15,7 +17,11 @@ class DftRegularizationRefreshTests(unittest.TestCase):
         cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
     def setUp(self):
-        self.window = MainWindow()
+        self.temp = tempfile.TemporaryDirectory()
+        settings = QtCore.QSettings(str(Path(self.temp.name) / 'settings.ini'), QtCore.QSettings.IniFormat)
+        with patch.object(MainWindow, '_auto_check_for_updates'), patch.object(MainWindow, '_initialize_telemetry'), \
+                patch('tristar_bet.ui.main_window.QtCore.QSettings', return_value=settings):
+            self.window = MainWindow()
         self.window._save_dft_settings_for_active = Mock()
         self.window._apply_dft_regularization_to_all = Mock()
         self.window._refresh_dft_regularization_dependents = Mock()
@@ -23,6 +29,9 @@ class DftRegularizationRefreshTests(unittest.TestCase):
     def tearDown(self):
         self.window._dft_regularization_refresh_timer.stop()
         self.window.close()
+        self.window.deleteLater()
+        QtCore.QCoreApplication.sendPostedEvents(None, QtCore.QEvent.DeferredDelete)
+        self.temp.cleanup()
 
     def test_drag_coalesces_to_latest_value_for_single_and_all_samples(self):
         w = self.window

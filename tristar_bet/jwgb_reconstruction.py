@@ -87,3 +87,68 @@ def reconstruct(experiment, *, rounded_q=False, nonideal=True):
     return {"q_used": q, "dose_count": dose_count, "rows": rows}
 
 
+CLOSURE_THRESHOLD = 0.8
+
+
+def close_desorption(rows, threshold=CLOSURE_THRESHOLD):
+    """Export-side desorption postprocessing reproduced on two vendor pairs.
+
+    Rule: gap = adsorption(lin. interp. at final desorption P/P0) - raw final
+    desorption. Desorption ordinal i (peak reference = 0) gets shift
+    gap*i/(n-1) only below ``threshold``; every desorption point is then
+    floored at the interpolated adsorption branch.
+
+    Evidence: Sync440A CBV712 (50/50 export points) and BK200C sample 1
+    (1(1).xlsx, 38/38) to five decimals. In BK sample 1 every point takes the
+    floor, so the shift and threshold are constrained only by Sync440A; the
+    threshold is bounded to (0.79485, 0.84036], 0.8 is not a recovered setting.
+    Returns (new_rows, info); on uncovered input returns the rows unchanged
+    with ``applied=False`` and a reason rather than guessing.
+    """
+    ads = [r for r in rows if r["phase"] == "adsorption" and not r["is_reference"]]
+    des = [r for r in rows if r["phase"] == "desorption"]
+    info = {"applied": False, "threshold": threshold, "gap_cm3_g": None,
+            "floor_points": 0, "shifted_points": 0, "reason": None}
+    if len(ads) < 2 or len(des) < 2 or not des[0]["is_reference"]:
+        info["reason"] = "incomplete_branches"
+        return rows, info
+    x = [r["relative_pressure"] for r in ads]
+    y = [r["candidate_cm3_g"] for r in ads]
+    if any(b <= a for a, b in zip(x, x[1:])):
+        info["reason"] = "adsorption_not_increasing"
+        return rows, info
+    dx = [r["relative_pressure"] for r in des]
+    if any(b >= a for a, b in zip(dx, dx[1:])) or not x[0] <= dx[-1] <= x[-1] or dx[0] > x[-1] + 1e-10:
+        info["reason"] = "desorption_outside_adsorption_range"
+        return rows, info
+
+    def interpolate(value):
+        value = min(value, x[-1])
+        for i in range(1, len(x)):
+            if value <= x[i]:
+                return y[i - 1] + (y[i] - y[i - 1]) * (value - x[i - 1]) / (x[i] - x[i - 1])
+        return y[-1]
+
+    gap = interpolate(dx[-1]) - des[-1]["candidate_cm3_g"]
+    info["gap_cm3_g"] = gap
+    if gap < 0:
+        info["reason"] = "negative_gap_not_observed"
+        return rows, info
+    out, ordinal, last = [], 0, len(des) - 1
+    for row in rows:
+        if row["phase"] != "desorption":
+            out.append(row)
+            continue
+        raw = row["candidate_cm3_g"]
+        shift = gap * ordinal / last if row["relative_pressure"] < threshold else 0.0
+        floor = interpolate(row["relative_pressure"])
+        value = max(raw + shift, floor)
+        info["shifted_points"] += shift > 0
+        info["floor_points"] += value == floor and floor > raw + shift
+        out.append({**row, "candidate_cm3_g": value, "raw_candidate_cm3_g": raw,
+                    "closure_shift_cm3_g": shift, "adsorption_floor_cm3_g": floor})
+        ordinal += 1
+    info["applied"] = True
+    return out, info
+
+

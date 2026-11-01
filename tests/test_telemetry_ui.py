@@ -159,19 +159,23 @@ class TelemetryUiTests(unittest.TestCase):
         receiver._record_telemetry.assert_not_called()
 
     def test_export_cancel_does_not_record_and_export_failure_is_sanitized(self):
-        receiver = SimpleNamespace(results=[object()], visible_results=[True], export_directory=Path("."),
+        receiver = SimpleNamespace(results=[SimpleNamespace(file_name="sample.jwgbt")], visible_results=[True], export_directory=Path("."),
                                    _selected_pore_volume_range=lambda: (2, 50),
                                    _pore_volume_method_label=lambda: "BJH",
                                    _selected_pore_volume_for_result=lambda _: 0.2,
+                                   _pore_distribution_exports=lambda _: {}, single_point_default_pressure=0.3,
                                    _write_directory_setting=Mock(), _record_telemetry=Mock())
+        receiver._export_results = lambda selected: MainWindow._export_results(receiver, selected)
+        receiver._write_xlsx_export = lambda selected, path: MainWindow._write_xlsx_export(receiver, selected, path)
         with patch("tristar_bet.ui.main_window.QtWidgets.QFileDialog.getSaveFileName", return_value=("", "")):
             MainWindow.export_xlsx(receiver)
         receiver._record_telemetry.assert_not_called()
         with patch("tristar_bet.ui.main_window.QtWidgets.QFileDialog.getSaveFileName", return_value=("PRIVATE.xlsx", "")), \
-                patch("tristar_bet.ui.main_window.export_results_xlsx", side_effect=OSError("PRIVATE")), \
+                patch("tristar_bet.ui.main_window.export_results_xlsx", side_effect=OSError("PRIVATE")) as exporter, \
                 patch("tristar_bet.ui.main_window.QtWidgets.QMessageBox.critical"):
             MainWindow.export_xlsx(receiver)
         args, data = receiver._record_telemetry.call_args
+        exporter.assert_called_once()
         self.assertEqual(args, ("export",))
         self.assertEqual(data["status"], "failure")
         self.assertNotIn("PRIVATE", json.dumps(data))

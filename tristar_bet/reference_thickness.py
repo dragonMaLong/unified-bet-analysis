@@ -95,6 +95,8 @@ def reference_thickness_nm(relative_pressure: float, params: dict[str, object] |
         return None
     if len(points) == 1:
         return points[0][1]
+    if (params or {}).get("interpolation") == MICROMERITICS_REFERENCE_INTERPOLATION:
+        return micromeritics_reference_thickness(pressure, points)
 
     for index, (left_pressure, left_thickness) in enumerate(points[:-1]):
         right_pressure, right_thickness = points[index + 1]
@@ -109,6 +111,52 @@ def reference_thickness_nm(relative_pressure: float, params: dict[str, object] |
     left_pressure, left_thickness = points[-2]
     right_pressure, right_thickness = points[-1]
     return _linear_interpolate(pressure, left_pressure, left_thickness, right_pressure, right_thickness)
+
+
+MICROMERITICS_REFERENCE_INTERPOLATION = "micromeritics_akima"
+
+
+@lru_cache(maxsize=16)
+def _micromeritics_slopes(points: tuple[tuple[float, float], ...]) -> tuple[float, ...]:
+    xs = [p for p, _t in points]
+    ys = [t for _p, t in points]
+    chords = [(ys[i + 1] - ys[i]) / (xs[i + 1] - xs[i]) for i in range(len(xs) - 1)]
+    extended = [chords[0], chords[0], *chords, chords[-1], chords[-1]]
+    slopes = []
+    for i in range(len(xs)):
+        m1, m2, m3, m4 = extended[i:i + 4]
+        w_left, w_right = abs(m4 - m3), abs(m2 - m1)
+        slopes.append((m2 + m3) / 2.0 if w_left + w_right == 0.0 else (w_left * m2 + w_right * m3) / (w_left + w_right))
+    return tuple(slopes)
+
+
+def micromeritics_reference_thickness(pressure: float, points) -> float | None:
+    """Thickness from a reference table as MicroActive interpolates it.
+
+    Reproduced from 3440 t-Plot rows of 90 TriStar II Plus reports (SIO2OH.THK,
+    99.8% within 2e-6 nm; the rest differ only because the report prints P/P0
+    in single precision): Akima piecewise-cubic Hermite in P/P0 whose end
+    chords are repeated (so both end intervals are straight lines), with each
+    value held between the two table thicknesses of its interval. Pressures
+    outside the table have no thickness (the vendor leaves such points out).
+    """
+    table = tuple(normalize_reference_points(points))
+    if len(table) < 2 or any(table[i][0] <= table[i - 1][0] for i in range(1, len(table))):
+        return None
+    xs = [p for p, _t in table]
+    if not xs[0] <= pressure <= xs[-1]:
+        return None
+    if len(table) < 3:
+        return _linear_interpolate(pressure, table[0][0], table[0][1], table[1][0], table[1][1])
+    slopes = _micromeritics_slopes(table)
+    i = next(k for k in range(1, len(xs)) if pressure <= xs[k])
+    (x0, y0), (x1, y1) = table[i - 1], table[i]
+    span = x1 - x0
+    u = (pressure - x0) / span
+    value = ((2 * u**3 - 3 * u**2 + 1) * y0 + (u**3 - 2 * u**2 + u) * span * slopes[i - 1]
+             + (-2 * u**3 + 3 * u**2) * y1 + (u**3 - u**2) * span * slopes[i])
+    value = min(max(value, min(y0, y1)), max(y0, y1))
+    return value if value > 0.0 else None
 
 
 def _linear_interpolate(

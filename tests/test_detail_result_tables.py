@@ -50,7 +50,7 @@ class DetailResultTableTests(unittest.TestCase):
         self.test_settings = QtCore.QSettings(str(Path(self.settings_directory.name) / "settings.ini"), QtCore.QSettings.IniFormat)
         # Most legacy interaction tests intentionally exercise samples as rows.
         self.test_settings.setValue("results/samples_as_columns", False)
-        with patch.object(MainWindow, "_auto_check_for_updates"), patch("tristar_bet.ui.main_window.QtCore.QSettings", return_value=self.test_settings):
+        with patch.object(MainWindow, "_auto_check_for_updates"), patch.object(MainWindow, "_initialize_telemetry"), patch("tristar_bet.ui.main_window.QtCore.QSettings", return_value=self.test_settings):
             self.w = MainWindow()
         self.samples = [sample("A", 1), sample("B", 2), sample("C", 3)]
         self.w.results = list(self.samples)

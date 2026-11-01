@@ -9,6 +9,7 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 RESULT_STATUS_ROLE = QtCore.Qt.UserRole + 401
 RESULT_WARNING_ROLE = QtCore.Qt.UserRole + 402
+RESULT_NOTE_ROLE = QtCore.Qt.UserRole + 403  # explanation shown on hover for a value cell
 SELECTION_BLUE = "#e0ecff"
 
 
@@ -240,6 +241,12 @@ class DetailTableInteractionController(QtCore.QObject):
                 reason = item.data(RESULT_WARNING_ROLE)
                 if reason and badge.contains(QtCore.QPointF(position)):
                     return str(reason), badge.toAlignedRect()
+            if watched is view.viewport():
+                index = view.indexAt(position)
+                cell = table.item(index.row(), index.column()) if index.isValid() else None
+                note = cell.data(RESULT_NOTE_ROLE) if cell is not None else None
+                if note:
+                    return str(note), view.visualRect(index)
         return None
 
     def eventFilter(self, watched, event):

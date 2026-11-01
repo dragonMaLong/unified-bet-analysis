@@ -142,7 +142,7 @@ tristar_bet/excel_import.py         MicroActive / BSD 等 Excel 报表解析
 tristar_bet/belmaster.py            MicrotracBEL BELSORP (BELMaster) DAT 解析
 tristar_bet/quantachrome.py         Quantachrome Autosorb iQ QPS 解析
 tristar_bet/jwgb_raw.py             精微高博 APAS 文本 RAW 解析
-tristar_bet/jwgb_native.py          精微高博 JWGBT XML 原始压力导入（尚无定量吸附量）
+tristar_bet/jwgb_native.py          精微高博 JWGBT XML 导入（BK200C 受限配置的重建吸附量）
 tristar_bet/reference_thickness.py  参考厚度曲线与插值
 tristar_bet/analysis.py             BET、Langmuir、t-Plot、BJH 等分析计算
 tristar_bet/ui/main_window.py       中文图形界面主窗口
@@ -208,7 +208,7 @@ python scripts/upload_gitee_release.py --tag v1.0.12 --file ".\dist\BET-DragonSc
 
 1.3.1 的主界面使用常规图表标题和数值，样品栏 BET 悬停显示“区间计算完成”，结果参数不再单列“导入状态”。这些是显示调整；内部验证状态、计算异常诊断及导出来源记录仍保留，未将候选重建升级为已验证算法。
 
-支持版本 1、PressUnits=0 的精微高博 XML 文件；已用 BK200C 样本检查样品信息、压力、P/P₀、时间及日志。起始参考记录保存在原始记录中，不算额外测量点。支持公开 Sync440A 样本的 `1_7` 等补气编号、`Balance` 标记和浴温字段的小数逗号；全部补气记录保留，仅平衡记录进入等温线点表。对于已覆盖的 BK200C / 00.01.05.00 / 手动 Q / N₂ 77.35 K 配置，默认提供明确标记为“重建”的候选吸附量和 BET；来源及未核验说明随 CSV、JSON、Excel 导出保留。其他配置或缺失关键参数时，吸附量保留为空。负重建值不截断，BET 选区含非正重建吸附量时不拟合。BK200C 的完整定量算法仍需同次测试的原厂导出逐点校验。现有 RAW、Excel 定量导入不受此限制。
+支持版本 1、PressUnits=0 的精微高博 XML 文件；已用 BK200C 样本检查样品信息、压力、P/P₀、时间及日志。起始参考记录保存在原始记录中，不算额外测量点。支持公开 Sync440A 样本的 `1_7` 等补气编号、`Balance` 标记和浴温字段的小数逗号；全部补气记录保留，仅平衡记录进入等温线点表。对于已覆盖的 BK200C / 00.01.05.00 / 手动 Q 或完整氦气自动 Q 校准 / N₂ 77.35 K 配置，默认提供明确标记为“重建”的候选吸附量和 BET；来源及未核验说明随 CSV、JSON、Excel 导出保留。其他配置或缺失关键参数时，吸附量保留为空。负重建值不截断，BET 选区含非正重建吸附量时不拟合。BK200C 的完整定量算法仍需同次测试的原厂导出逐点校验。现有 RAW、Excel 定量导入不受此限制。
 
 逆向研究工具：`python -m scripts.jwgb_reconstruction_probe "样本.jwgbt" --output "candidate_comparison.json"`。该工具基于原厂公开容量法原理及旧版手册的 Q 差值校准式，显式假设冷自由空间项为 `Q × Vd`，比较四种温度处理方式，并输出 37 点样本的逐项气量计算（实际点数随输入变化）、候选 BET、源文件 SHA-256 和未验证假设。它只生成标有 `unvalidated_research_only` 的研究报告，不启用软件中的定量导入。高拟合优度或平滑曲线不能代替同次测试的原厂点表验证。
 
@@ -239,3 +239,20 @@ BK200C 研究工具也会在文件提供非理想因子时生成独立的 `sync4
 气量拟合的可辨识性更正：`jwgb_balance` 的 `aP+bP²` 模型会完全吸收吸附量中的线性及二次项。即使吸附、脱附残差都接近零，也不能认定没有吸附，不能把拟合的表观 Q 替换为真实校准 Q。现已删除“未检出可测吸附”和“假等温线”的过强结论；`tests/test_jwgb_balance.py` 用已知非零、可逆吸附构造反例。`jwgb_free_space_probe` 的注入结果只表示指定形状在经验阈值下的残差变化，不是实际误差范围或仪器检出限。
 
 补充数据检索：[He 等人 2025 年论文](https://doi.org/10.1038/s41467-025-60191-9)使用 JW-BK200C，公开的 Source Data 工作簿已检查。它提供计算后的相对压力和吸附量曲线，没有原始逐次压力、温度、Q 校准记录或嵌入的原生文件，因此不能用于验证本项目的压力重建。下载源、文件哈希和检查结论保存在本地研究目录 `tmp/jwgb_research/nature_60191/provenance.json`。
+
+
+新增两份 BK200C/00.01.05.00 自动 Q 文件的诊断：两份氦气校准分别复算出 `0.010520399711102841`、`0.009975239798677153`，均吻合文件存储的六位小数 Q。但这仅验证校准关系；将现有候选吸附量公式用于两份文件，在保存的 `0.08–0.30` 区间内均得到无效单层容量，改用舍入 Q 也无法消除失败。自动 Q 候选气量计算现已接入普通导入：校准记录必须完整、时间属于本次测试且复算 Q 与文件六位小数一致，支持吸附前或吸附后校准。计算使用未舍入 Q；无效校准不退而使用存储 Q 凑数。两份文件在正式路径中仍返回“单层容量无效”，没有有效 BET 数字；这不构成定量算法已恢复的证明。可用 `python -m scripts.jwgb_bk200c_auto_q_probe "3.jwgbt" "4.jwgbt" --output "auto_q_audit.json"` 保留两种 Q 精度控制与失败结果；不调 Q、不删除负点、不更换区间来生成面积。
+
+#### BK200C 同次原厂导出对照（2026-10-31，Claude 接手）
+
+1 号原始文件与另一课题组导出的 `1(1).xlsx`（SHA256 `fa61ad59…c643`）逐点配对：保留文件 Q=0.008500、关闭逐次补气的非理想乘子后，21 个吸附点全部吻合导出 5 位小数（开启乘子时 0/21）。脱附按下式闭合后，17 行脱附（含峰值参考）也全部吻合，合计 38/38：
+
+- `gap = 吸附支线性插值(脱附末点 P/P₀) − 原始脱附末点量`；
+- 脱附序号 i（峰值参考为 0）在 `P/P₀ < 0.8` 时加 `gap × i/(N−1)`；
+- **所有**脱附点再取该值与同压力吸附插值值的较大者（不再只限 `P/P₀ < 0.8`）。
+
+同一规则对 Sync440A 配对仍为 50/50。说明：原 Sync 规则直接用于 BK 时只得 15/17（`P/P₀ ≥ 0.8` 的两点未被抬到吸附支），"全压力取下限"这一改动是在看到 BK 数据后确定的，因此两份都是发现样本，不是盲测；BK 中每个脱附点都取到吸附下限，平移项与阈值只受 Sync 约束。
+
+生产导入（仅 BK200C/00.01.05.00 受限配置）现已：不施加 `NonIdealityFactor` 乘子（数值仍保留为来源，新增 `jwgb_reconstruction_nonideality_applied=False`）；应用上述脱附闭合（`jwgb_reconstruction_closure` 记录 gap、抬升/下限点数及拒绝原因；负 gap 或区间外插值时不修改并注明原因）。1 号多点 BET 随之由 118.022742 变为约 115.952 m²/g；这是本软件复算，导出 Info 页 BET 为字面 0，不是原厂报告值。3/4 号仍为单层容量无效，单点值改为 0.826134 / 2.324082 m²/g。自动 Q 文件（3–20 号）尚无原厂对照，`jwgb_reconstruction_validation` 分别标为 `bk200c_manual_q_one_same_run_export_match` 与 `bk200c_auto_q_no_same_run_reference`，`quantity_status` 仍为 `reconstructed_unvalidated`。Sync440A 文件没有 `IsRealGas` 字段且需开启乘子才匹配，BK 文件均为 `IsRealGas=0`；"该标志决定乘子"只是与两份配对一致的假设，未据此改动其他型号。
+
+本机端到端复核：`python -m scripts.jwgb_bk200c_vendor_pair_check "1 [2_S1] 2026-10-12 110438.jwgbt" "1(1).xlsx" --output sample1_pair_check.json`（用实际完整路径）。回归：`tests/test_jwgb_desorption_closure.py`（派生夹具 `tests/fixtures/jwgb_bk200c_sample1_vendor_pair.json`，不含客户原始记录）、`tests/test_jwgb_vendor_pair_check.py`。

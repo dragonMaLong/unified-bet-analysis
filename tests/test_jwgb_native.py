@@ -67,6 +67,7 @@ class NativeTests(unittest.TestCase):
         for fit in analysis_bundle(result).values():
             self.assertFalse(fit.ok)
             self.assertIsNone(fit.surface_area_m2_g)
+        self.assertEqual(bet_analysis(result).status, 'native_uptake_unavailable')
         export_results_csv([result], Path(self.temp.name) / "export")
 
     def test_rejects_bad_documents_and_units(self):
@@ -95,7 +96,10 @@ class NativeTests(unittest.TestCase):
         self.assertEqual(fit.status, 'warning_reconstructed_monolayer_outside_range')
         self.assertEqual((fit.pressure_min, fit.pressure_max), (.08, .3))
         self.assertEqual(result.point_count, 4)
-        self.assertFalse(result.method_options['jwgb_reconstruction_closure_applied'])
+        self.assertTrue(result.method_options['jwgb_reconstruction_closure_applied'])
+        self.assertFalse(result.method_options['jwgb_reconstruction_nonideality_applied'])
+        self.assertEqual(result.method_options['jwgb_reconstruction_validation'],
+                         'bk200c_manual_q_one_same_run_export_match')
         self.assertIn('尚未与本文件原厂结果核验', str(dict(active_metric_rows(result))['多点 BET 状态']))
         self.assertIn('单层容量超出选区', str(dict(active_metric_rows(result))['多点 BET 状态']))
         outputs = export_results_csv([result], Path(self.temp.name) / 'csv')
@@ -126,6 +130,24 @@ class NativeTests(unittest.TestCase):
                 self.assertTrue(all(p.quantity_adsorbed_cm3_g_stp is None for p in result.isotherm))
                 self.assertNotIn('jwgb_reconstructed', result.method_options)
                 self.assertIsNone(bet_analysis(result).surface_area_m2_g)
+
+    def test_auto_q_valid_synthetic_run_computes_bet_using_unrounded_calibration(self):
+        # Independent ideal helium expansion: 24 -> 15 kPa at 300 K.
+        q = (273.15 / 101.325) * (24 - 15) / (300 * 15)
+        calibration = '''<Q>
+<Item Pd="-0.00001" Pcd="0" PdT="0" PcdT="26.85" Day="2026-10-12" Time="11:00:10"/>
+<Item Pd="24" Pcd="15" PdT="26.85" PcdT="26.85" Day="2026-10-12" Time="11:00:20"/>
+</Q>'''
+        xml = (reconstructable_xml().replace('<AutoTestQ>0', '<AutoTestQ>1')
+               .replace('<QValue>0.0085', f'<QValue>{q:.6f}')
+               .replace('</BaseInfo>', '</BaseInfo>' + calibration))
+        self.path.write_text(xml, encoding='utf-8')
+        result = load_file(self.path)
+        self.assertAlmostEqual(result.method_options['jwgb_reconstruction_q'], q, places=14)
+        self.assertNotEqual(result.method_options['jwgb_reconstruction_q'], float(f'{q:.6f}'))
+        self.assertEqual(result.method_options['jwgb_reconstruction_calibration_source'], 'helium_calibration_records')
+        self.assertGreater(bet_analysis(result).surface_area_m2_g, 0)
+        self.assertEqual(result.method_options['quantity_status'], 'reconstructed_unvalidated')
 
     def test_reconstructed_monolayer_warning_clears_for_a_bracketing_range(self):
         from dataclasses import replace
@@ -169,6 +191,8 @@ class NativeTests(unittest.TestCase):
             self.assertEqual(len(window.results), 1)
             self.assertNotIn('导入状态', dict(summary_rows(window.results[0])))
             self.assertEqual(window.results[0].method_options['quantity_status'], 'unavailable_native_pressure_only')
+            from tristar_bet.ui.main_window import BET_COLUMN
+            self.assertIn('尚未解析出吸附量', window.sample_table.item(0, BET_COLUMN).toolTip())
             for index in range(window.plot_tabs.count()):
                 window.plot_tabs.setCurrentIndex(index)
                 app.processEvents()

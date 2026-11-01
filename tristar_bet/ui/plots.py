@@ -7,7 +7,7 @@ from typing import Callable
 import numpy as np
 import pyqtgraph as pg
 
-from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
+from pyqtgraph.Qt import QtCore, QtGui, QtWidgets, isQObjectAlive
 
 from tristar_bet.analysis import (
     FitResult,
@@ -500,6 +500,12 @@ def _sync_plot_legend_visibility(plot: pg.PlotWidget) -> None:
 
 
 def _finalize_legend_layout(plot: pg.PlotWidget) -> None:
+    # A queued callback may run after its window/scene has been destroyed.
+    if not isQObjectAlive(plot):
+        return
+    plot_item = plot.getPlotItem()
+    if plot_item is None or not isQObjectAlive(plot_item):
+        return
     _apply_default_legend_position(plot)
     _position_legend_toggle_button(plot)
 

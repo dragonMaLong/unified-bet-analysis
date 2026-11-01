@@ -52,7 +52,7 @@ class RunConditions:
     evacuation_time_h: float | None
     leak_test_time_s: int | None
     equilibration_interval_s: float | None
-    free_space_equilibration_time_h: float | None
+    free_space_equilibration_time_h: float | None  # Micromeritics free-space "Evacuation time" (vendor UI label)
     ambient_free_space_entered_cm3: float | None
     analysis_free_space_entered_cm3: float | None
     desorption_test_time_s: int | None

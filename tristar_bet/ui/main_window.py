@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import os
 import math
+import re
 import sys
 import threading
 import time
@@ -18,7 +19,12 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 from tristar_bet import BELMasterParseError, ExcelParseError, TriStarParseError, load_file
 from tristar_bet.analysis import (
+    vendor_pore_thickness_params,
     DEFAULT_THICKNESS_METHOD,
+    uses_vendor_t_plot_settings,
+    reports_signed_t_plot_results,
+    vendor_t_plot_pressure_window,
+    vendor_t_plot_thickness_params,
     DFT_DEFAULT_ANALYSIS_TYPE,
     DFT_DEFAULT_GEOMETRY,
     DFT_DEFAULT_MODEL,
@@ -105,7 +111,8 @@ from tristar_bet.ui.plots import (
 )
 from tristar_bet.ui.detail_tables import (
     ANALYSIS_COLUMNS, SINGLE_BET_COLUMNS, PORE_VOLUME_COLUMNS, configure_content_widths, fit_content_widths,
-    RESULT_STATUS_ROLE, RESULT_WARNING_ROLE, ResultFileDelegate, configure_cell_copy, DetailTableInteractionController,
+    RESULT_STATUS_ROLE, RESULT_WARNING_ROLE, RESULT_NOTE_ROLE, ResultFileDelegate, configure_cell_copy,
+    DetailTableInteractionController,
     fit_multiline_row_heights,
 )
 from tristar_bet.version import __version__
@@ -1008,6 +1015,11 @@ def _check_state_value(state) -> int:
 
 VISIBLE_COLUMN = 0
 FILE_COLUMN = 1
+BET_DISPLAY_DEFAULT = "default"
+BET_DISPLAY_SINGLE = "single"
+BET_DISPLAY_MULTI = "multi"
+BET_DISPLAY_LABELS = {BET_DISPLAY_DEFAULT: "默认", BET_DISPLAY_SINGLE: "单点", BET_DISPLAY_MULTI: "多点"}
+DEFAULT_SINGLE_POINT_PRESSURE = 0.2
 TEST_TIME_COLUMN = 2
 BET_COLUMN = 3
 LANGMUIR_COLUMN = 4
@@ -2111,6 +2123,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._analysis_selection_source = None
         self._analysis_detail_cache = {}
         self._result_sort_state = None
+        self.file_name_sort_ascending = False
+        self.bet_display_mode = BET_DISPLAY_DEFAULT
+        self.single_point_default_pressure = DEFAULT_SINGLE_POINT_PRESSURE
         self.test_time_sort_ascending = False
         self.bet_sort_ascending = False
         self.langmuir_sort_ascending = False
@@ -2320,10 +2335,14 @@ class MainWindow(QtWidgets.QMainWindow):
         sample_header.setSectionResizeMode(QtWidgets.QHeaderView.Interactive)
         sample_header.sectionClicked.connect(self.on_sample_header_clicked)
         sample_header.sectionResized.connect(self.on_sample_header_resized)
+        # The file-name column is drawn by the frozen overlay, whose header receives the click.
+        self.sample_table.frozen_header().sectionClicked.connect(self.on_sample_header_clicked)
+        self.sample_table.horizontalHeaderItem(FILE_COLUMN).setToolTip("点击按文件名排序（数字按大小），再次点击反向")
         self.sample_table.horizontalHeaderItem(TEST_TIME_COLUMN).setToolTip("点击按测试时间排序")
-        self.sample_table.horizontalHeaderItem(BET_COLUMN).setToolTip(
-            "优先显示有效多点 BET；JWGB 原厂仅 1 个 MAP 点时显示并标注单点 BET；点击排序"
-        )
+        sample_header.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        sample_header.customContextMenuRequested.connect(self.show_sample_header_context_menu)
+        self._load_bet_display_settings()
+        self._update_bet_header()
         self.sample_table.horizontalHeaderItem(BET_COLUMN).setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
         self.sample_table.horizontalHeaderItem(LANGMUIR_COLUMN).setToolTip("点击按Langmuir比表面积排序")
         self.sample_table.horizontalHeaderItem(LANGMUIR_COLUMN).setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
@@ -4868,9 +4887,14 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _t_plot_settings_for_result(self, result) -> dict[str, object]:
         settings = self._default_t_plot_settings()
-        if result.method_options.get("format_family") == "TriStar II Plus 3.02 SMP":
+        if uses_vendor_t_plot_settings(result):
             method = result.method_options.get("vendor_t_plot_thickness_method")
             params_by_method = dict(settings["thickness_params_by_method"])
+            vendor_params = vendor_t_plot_thickness_params(result)
+            if method in params_by_method and vendor_params:
+                # e.g. the reference table saved in the SMP, interpolated as MicroActive does
+                params_by_method[method] = {**params_by_method[method], **vendor_params}
+                settings["thickness_params_by_method"] = params_by_method
             if method in params_by_method:
                 settings["thickness_method"] = method
                 settings["thickness_params"] = dict(params_by_method[method])
@@ -4972,10 +4996,26 @@ class MainWindow(QtWidgets.QMainWindow):
         vendor_correction = result.method_options.get("vendor_bjh_correction")
         if vendor_correction in {"standard", "kjs", "faas"}:
             settings["correction"] = str(vendor_correction)
+        self._apply_vendor_pore_thickness_params(settings, result.method_options.get("vendor_bjh_report_settings"))
         vendor_smooth = result.method_options.get("vendor_bjh_smooth_derivative")
         if vendor_smooth is not None:
             settings["smooth_derivative"] = bool(vendor_smooth)
         return settings
+
+    @staticmethod
+    def _apply_vendor_pore_thickness_params(settings: dict[str, object], vendor_by_phase) -> None:
+        """Start from the thickness constants/table saved in the SMP report options."""
+        if not isinstance(vendor_by_phase, dict) or not vendor_by_phase:
+            return
+        vendor = vendor_by_phase.get("desorption") or next(iter(vendor_by_phase.values()))
+        method = str(vendor.get("thickness_method", ""))
+        if method != str(settings.get("thickness_method")):
+            return
+        params = vendor_pore_thickness_params(vendor)
+        params_by_method = {key: dict(value) for key, value in dict(settings["thickness_params_by_method"]).items()}
+        params_by_method[method] = params
+        settings["thickness_params_by_method"] = params_by_method
+        settings["thickness_params"] = dict(params)
 
     def _bjh_settings_for_result(self, result) -> dict[str, object]:
         settings = self._bjh_default_settings_for_result(result)
@@ -5078,6 +5118,7 @@ class MainWindow(QtWidgets.QMainWindow):
             method = DEFAULT_DH_THICKNESS_METHOD
         settings["thickness_method"] = method
         settings["thickness_params"] = dict(params_by_method[method])
+        self._apply_vendor_pore_thickness_params(settings, result.method_options.get("vendor_dh_report_settings"))
         if "vendor_dh_smooth_derivative" in result.method_options:
             settings["smooth_derivative"] = bool(result.method_options.get("vendor_dh_smooth_derivative"))
         if "vendor_dh_differential_mode" in result.method_options:
@@ -5174,8 +5215,31 @@ class MainWindow(QtWidgets.QMainWindow):
             "display_metric": DEFAULT_HK_DISPLAY_METRIC,
         }
 
-    def _hk_settings_for_result(self, result) -> dict[str, object]:
+    def _hk_default_settings_for_result(self, result) -> dict[str, object]:
+        """Default HK settings; an SMP's own HK report options when it has them."""
         settings = self._default_hk_settings()
+        vendor = result.method_options.get("vendor_hk_report_settings") if result is not None else None
+        if not isinstance(vendor, dict):
+            return settings
+        geometry = str(vendor.get("geometry", ""))
+        adsorbent_key = str(vendor.get("adsorbent_key", ""))
+        adsorptive_key = str(vendor.get("adsorptive_key", ""))
+        if geometry not in {"slit", "cylinder"} or adsorbent_key not in HK_ADSORBENT_PRESETS or adsorptive_key not in HK_ADSORPTIVE_PRESETS:
+            return settings
+        settings.update(
+            geometry=geometry,
+            adsorbent_key=adsorbent_key,
+            adsorptive_key=adsorptive_key,
+            adsorbent_properties=dict(HK_ADSORBENT_PRESETS[adsorbent_key]),
+            adsorptive_properties=dict(HK_ADSORPTIVE_PRESETS[adsorptive_key]),
+            interaction_parameter_mode=str(vendor.get("interaction_parameter_mode", settings["interaction_parameter_mode"])),
+        )
+        if settings["interaction_parameter_mode"] == "input":
+            settings["interaction_parameter"] = float(vendor.get("interaction_parameter", settings["interaction_parameter"]))
+        return settings
+
+    def _hk_settings_for_result(self, result) -> dict[str, object]:
+        settings = self._hk_default_settings_for_result(result)
         custom = self.custom_hk_settings.get(id(result))
         if custom:
             settings.update(custom)
@@ -5861,29 +5925,57 @@ class MainWindow(QtWidgets.QMainWindow):
         self._record_feature_view(self.plot_tabs.currentIndex(), "plot")
 
     def export_xlsx(self) -> None:
+        """Toolbar export of checked samples; the file type is chosen in the dialog."""
         selected = [result for result, visible in zip(self.results, self.visible_results) if visible]
         if not selected:
             QtWidgets.QMessageBox.information(self, "导出文件", "没有勾选可导出的样品。")
             return
+        self._export_results(selected)
 
+    def _export_results(self, selected, file_format: str | None = None) -> None:
+        filters = {"xlsx": "Excel 工作簿 (*.xlsx)", "pdf": "PDF 报告 (*.pdf)"}
+        offered = [file_format] if file_format in filters else ["xlsx", "pdf"]
+        stem = (f"{_display_file_name(selected[0])}" if len(selected) == 1
+                else f"BET解析导出_{len(selected)}个样品")
+        path, chosen_filter = QtWidgets.QFileDialog.getSaveFileName(
+            self, "导出文件", str(self.export_directory / f"{stem}.{offered[0]}"),
+            ";;".join(filters[key] for key in offered), filters[offered[0]])
+        if not path:
+            return
+        suffix = Path(path).suffix.lower().lstrip(".")
+        if suffix not in offered:
+            suffix = next((key for key in offered if filters[key] == chosen_filter), offered[0])
+            path += f".{suffix}"
+        self.export_directory = Path(path).parent
+        self._write_directory_setting("export_directory", self.export_directory)
+        if suffix == "pdf":
+            self._write_pdf_report(selected, path)
+        else:
+            self._write_xlsx_export(selected, path)
+
+    def _write_pdf_report(self, selected, path: str) -> None:
+        from tristar_bet.ui.pdf_report import write_pdf
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        try:
+            write_pdf(self._pdf_report_for(selected), path)
+        except Exception as exc:
+            QtWidgets.QApplication.restoreOverrideCursor()
+            QtWidgets.QMessageBox.critical(self, "导出失败", str(exc))
+            return
+        QtWidgets.QApplication.restoreOverrideCursor()
+        # Telemetry schema only defines xlsx exports, so PDF exports are not reported.
+        self.statusBar().showMessage(f"已导出: {path}", 6000)
+
+    def _write_xlsx_export(self, selected, path: str) -> None:
         pore_range = self._selected_pore_volume_range()
         d_min, d_max = sorted((float(pore_range[0]), float(pore_range[1])))
         pore_volume_header = f"{self._pore_volume_method_label()} {_fmt_nm(d_min)}nm-{_fmt_nm(d_max)}nm孔容量(cm3/g)"
         pore_volumes = [self._selected_pore_volume_for_result(result) for result in selected]
-
-        default_name = f"BET解析导出_{len(selected)}个样品.xlsx"
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self,
-            "导出文件",
-            str(self.export_directory / default_name),
-            "Excel 工作簿 (*.xlsx)",
-        )
-        if not path:
-            return
-        if not path.lower().endswith(".xlsx"):
-            path += ".xlsx"
-        self.export_directory = Path(path).parent
-        self._write_directory_setting("export_directory", self.export_directory)
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        try:
+            pore_distributions = [self._pore_distribution_exports(result) for result in selected]
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
         started = time.monotonic()
         try:
             export_results_xlsx(
@@ -5891,6 +5983,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 path,
                 pore_volume_header=pore_volume_header,
                 pore_volumes=pore_volumes,
+                pore_distributions=pore_distributions,
+                single_point_pressure=self.single_point_default_pressure,
             )
         except Exception as exc:
             self._record_telemetry(
@@ -6023,7 +6117,10 @@ class MainWindow(QtWidgets.QMainWindow):
     def on_sample_header_clicked(self, section: int) -> None:
         if len(self.results) < 2:
             return
-        if section == TEST_TIME_COLUMN:
+        if section == FILE_COLUMN:
+            self.file_name_sort_ascending = not self.file_name_sort_ascending
+            self.sort_samples_by_file_name(self.file_name_sort_ascending)
+        elif section == TEST_TIME_COLUMN:
             self.test_time_sort_ascending = not self.test_time_sort_ascending
             self.sort_samples_by_test_time(self.test_time_sort_ascending)
         elif section == BET_COLUMN:
@@ -6038,6 +6135,63 @@ class MainWindow(QtWidgets.QMainWindow):
         elif section == BJH_PORE_VOLUME_COLUMN:
             self.bjh_pore_sort_ascending = not self.bjh_pore_sort_ascending
             self.sort_samples_by_bjh_pore_volume(self.bjh_pore_sort_ascending)
+
+    def _load_bet_display_settings(self) -> None:
+        mode = str(self.settings.value("results/bet_display_mode", BET_DISPLAY_DEFAULT) or BET_DISPLAY_DEFAULT)
+        self.bet_display_mode = mode if mode in BET_DISPLAY_LABELS else BET_DISPLAY_DEFAULT
+        # Fixed, not user-adjustable: files without their own single-point setting use P/P0 = 0.2.
+        self.single_point_default_pressure = DEFAULT_SINGLE_POINT_PRESSURE
+
+    def _update_bet_header(self) -> None:
+        item = self.sample_table.horizontalHeaderItem(BET_COLUMN)
+        if item is None:
+            return
+        item.setText({BET_DISPLAY_SINGLE: "单点BET(m2/g)", BET_DISPLAY_MULTI: "多点BET(m2/g)"}.get(self.bet_display_mode, "BET(m2/g)"))
+        item.setToolTip(
+            f"当前显示：{BET_DISPLAY_LABELS[self.bet_display_mode]}。右键切换 默认 / 单点 / 多点；点击排序。\n"
+            "默认：优先有效多点 BET，JWGB 多点无效时显示并标注单点。\n"
+            "单点：文件有单点压力设置时用文件设置，否则按 P/P0=0.2 计算。"
+        )
+
+    def show_sample_header_context_menu(self, position: QtCore.QPoint) -> None:
+        header = self.sample_table.horizontalHeader()
+        if header.logicalIndexAt(position) != BET_COLUMN:
+            return
+        menu = QtWidgets.QMenu(header)
+        group = QtWidgets.QActionGroup(menu)
+        group.setExclusive(True)
+        actions = {}
+        for mode in (BET_DISPLAY_DEFAULT, BET_DISPLAY_SINGLE, BET_DISPLAY_MULTI):
+            action = menu.addAction(BET_DISPLAY_LABELS[mode])
+            action.setCheckable(True)
+            action.setChecked(mode == self.bet_display_mode)
+            group.addAction(action)
+            actions[action] = mode
+        exec_menu = getattr(menu, "exec_", None) or getattr(menu, "exec")
+        chosen = exec_menu(header.viewport().mapToGlobal(position))
+        if chosen in actions:
+            self.set_bet_display_mode(actions[chosen])
+
+    def set_bet_display_mode(self, mode: str) -> None:
+        if mode not in BET_DISPLAY_LABELS or mode == self.bet_display_mode:
+            return
+        self.bet_display_mode = mode
+        self.settings.setValue("results/bet_display_mode", mode)
+        self._update_bet_header()
+        self._refresh_all_sample_bet_cells()
+
+    def _refresh_all_sample_bet_cells(self) -> None:
+        self._updating_table = True
+        try:
+            for row in range(len(self.results)):
+                self._refresh_sample_bet_cell(row)
+        finally:
+            self._updating_table = False
+
+    def _single_point_for_result(self, result):
+        """Single-point BET at the file's own target, else the user-chosen P/P0."""
+        target, source = single_point_target(result, getattr(self, "single_point_default_pressure", DEFAULT_SINGLE_POINT_PRESSURE))
+        return single_point_bet_analysis(result, target), source
 
     def on_sample_header_resized(self, logical_index: int, old_size: int, new_size: int) -> None:
         self._position_header_controls()
@@ -6055,12 +6209,19 @@ class MainWindow(QtWidgets.QMainWindow):
             self.sample_table.selectRow(row)
             selected_rows = [row]
         menu = QtWidgets.QMenu(self.sample_table)
-        delete_text = f"删除选中的 {len(selected_rows)} 个样品" if len(selected_rows) > 1 else "删除"
-        delete_action = menu.addAction(delete_text)
+        count = f"选中的 {len(selected_rows)} 个样品" if len(selected_rows) > 1 else ""
+        delete_action = menu.addAction(f"删除{count}")
+        menu.addSeparator()
+        excel_action = menu.addAction(f"导出{count} Excel…")
+        pdf_action = menu.addAction(f"导出{count} PDF…")
         global_pos = self.sample_table.viewport().mapToGlobal(position)
         exec_menu = getattr(menu, "exec_", None) or getattr(menu, "exec")
-        if exec_menu(global_pos) == delete_action:
+        chosen = exec_menu(global_pos)
+        if chosen == delete_action:
             self.delete_sample_rows(selected_rows)
+        elif chosen in (excel_action, pdf_action):
+            self._export_results([self.results[row] for row in selected_rows],
+                                 "xlsx" if chosen == excel_action else "pdf")
 
     def _selected_sample_rows(self) -> list[int]:
         selection_model = self.sample_table.selectionModel()
@@ -6111,6 +6272,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self.active_index = min(first_removed_row, len(self.results) - 1)
         self.refresh_all()
         self.statusBar().showMessage(f"已删除 {len(rows)} 个样品", 3000)
+
+    def sort_samples_by_file_name(self, ascending: bool) -> None:
+        self._sort_samples(lambda result: _natural_sort_key(_display_file_name(result)), ascending, self.sample_table, FILE_COLUMN)
 
     def sort_samples_by_test_time(self, ascending: bool) -> None:
         self._sort_samples(lambda result: self._test_time_sort_key(result) if result.test_started_raw else None, ascending, self.sample_table, TEST_TIME_COLUMN)
@@ -6291,7 +6455,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
                 bet_value, bet_kind, bet_tooltip = self._sample_bet_display(result, bet)
                 bet_text = _fmt(bet_value)
-                if bet_kind == "single_point":
+                if bet_kind == "single_point" and self.bet_display_mode == BET_DISPLAY_DEFAULT:
                     bet_text = f"{bet_text}（单点）"
                 bet_item = self._table_item(
                     bet_text,
@@ -6339,7 +6503,7 @@ class MainWindow(QtWidgets.QMainWindow):
         bet = self._bet_analysis_for_result(result)
         bet_value, bet_kind, bet_tooltip = self._sample_bet_display(result, bet)
         bet_text = _fmt(bet_value)
-        if bet_kind == "single_point":
+        if bet_kind == "single_point" and self.bet_display_mode == BET_DISPLAY_DEFAULT:
             bet_text = f"{bet_text}（单点）"
         bet_item = self._table_item(
             bet_text,
@@ -6351,6 +6515,23 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _sample_bet_display(self, result, bet=None) -> tuple[float | None, str, str]:
         bet = bet if bet is not None else self._bet_analysis_for_result(result)
+        mode = getattr(self, "bet_display_mode", BET_DISPLAY_DEFAULT)
+        if mode == BET_DISPLAY_MULTI:
+            if bet.surface_area_m2_g is None:
+                return None, "unavailable", f"多点 BET 不可用：{status_text(bet.status)}"
+            kind = "manual_multipoint" if self._is_custom_bet_fit(result) else "multipoint"
+            return float(bet.surface_area_m2_g), kind, f"{'手动多点' if kind == 'manual_multipoint' else '多点'} BET；{status_text(bet.status)}"
+        if mode == BET_DISPLAY_SINGLE:
+            single_point, source = self._single_point_for_result(result)
+            pressure = _fmt(single_point.pressure_min, 6) if single_point.pressure_min is not None else ""
+            if single_point.status != "ok" or single_point.surface_area_m2_g is None:
+                return None, "unavailable", f"单点 BET 不可用（P/P0={pressure}，{source}）：{status_text(single_point.status)}"
+            target = (single_point.rows or [{}])[0].get("target_relative_pressure")
+            if target is not None:
+                detail = f"目标 P/P0={_fmt(target, 4)}（{source}），按仪器规则取最近实测点 P/P0={pressure}"
+            else:
+                detail = f"P/P0={pressure}（{source}），相邻实测点插值"
+            return float(single_point.surface_area_m2_g), "single_point", f"单点 BET，{detail}；V·(1−P/P0) 换算"
         if bet.surface_area_m2_g is not None:
             kind = "manual_multipoint" if self._is_custom_bet_fit(result) else "multipoint"
             label = "手动多点 BET" if kind == "manual_multipoint" else "多点 BET"
@@ -6358,10 +6539,10 @@ class MainWindow(QtWidgets.QMainWindow):
             return float(bet.surface_area_m2_g), kind, tooltip
 
         point_ids = result.method_options.get("jwgb_raw_bet_fit_point_ids")
+        native_single = bool(result.method_options.get("jwgb_native_import"))
         if (
             not self._is_custom_bet_fit(result)
-            and isinstance(point_ids, (list, tuple))
-            and len(point_ids) == 1
+            and (native_single or (isinstance(point_ids, (list, tuple)) and len(point_ids) == 1))
         ):
             single_point = single_point_bet_analysis(result)
             if single_point.status == "ok" and single_point.surface_area_m2_g is not None:
@@ -6369,7 +6550,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 return (
                     float(single_point.surface_area_m2_g),
                     "single_point",
-                    f"JWGB 单点 BET，P/P0={pressure}；原厂 MAP 仅 1 点，多点 BET 无效",
+                    (f"JWGB 单点 BET，P/P0={pressure}；多点 BET：{status_text(bet.status)}"
+                     if native_single else
+                     f"JWGB 单点 BET，P/P0={pressure}；原厂 MAP 仅 1 点，多点 BET 无效"),
                 )
         return None, "unavailable", status_text(bet.status)
 
@@ -8570,7 +8753,8 @@ class MainWindow(QtWidgets.QMainWindow):
         t_cells.update({
             "external_area": numeric(t_plot.external_surface_area_m2_g),
             "micro_volume": numeric(t_plot.micropore_volume_cm3_g),
-            "micro_area": numeric(_micropore_area_m2_g(total_area, t_plot.external_surface_area_m2_g, correction)),
+            "micro_area": numeric(_micropore_area_m2_g(total_area, t_plot.external_surface_area_m2_g, correction,
+                                                       negative_as_missing=reports_signed_t_plot_results(result))),
             "slope": numeric(regression["slope"]), "slope_error": numeric(regression["slope_se"]),
             "intercept": numeric(regression["intercept"]), "intercept_error": numeric(regression["intercept_se"]),
             "t_min": numeric(t_range[0]), "t_max": numeric(t_range[1]),
@@ -8664,6 +8848,15 @@ class MainWindow(QtWidgets.QMainWindow):
                                 item.setToolTip(tooltip)
                             elif keys[column].startswith("single_"):
                                 item.setToolTip(display + "\n单点BET：" + single_status)
+                            elif method == "t_plot":
+                                note = _t_plot_value_note(keys[column], value, result)
+                                if note:
+                                    font = item.font()
+                                    font.setItalic(True)
+                                    item.setFont(font)
+                                    item.setForeground(QtGui.QBrush(QtGui.QColor("#6b7280")))
+                                    item.setData(RESULT_NOTE_ROLE, note)
+                                    item.setToolTip(note)
                             if transposed:
                                 if column == 0:
                                     table.setHorizontalHeaderItem(row + 1, item)
@@ -9317,7 +9510,7 @@ class MainWindow(QtWidgets.QMainWindow):
         custom_range = self.custom_t_plot_fit_ranges.get(id(result))
         if custom_range is not None:
             return custom_range
-        if result.method_options.get("format_family") == "TriStar II Plus 3.02 SMP":
+        if uses_vendor_t_plot_settings(result):
             lo = result.method_options.get("stored_t_plot_thickness_min_nm")
             hi = result.method_options.get("stored_t_plot_thickness_max_nm")
             if isinstance(lo, (int, float)) and isinstance(hi, (int, float)) and 0.0 < lo < hi < 10.0:
@@ -9340,16 +9533,25 @@ class MainWindow(QtWidgets.QMainWindow):
         settings = self._t_plot_settings_for_result(result)
         method = str(settings["thickness_method"])
         default_method = DEFAULT_T_PLOT_THICKNESS_METHOD
-        if result.method_options.get("format_family") == "TriStar II Plus 3.02 SMP":
+        if uses_vendor_t_plot_settings(result):
             default_method = result.method_options.get("vendor_t_plot_thickness_method", default_method)
         if method != default_method:
             return True
 
         default_params = T_PLOT_THICKNESS_PARAM_DEFAULTS.get(method, DEFAULT_T_PLOT_THICKNESS_PARAMS)
+        if uses_vendor_t_plot_settings(result) and method == default_method:
+            default_params = {**default_params, **(vendor_t_plot_thickness_params(result) or {})}
         params_by_method = dict(settings.get("thickness_params_by_method", {}))
         active_params = dict(settings.get("thickness_params") or params_by_method.get(method, {}))
         for key, default_value in default_params.items():
-            if not _float_equal(active_params.get(key), default_value):
+            active_value = active_params.get(key)
+            if key == "reference_points":
+                same = _reference_points_equal(active_value, default_value)
+            elif isinstance(default_value, str):
+                same = active_value == default_value
+            else:
+                same = _float_equal(active_value, default_value)
+            if not same:
                 return True
 
         if str(settings["surface_area_mode"]) != DEFAULT_T_PLOT_SURFACE_AREA_MODE:
@@ -9368,10 +9570,13 @@ class MainWindow(QtWidgets.QMainWindow):
     def _t_plot_analysis_for_result(self, result):
         settings = self._t_plot_settings_for_result(result)
         fit_range = self._t_plot_fit_range_for_result(result)
+        window = vendor_t_plot_pressure_window(result) if uses_vendor_t_plot_settings(result) else None
         return self._cached_t_plot_thickness_analysis(
             result,
             fit_range[0],
             fit_range[1],
+            window[0] if window else None,
+            window[1] if window else None,
             thickness_params=dict(settings["thickness_params"]),
             thickness_method=str(settings["thickness_method"]),
         )
@@ -9507,6 +9712,301 @@ class MainWindow(QtWidgets.QMainWindow):
             regularization=float(settings["regularization"]),
         )
         return self._hk_pore_volume_from_rows(list(getattr(distribution, "rows", [])), (w_min, w_max))
+
+    def _pdf_report_for(self, selected):
+        """Tables and overlay figures using the same fits and settings as the screen."""
+        from tristar_bet.ui.pdf_report import Figure, Report, Series, Table, fit_line, report_subtitle
+        names = [_display_file_name(result) for result in selected]
+        colors = [self._analysis_sample_color(self.results.index(r)) if r in self.results else DEFAULT_COLORS[i % len(DEFAULT_COLORS)]
+                  for i, r in enumerate(selected)]
+
+        info_keys = ["文件名", "样品名称", "设备厂家", "设备型号", "测试时间", "测试结束时间", "测试耗时",
+                     "样品质量", "吸附质名称", "浴温", "饱和参考压力P₀", "数据点数"]
+        info_columns = []
+        for name, result in zip(names, selected):
+            rows = dict(summary_rows(result))
+            info_columns.append((name, [rows.get(key, "—") or "—" for key in info_keys]))
+
+        fits = []
+        for result in selected:
+            target, source = single_point_target(result, self.single_point_default_pressure)
+            fits.append((self._bet_analysis_for_result(result), single_point_bet_analysis(result, target), source,
+                         self._langmuir_analysis_for_result(result), self._t_plot_analysis_for_result(result)))
+
+        def rng(fit):
+            return f"{_fmt(fit.pressure_min, 4)} – {_fmt(fit.pressure_max, 4)}" if fit.pressure_min is not None else "—"
+
+        def val(value, digits=6):
+            text = _fmt(value, digits)
+            return text if text else "—"
+        # Selected-range pore volume table: same four methods/ranges as the on-screen table.
+        pore_keys, pore_columns = [], [[] for _ in selected]
+        for method, bounds in (("BJH", self.bjh_pore_volume_range), ("DH", self.dh_pore_volume_range),
+                               ("HK", self.hk_pore_volume_range), ("DFT", self.dft_pore_volume_range)):
+            lo, hi = sorted(float(v) for v in bounds)
+            pore_keys.append(f"{method} {'孔径' if method in ('BJH', 'DH') else '孔宽'} {_fmt_nm(lo)}–{_fmt_nm(hi)} nm (cm3/g)")
+        calculators = (self._bjh_pore_volume_for_result, self._dh_pore_volume_for_result,
+                       self._hk_pore_volume_for_result, self._dft_pore_volume_for_result)
+        for index, result in enumerate(selected):
+            for calculate, (method, bounds) in zip(calculators, ((m, b) for m, b in (
+                    ("BJH", self.bjh_pore_volume_range), ("DH", self.dh_pore_volume_range),
+                    ("HK", self.hk_pore_volume_range), ("DFT", self.dft_pore_volume_range)))):
+                try:  # one failing method must not abort the report
+                    value = calculate(result, bounds)
+                except Exception:
+                    value = None
+                pore_columns[index].append(val(value))
+        result_keys = ["BET 状态", "BET 比表面积 (m2/g)", "BET C", "BET Vm (cm3/g STP)", "BET R²", "BET 选点 P/P0", "BET 点数",
+                       "单点 BET P/P0", "单点 BET 比表面积 (m2/g)", "单点压力来源",
+                       "Langmuir 状态", "Langmuir 比表面积 (m2/g)", "Langmuir Vm (cm3/g STP)", "Langmuir R²", "Langmuir 选点 P/P0",
+                       "t-Plot 状态", "t-Plot 外比表面积 (m2/g)", "t-Plot 微孔体积 (cm3/g)", "t-Plot R²", "t-Plot 选点 P/P0"]
+        result_columns = []
+        for name, result, (bet, single, source, langmuir, t_plot) in zip(names, selected, fits):
+            ok_single = single.status == "ok"
+            result_columns.append((name, [
+                status_text(bet.status), val(bet.surface_area_m2_g), val(bet.c_constant), val(bet.monolayer_capacity_cm3_g_stp),
+                val(bet.r_squared), rng(bet), str(bet.point_count or "—"),
+                val(single.pressure_min) if ok_single else "—", val(single.surface_area_m2_g) if ok_single else "—",
+                source if ok_single else status_text(single.status),
+                status_text(langmuir.status), val(langmuir.surface_area_m2_g), val(langmuir.monolayer_capacity_cm3_g_stp),
+                val(langmuir.r_squared), rng(langmuir),
+                status_text(t_plot.status), val(t_plot.external_surface_area_m2_g), val(t_plot.micropore_volume_cm3_g),
+                val(t_plot.r_squared), rng(t_plot),
+            ]))
+        notices = sorted({str(r.method_options.get("import_notice")) for r in selected if r.method_options.get("import_notice")})
+
+        def iso_series():
+            out = []
+            for name, color, result in zip(names, colors, selected):
+                for phase, style, suffix in (("adsorption", "line", ""), ("desorption", "dash", "（脱附）")):
+                    points = [p for p in result.isotherm if p.phase == phase and p.quantity_adsorbed_cm3_g_stp is not None]
+                    if points:
+                        out.append(Series(name + suffix, color, [p.relative_pressure for p in points],
+                                          [p.quantity_adsorbed_cm3_g_stp for p in points], style))
+            return out
+
+        def linear_series(index, x_key, y_key):
+            out = []
+            for name, color, fit_tuple in zip(names, colors, fits):
+                fit = fit_tuple[index]
+                rows = [row for row in (fit.rows or []) if row.get(x_key) is not None and row.get(y_key) is not None]
+                if not rows:
+                    continue
+                xs, ys = [row[x_key] for row in rows], [row[y_key] for row in rows]
+                out.append(Series(name, color, xs, ys, "points"))
+                line_x, line_y = fit_line(fit.slope, fit.intercept, xs)  # same coordinates as the on-screen plots
+                if line_x:
+                    out.append(Series("", color, line_x, line_y, "fit"))
+            return out
+
+        def pore_series(method, x_key, branch_filter=None):
+            out = []
+            for name, color, result in zip(names, colors, selected):
+                for section in self._pore_distribution_exports(result):
+                    if section["method"] != method or (branch_filter and section["branch"] not in branch_filter):
+                        continue
+                    rows = [row for row in section["rows"] if isinstance(row, dict)]
+                    if not rows:
+                        continue
+                    label = name if method in ("HK", "DFT") else f"{name}（{section['branch']}）"
+                    style = "dash" if section["branch"] == "脱附支" else "line"
+                    out.append(Series(label, color, [row.get(x_key) for row in rows],
+                                      [row.get("differential_pore_volume_cm3_g") for row in rows], style))
+            return out
+
+        def params(title, rows):
+            labels = [label for label, _getter in rows]
+            columns = []
+            for name, result, fit_tuple in zip(names, selected, fits):
+                values = []
+                for _label, getter in rows:
+                    try:
+                        value = getter(result, fit_tuple)
+                    except Exception:
+                        value = None
+                    values.append(value if isinstance(value, str) and value else val(value) if not isinstance(value, str) else "—")
+                columns.append((name, values))
+            return Table(title, labels, columns)
+
+        def thickness(settings):
+            method = str(settings.get("thickness_method"))
+            label = _t_plot_thickness_label(method)
+            if method == "reference":
+                reference = dict(settings.get("thickness_params") or {}).get("reference_name")
+                label = f"{label}：{reference}" if reference else label
+            return label
+
+        def branches(settings):
+            on = [name for key, name in (("show_adsorption", "吸附"), ("show_desorption", "脱附")) if settings.get(key)]
+            return "、".join(on) or "未开启"
+
+        def yes(flag):
+            return "是" if flag else "否"
+
+        def cross_section(result):
+            props = result.adsorptive_properties
+            return getattr(props, "molecular_cross_sectional_area_nm2", None) if props is not None else None
+
+        lo_hi = lambda bounds: "{}–{} nm".format(*(_fmt_nm(v) for v in sorted(float(b) for b in bounds)))
+        hk_geometry = {"slit": "狭缝（原始 H-K）", "cylinder": "圆柱（Saito-Foley）"}
+        dft_geometry = {"slit": "狭缝", "cylinder": "圆柱", "sphere": "球形", "mixed": "混合", "all": "全部"}
+        try:
+            from tristar_bet.dft_models import dft_model_label
+        except Exception:  # pragma: no cover
+            dft_model_label = str
+        iso_params = params("等温线参数", [
+            ("吸附质", lambda r, f: r.run_conditions.adsorptive_name or r.run_conditions.adsorptive_short or "—"),
+            ("浴温 (K)", lambda r, f: r.run_conditions.bath_temperature_K),
+            ("吸附点数", lambda r, f: str(sum(p.phase == "adsorption" for p in r.isotherm))),
+            ("脱附点数", lambda r, f: str(sum(p.phase == "desorption" for p in r.isotherm))),
+        ])
+        bet_params = params("BET 参数", [
+            ("选点 P/P0", lambda r, f: rng(f[0])), ("点数", lambda r, f: str(f[0].point_count or "—")),
+            ("斜率", lambda r, f: f[0].slope), ("截距", lambda r, f: f[0].intercept), ("C", lambda r, f: f[0].c_constant),
+            ("Vm (cm3/g STP)", lambda r, f: f[0].monolayer_capacity_cm3_g_stp), ("R²", lambda r, f: f[0].r_squared),
+            ("分子截面积 (nm2)", lambda r, f: cross_section(r)),
+        ])
+        langmuir_params = params("Langmuir 参数", [
+            ("选点 P/P0", lambda r, f: rng(f[3])), ("点数", lambda r, f: str(f[3].point_count or "—")),
+            ("斜率", lambda r, f: f[3].slope), ("截距", lambda r, f: f[3].intercept),
+            ("Vm (cm3/g STP)", lambda r, f: f[3].monolayer_capacity_cm3_g_stp), ("b", lambda r, f: f[3].langmuir_b),
+            ("R²", lambda r, f: f[3].r_squared),
+        ])
+        t_plot_params = params("t-Plot 参数", [
+            ("厚度方程", lambda r, f: thickness(self._t_plot_settings_for_result(r))),
+            ("选点 P/P0", lambda r, f: rng(f[4])), ("点数", lambda r, f: str(f[4].point_count or "—")),
+            ("斜率", lambda r, f: f[4].slope), ("截距", lambda r, f: f[4].intercept), ("R²", lambda r, f: f[4].r_squared),
+        ])
+        bjh_params = params("BJH 参数", [
+            ("分支", lambda r, f: branches(self._bjh_settings_for_result(r))),
+            ("厚度方程", lambda r, f: thickness(self._bjh_settings_for_result(r))),
+            ("校正方法", lambda r, f: str(self._bjh_settings_for_result(r)["correction"])),
+            ("两端开口孔比例", lambda r, f: self._bjh_settings_for_result(r)["open_pore_fraction"]),
+            ("导数平滑", lambda r, f: yes(self._bjh_settings_for_result(r)["smooth_derivative"])),
+            ("孔容选区", lambda r, f: lo_hi(self.bjh_pore_volume_range)),
+        ])
+        dh_params = params("DH 参数", [
+            ("分支", lambda r, f: branches(self._dh_settings_for_result(r))),
+            ("厚度方程", lambda r, f: thickness(self._dh_settings_for_result(r))),
+            ("导数平滑", lambda r, f: yes(self._dh_settings_for_result(r)["smooth_derivative"])),
+            ("孔容选区", lambda r, f: lo_hi(self.dh_pore_volume_range)),
+        ])
+        hk_params = params("HK 参数", [
+            ("孔几何", lambda r, f: hk_geometry.get(str(self._hk_settings_for_result(r)["geometry"]), str(self._hk_settings_for_result(r)["geometry"]))),
+            ("吸附剂", lambda r, f: str(self._hk_settings_for_result(r)["adsorbent_key"])),
+            ("吸附质", lambda r, f: str(self._hk_settings_for_result(r)["adsorptive_key"])),
+            ("相互作用参数 (erg·cm4)", lambda r, f: f"{float(self._hk_settings_for_result(r)['interaction_parameter']):.3e}"),
+            ("Cheng-Yang 校正", lambda r, f: yes(self._hk_settings_for_result(r)["cheng_yang_correction"])),
+            ("孔容选区", lambda r, f: lo_hi(self.hk_pore_volume_range)),
+        ])
+        dft_params = params("DFT 参数", [
+            ("模型", lambda r, f: dft_model_label(str(self._dft_settings_for_result(r)["model"]))),
+            ("孔几何", lambda r, f: dft_geometry.get(str(self._dft_settings_for_result(r)["geometry"]), str(self._dft_settings_for_result(r)["geometry"]))),
+            ("正则化", lambda r, f: "{}{}".format(_fmt(self._dft_settings_for_result(r)["regularization"], 4),
+                                                   "（自动）" if self._dft_settings_for_result(r).get("automatic_regularization") else "")),
+            ("孔容选区", lambda r, f: lo_hi(self.dft_pore_volume_range)),
+        ])
+
+        figures = [
+            Figure("吸附-脱附等温线", "相对压力 P/P0", "吸附量 (cm3/g STP)", iso_series(), params=iso_params),
+            Figure("BET 图", "相对压力 P/P0", "1/[V(P0/P−1)]", linear_series(0, "relative_pressure", "bet_y"), params=bet_params),
+            Figure("Langmuir 图", "相对压力 P/P0", "Langmuir 变换", linear_series(3, "relative_pressure", "langmuir_y"),
+                   params=langmuir_params),
+            Figure("t-Plot", "膜厚 t (nm)", "吸附量", linear_series(4, "thickness_nm", "t_plot_y_value"), params=t_plot_params),
+            Figure("BJH 孔径分布", "孔径 D (nm)", "dV/dlogD (cm3/g)", pore_series("BJH", "pore_diameter_nm"), log_x=True,
+                   note="实线：吸附支；虚线：脱附支", params=bjh_params),
+            Figure("DH 孔径分布", "孔径 D (nm)", "dV/dlogD (cm3/g)", pore_series("DH", "pore_diameter_nm"), log_x=True,
+                   note="实线：吸附支；虚线：脱附支", params=dh_params),
+            Figure("HK 孔径分布", "孔宽 W (nm)", "dV/dlogW (cm3/g)", pore_series("HK", "pore_width_nm"), log_x=True,
+                   params=hk_params),
+            Figure("DFT 孔径分布", "孔宽 W (nm)", "dV/dlogW (cm3/g)", pore_series("DFT", "pore_width_nm", ("孔径分布",)), log_x=True,
+                   params=dft_params),
+        ]
+        return Report(
+            "BET 分析报告", report_subtitle(len(selected), __version__),
+            [Table("样品信息", info_keys, info_columns),
+             Table("结果参数", result_keys, result_columns,
+                   note="与软件界面当前设置一致（含手动选区与各方法参数）。"),
+             Table("选区孔容量", pore_keys, [(name, column) for name, column in zip(names, pore_columns)],
+                   note="各方法按各自绿色选区计算；BJH/DH 吸附、脱附均开启时取吸附支。")],
+            figures,
+            footnote=("数据来源与验证状态：" + "；".join(notices)) if notices else "",
+        )
+
+    def _pore_distribution_exports(self, result) -> list[dict[str, object]]:
+        """Distributions exactly as the plots show them, using this sample's own settings.
+
+        BJH/DH export every branch that is switched on. A failing method is
+        reported in its block instead of aborting the whole workbook.
+        """
+        sections: list[dict[str, object]] = []
+
+        def add(method, branch, settings_text, compute):
+            try:
+                rows = list(compute())
+                error = None
+            except Exception as exc:  # export the rest; say what failed
+                rows, error = [], f"{type(exc).__name__}: {exc}"
+            sections.append({"method": method, "branch": branch, "settings": settings_text,
+                             "rows": rows, "error": error})
+
+        for method, settings_for, cached in (
+            ("BJH", self._bjh_settings_for_result, self._cached_bjh_distribution_rows),
+            ("DH", self._dh_settings_for_result, self._cached_dh_distribution_rows),
+        ):
+            try:
+                settings = settings_for(result)
+            except Exception as exc:
+                sections.append({"method": method, "branch": "", "settings": "", "rows": [],
+                                 "error": f"{type(exc).__name__}: {exc}"})
+                continue
+            text = (f"厚度方程={settings['thickness_method']}; 平滑={'是' if settings['smooth_derivative'] else '否'}"
+                    + (f"; 校正={settings['correction']}; 开孔比例={settings['open_pore_fraction']}" if method == "BJH" else ""))
+            for phase, label in (("adsorption", "吸附支"), ("desorption", "脱附支")):
+                if not settings[f"show_{phase}"]:
+                    continue
+                kwargs = dict(phase=phase, thickness_method=str(settings["thickness_method"]),
+                              thickness_params=dict(settings["thickness_params"]),
+                              smooth=bool(settings["smooth_derivative"]))
+                if method == "BJH":
+                    kwargs.update(correction=str(settings["correction"]),
+                                  open_pore_fraction=float(settings["open_pore_fraction"]))
+                add(method, label, text, lambda kwargs=kwargs, cached=cached: cached(result, **kwargs))
+
+        try:
+            hk = self._hk_settings_for_result(result)
+            hk_text = (f"几何={hk['geometry']}; 吸附剂={hk['adsorbent_key']}; 吸附质={hk['adsorptive_key']}; "
+                       f"Cheng-Yang校正={'是' if hk['cheng_yang_correction'] else '否'}; 平滑={'是' if hk['smooth_derivative'] else '否'}")
+            add("HK", "吸附支", hk_text, lambda: prepare_hk_distribution_rows(
+                self._cached_hk_distribution_rows(
+                    result, geometry=str(hk["geometry"]), adsorbent_key=str(hk["adsorbent_key"]),
+                    adsorptive_key=str(hk["adsorptive_key"]), adsorbent_properties=dict(hk["adsorbent_properties"]),
+                    adsorptive_properties=dict(hk["adsorptive_properties"]),
+                    interaction_parameter_erg_cm4=float(hk["interaction_parameter"]),
+                    interaction_parameter_mode=str(hk["interaction_parameter_mode"]),
+                    cheng_yang_correction=bool(hk["cheng_yang_correction"]), smooth=False),
+                pressure_range=self._hk_pressure_range(), smooth=bool(hk["smooth_derivative"])))
+        except Exception as exc:
+            sections.append({"method": "HK", "branch": "吸附支", "settings": "", "rows": [],
+                             "error": f"{type(exc).__name__}: {exc}"})
+
+        try:
+            dft = self._dft_settings_for_result(result)
+            dft_text = f"模型={dft['model']}; 几何={dft['geometry']}; 正则化={dft['regularization']}"
+            distribution = {}
+
+            def dft_result():
+                if "value" not in distribution:
+                    distribution["value"] = self._cached_dft_result(
+                        result, analysis_type=str(dft["analysis_type"]), geometry=str(dft["geometry"]),
+                        model=str(dft["model"]), regularization=float(dft["regularization"]))
+                return distribution["value"]
+            add("DFT", "孔径分布", dft_text, lambda: getattr(dft_result(), "rows", []))
+            add("DFT", "拟合等温线", dft_text, lambda: getattr(dft_result(), "fit_rows", []))
+        except Exception as exc:
+            sections.append({"method": "DFT", "branch": "孔径分布", "settings": "", "rows": [],
+                             "error": f"{type(exc).__name__}: {exc}"})
+        return sections
 
     @staticmethod
     def _bjh_pore_volume_from_rows(
@@ -9806,6 +10306,7 @@ def active_metric_rows(
         t_plot_total_surface_area,
         t_plot.external_surface_area_m2_g,
         t_plot_surface_area_correction,
+        negative_as_missing=reports_signed_t_plot_results(result),
     )
     single_point_rows: list[tuple[str, str]] = []
     if result.method_options.get("jwgb_single_point_bet_pressure") is not None:
@@ -9887,6 +10388,12 @@ def summary_rows(result) -> list[tuple[str, str]]:
     return rows
 
 
+def _with_unit(value, unit: str) -> str:
+    """'—' instead of a bare unit when a condition could not be read."""
+    text = _fmt(value)
+    return f"{text} {unit}" if text else "—"
+
+
 def condition_rows(result) -> list[tuple[str, str]]:
     sample = result.sample
     run = result.run_conditions
@@ -9902,21 +10409,21 @@ def condition_rows(result) -> list[tuple[str, str]]:
         ("样品保存时间", result.sample_saved_time),
         ("样品名称", result.sample_name),
         ("操作员", sample.operator),
-        ("样品质量", f"{_fmt(sample.sample_mass_g)} g"),
-        ("样品密度", f"{_fmt(sample.sample_density_g_cm3)} g/cm3"),
+        ("样品质量", _with_unit(sample.sample_mass_g, "g")),
+        ("样品密度", _with_unit(sample.sample_density_g_cm3, "g/cm3")),
         ("吸附质助记符", run.adsorptive_short),
         ("吸附质名称", run.adsorptive_name),
-        ("浴温", f"{_fmt(run.bath_temperature_K)} K"),
-        ("Po 参考压力", f"{_fmt(run.po_reference_mmHg)} mmHg"),
-        ("平衡间隔", f"{_fmt(run.equilibration_interval_s)} s"),
-        ("自由空间平衡时间", f"{_fmt(run.free_space_equilibration_time_h)} h"),
-        ("输入常温自由空间", f"{_fmt(run.ambient_free_space_entered_cm3)} cm3"),
-        ("输入分析自由空间", f"{_fmt(run.analysis_free_space_entered_cm3)} cm3"),
-        ("实际温自由空间", f"{_fmt(free.warm_free_space_cm3)} cm3"),
-        ("冷自由空间", f"{_fmt(free.cold_free_space_cm3)} cm3"),
-        ("Stem volume", f"{_fmt(free.stem_volume_cm3)} cm3"),
-        ("Vbath", f"{_fmt(free.vbath_cm3)} cm3"),
-        ("Vfree factor", f"{_fmt(free.vfree_factor_cm3)} cm3"),
+        ("浴温", _with_unit(run.bath_temperature_K, "K")),
+        ("Po 参考压力", _with_unit(run.po_reference_mmHg, "mmHg")),
+        ("平衡间隔", _with_unit(run.equilibration_interval_s, "s")),
+        ("自由空间抽真空时间", _with_unit(run.free_space_equilibration_time_h, "h")),
+        ("输入常温自由空间", _with_unit(run.ambient_free_space_entered_cm3, "cm3")),
+        ("输入分析自由空间", _with_unit(run.analysis_free_space_entered_cm3, "cm3")),
+        ("实际温自由空间", _with_unit(free.warm_free_space_cm3, "cm3")),
+        ("冷自由空间", _with_unit(free.cold_free_space_cm3, "cm3")),
+        ("Stem volume", _with_unit(free.stem_volume_cm3, "cm3")),
+        ("Vbath", _with_unit(free.vbath_cm3, "cm3")),
+        ("Vfree factor", _with_unit(free.vfree_factor_cm3, "cm3")),
         ("非理想因子", _fmt(free.nonideality_factor, 9)),
     ]
     if result.method_options.get("tristar_plus_quantity_validation") == "empirical_reconstruction_summary_checked_on_reference_samples":
@@ -9925,8 +10432,8 @@ def condition_rows(result) -> list[tuple[str, str]]:
         rows.extend(
             [
                 ("吸附质属性", props.adsorptive),
-                ("最大歧管压力", f"{_fmt(props.max_manifold_pressure_kPa)} kPa"),
-                ("分子截面积", f"{_fmt(props.molecular_cross_sectional_area_nm2)} nm2"),
+                ("最大歧管压力", _with_unit(props.max_manifold_pressure_kPa, "kPa")),
+                ("分子截面积", _with_unit(props.molecular_cross_sectional_area_nm2, "nm2")),
                 ("密度转换因子", _fmt(props.density_conversion_factor, 9)),
                 ("Psat 表行数", str(len(props.psat_table))),
             ]
@@ -9943,6 +10450,8 @@ def status_text(status: str) -> str:
         "warning_reconstructed_negative_c": "重建值未核验，且 BET C<=0",
         "warning_reconstructed_monolayer_outside_range": "重建值，尚未与本文件原厂结果核验；单层容量超出选区，需核对重建和选点",
         "nonpositive_reconstructed_uptake": "选区包含非正重建吸附量，无法拟合",
+        "native_auto_q_unsupported": "此 JWGBT 自动 Q 校准信息不足或不适用，无法计算 BET；请导入原厂导出的 Excel 或 RAW",
+        "native_uptake_unavailable": "此 JWGBT 尚未解析出吸附量，无法计算 BET；请导入原厂导出的 Excel 或 RAW",
         "not_enough_points": "区间有效点不足",
         "not_enough_valid_points": "区间有效数值不足",
         "invalid_monolayer_capacity": "单层容量无效",
@@ -9951,6 +10460,25 @@ def status_text(status: str) -> str:
 
 def _display_file_name(result) -> str:
     return Path(result.file_name).stem
+
+
+def single_point_target(result, default_pressure: float | None = DEFAULT_SINGLE_POINT_PRESSURE) -> tuple[float | None, str]:
+    """(P/P0, source): the instrument file's single-point setting when present, else the software default."""
+    for key in ("jwgb_single_point_bet_pressure", "single_point_bet_pressure"):
+        value = result.method_options.get(key)
+        try:
+            if value is not None and 0.0 < float(value) < 1.0:
+                return float(value), "文件设置"
+        except (TypeError, ValueError):
+            pass
+    return default_pressure, "软件设置"
+
+
+def _natural_sort_key(text: str) -> tuple:
+    """Natural order: digit runs compare by value ("2" < "10"), text case-insensitively."""
+    parts = re.findall(r"\d+|\D+", str(text))
+    key = tuple((0, int(part), "") if part.isdigit() else (1, 0, part.casefold()) for part in parts)
+    return key + ((2, 0, str(text)),)  # stable tie-break for names differing only by case/zeros
 
 
 def _instrument_manufacturer(result) -> str:
@@ -9985,13 +10513,32 @@ def _thickness_range_text(thickness_range: tuple[float, float] | None) -> str:
     return f"{_fmt(thickness_range[0], 6)} - {_fmt(thickness_range[1], 6)} nm"
 
 
-def _micropore_area_m2_g(total_surface_area, external_surface_area, correction_factor: float = 1.0):
+def _micropore_area_m2_g(total_surface_area, external_surface_area, correction_factor: float = 1.0,
+                         *, negative_as_missing: bool = False):
     if total_surface_area is None or external_surface_area is None:
         return None
     try:
-        return max(0.0, float(total_surface_area) - float(external_surface_area) * float(correction_factor))
+        area = float(total_surface_area) - float(external_surface_area) * float(correction_factor)
     except (TypeError, ValueError):
         return None
+    if area < 0.0 and negative_as_missing:
+        return None  # Micromeritics reports leave a negative micropore area out
+    return max(0.0, area)
+
+
+NEGATIVE_MICROPORE_VOLUME_NOTE = "t-Plot 截距为负：样品可能没有可测微孔，或厚度范围选择不当（与原厂报告一致，照实显示负值）"
+MISSING_MICROPORE_AREA_NOTE = "外表面积大于总比表面积，微孔面积为负，原厂报告不给出此值"
+
+
+def _t_plot_value_note(key: str, value, result) -> str | None:
+    """Explanation for signed t-Plot values shown as the vendor prints them."""
+    if not reports_signed_t_plot_results(result):
+        return None
+    if key == "micro_volume" and isinstance(value, (int, float)) and value < 0:
+        return NEGATIVE_MICROPORE_VOLUME_NOTE
+    if key == "micro_area" and value is None:
+        return MISSING_MICROPORE_AREA_NOTE
+    return None
 
 
 def _t_plot_total_surface_area(mode: str, bet_area, langmuir_area, input_area):
@@ -10072,6 +10619,8 @@ def export_results_xlsx(
     *,
     pore_volume_header: str = "选区孔容量(cm3/g)",
     pore_volumes: list[float | None] | None = None,
+    pore_distributions: list[list[dict[str, object]]] | None = None,
+    single_point_pressure: float | None = DEFAULT_SINGLE_POINT_PRESSURE,
 ) -> None:
     from openpyxl import Workbook
     from openpyxl.styles import Font
@@ -10094,8 +10643,9 @@ def export_results_xlsx(
                 "多点BET面积(m2/g)",
                 "多点BET Vm(cm3/g)",
                 "多点BET C",
-                "JWGB单点BET压力(P/P0)",
-                "JWGB单点BET面积(m2/g)",
+                "单点BET压力(P/P0)",
+                "单点BET面积(m2/g)",
+                "单点压力来源",
                 "Langmuir状态",
                 "Langmuir面积(m2/g)",
                 "t-Plot状态",
@@ -10110,7 +10660,8 @@ def export_results_xlsx(
     for index, result in enumerate(results):
         analyses = analysis_bundle(result)
         bet = analyses["BET"]
-        single_point = single_point_bet_analysis(result)
+        target, target_source = single_point_target(result, single_point_pressure)
+        single_point = single_point_bet_analysis(result, target)
         langmuir = analyses["Langmuir"]
         t_plot = analyses["t-Plot"]
         pore_volume = pore_volumes[index] if pore_volumes is not None and index < len(pore_volumes) else None
@@ -10129,6 +10680,7 @@ def export_results_xlsx(
                 bet.c_constant,
                 single_point.pressure_min if single_point.status == "ok" else None,
                 single_point.surface_area_m2_g if single_point.status == "ok" else None,
+                target_source if single_point.status == "ok" else status_text(single_point.status),
                 status_text(langmuir.status),
                 langmuir.surface_area_m2_g,
                 status_text(t_plot.status),
@@ -10216,6 +10768,8 @@ def export_results_xlsx(
                 for row in fit.rows:
                     sheet.append([result.file_name, result.sample_name, *[row.get(header) for header in headers]])
 
+    distribution_sheets = _write_pore_distribution_sheets(workbook, results, pore_distributions) if pore_distributions else []
+
     conditions_sheet = workbook.create_sheet("样品条件")
     conditions_sheet.append(["文件", "样品", "字段", "值"])
     for result in results:
@@ -10229,8 +10783,108 @@ def export_results_xlsx(
         for column_cells in sheet.columns:
             length = max(len(str(cell.value)) if cell.value is not None else 0 for cell in column_cells)
             sheet.column_dimensions[column_cells[0].column_letter].width = min(max(length + 2, 10), 48)
+    for sheet in distribution_sheets:
+        sheet.freeze_panes = "A4"
+        for cell in sheet[3]:
+            cell.font = Font(bold=True)
+        for column_cells in sheet.columns:
+            sheet.column_dimensions[column_cells[0].column_letter].width = 16
 
     workbook.save(path)
+
+
+# Plot-oriented columns per method: (row key, Excel header). Only keys present are written.
+_PORE_EXPORT_COLUMNS = {
+    "BJH": (
+        ("pore_diameter_nm", "平均孔径 D (nm)"),
+        ("pore_diameter_range_low_nm", "孔径下限 (nm)"),
+        ("pore_diameter_range_high_nm", "孔径上限 (nm)"),
+        ("differential_pore_volume_per_nm_cm3_g_nm", "dV/dD (cm3/g·nm)"),
+        ("differential_pore_volume_cm3_g", "dV/dlogD (cm3/g)"),
+        ("incremental_pore_volume_cm3_g", "增量孔容 (cm3/g)"),
+        ("cumulative_pore_volume_cm3_g", "累积孔容 (cm3/g)"),
+        ("differential_pore_area_per_nm_m2_g_nm", "dA/dD (m2/g·nm)"),
+        ("differential_pore_area_m2_g", "dA/dlogD (m2/g)"),
+        ("incremental_pore_area_m2_g", "增量孔面积 (m2/g)"),
+        ("cumulative_pore_area_m2_g", "累积孔面积 (m2/g)"),
+        ("relative_pressure_high", "P/P0 上限"),
+        ("relative_pressure_low", "P/P0 下限"),
+    ),
+    "HK": (
+        ("pore_width_nm", "孔宽 W (nm)"),
+        ("relative_pressure", "P/P0"),
+        ("quantity_adsorbed_cm3_g_stp", "吸附量 (cm3/g STP)"),
+        ("differential_pore_volume_per_nm_cm3_g_nm", "dV/dW (cm3/g·nm)"),
+        ("differential_pore_volume_cm3_g", "dV/dlogW (cm3/g)"),
+        ("incremental_pore_volume_cm3_g", "增量孔容 (cm3/g)"),
+        ("cumulative_pore_volume_cm3_g", "累积孔容 (cm3/g)"),
+    ),
+    "DFT": (
+        ("pore_width_nm", "孔宽 W (nm)"),
+        ("differential_pore_volume_per_nm_cm3_g_nm", "dV/dW (cm3/g·nm)"),
+        ("differential_pore_volume_cm3_g", "dV/dlogW (cm3/g)"),
+        ("incremental_pore_volume_cm3_g", "增量孔容 (cm3/g)"),
+        ("cumulative_pore_volume_cm3_g", "累积孔容 (cm3/g)"),
+        ("pore_width_low_nm", "孔宽下限 (nm)"),
+        ("pore_width_high_nm", "孔宽上限 (nm)"),
+        ("relative_pressure", "P/P0"),
+        ("quantity_adsorbed_cm3_g_stp", "实测吸附量 (cm3/g STP)"),
+        ("model_quantity_adsorbed_cm3_g_stp", "模型吸附量 (cm3/g STP)"),
+    ),
+}
+_PORE_EXPORT_COLUMNS["DH"] = _PORE_EXPORT_COLUMNS["BJH"]
+
+
+def _write_pore_distribution_sheets(workbook, results, pore_distributions):
+    """One sheet per method; each sample/branch is a side-by-side column block.
+
+    Row 1: file and branch; row 2: settings or failure reason; row 3: headers;
+    data from row 4, so each block can be selected directly for an Excel chart.
+    """
+    sheets = []
+    for method in ("BJH", "DH", "HK", "DFT"):
+        sheet = None
+        column = 1
+        for result, sections in zip(results, pore_distributions):
+            for section in sections or []:
+                if section.get("method") != method:
+                    continue
+                if sheet is None:
+                    sheet = workbook.create_sheet(method)
+                    sheets.append(sheet)
+                rows = [row for row in section.get("rows") or [] if isinstance(row, dict)]
+                keys = [(key, label) for key, label in _PORE_EXPORT_COLUMNS[method]
+                        if any(_finite_number(row.get(key)) for row in rows)]
+                width = max(len(keys), 2)
+                sheet.cell(1, column, f"{result.file_name} | {result.sample_name} | {section.get('branch', '')}")
+                note = section.get("error")
+                if note:
+                    note = f"计算失败：{note}"
+                elif not rows:
+                    note = "无可导出数据（数据点不足或该方法不适用）"
+                else:
+                    note = str(section.get("settings") or "")
+                    if result.method_options.get("import_notice"):
+                        note += f"; 数据来源：{result.method_options['import_notice']}"
+                sheet.cell(2, column, note)
+                for offset, (_key, label) in enumerate(keys):
+                    sheet.cell(3, column + offset, label)
+                for row_number, row in enumerate(rows, start=4):
+                    for offset, (key, _label) in enumerate(keys):
+                        value = row.get(key)
+                        if _finite_number(value):
+                            sheet.cell(row_number, column + offset, float(value))
+                column += width + 1
+    return sheets
+
+
+def _finite_number(value) -> bool:
+    if isinstance(value, bool) or value is None:
+        return False
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return False
 
 
 def _write_rows(sheet, rows: list[list[object]], *, bold_first: bool = False) -> None:

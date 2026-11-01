@@ -145,7 +145,10 @@ def probe(path):
             if value < 0:
                 warnings.append(f"Negative candidate uptake: {phase}/{source_point.index}; retained without clipping")
             previous = pcd
-        candidate = replace(result, isotherm=points)
+        candidate = replace(result, isotherm=points, method_options={
+            **result.method_options, 'quantity_status': 'reconstructed_unvalidated',
+            'jwgb_reconstructed': True,
+        })
         fit = bet_analysis(candidate, p_min=low, p_max=high)
         candidates.append({"temperature_model": model, "rows": rows, "warnings": warnings,
                            "candidate_bet_m2_g": fit.surface_area_m2_g if fit.ok else None})

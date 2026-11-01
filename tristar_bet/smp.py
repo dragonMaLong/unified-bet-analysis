@@ -15,6 +15,7 @@ try:
 except ImportError:  # pragma: no cover - Python < 3.9 fallback
     ZoneInfo = None
 
+from .micromeritics_pores import pore_report_settings
 from .models import (
     AdsorptiveProperties,
     FreeSpaceInfo,
@@ -41,6 +42,7 @@ VFREE_COLD_COEFF = 0.996624395
 VFREE_WARM_COEFF = 0.00337683123
 VFREE_STEM_COEFF = 0.999997685
 MICROACTIVE_BET_FREE_SPACE_COLD_FRACTION = 1.0 / 24.0
+MICROACTIVE_FREE_SPACE_ENTERED = 2
 MICROACTIVE_BJH_FREE_SPACE_COLD_FRACTION = 0.3362697292133636
 MICROACTIVE_PORT_FREE_SPACE_OFFSETS_CM3 = {
     1: 0.72130228,
@@ -188,6 +190,14 @@ class TriStarSmpParser:
         if tristar_plus_v3:
             method_options.update(self._parse_tristar_plus_v3_report_options(blocks, run_conditions))
         method_options.update(self._parse_test_time_options(header, method_options, blocks.get(705, b"")))
+        method_options.update(self._parse_single_point_options(blocks.get(306, b""), method_options))
+        if not tristar_plus_v3 and not legacy_asap_2020:
+            method_options.update(micromeritics_report_settings(blocks, isotherm, method_options))
+        if not legacy_asap_2020 and method_options.get("instrument_model") in MICROMERITICS_REPORT_SETTINGS_MODELS:
+            method_options.update(pore_report_settings(
+                blocks, run_conditions, model=str(method_options.get("instrument_model", "")),
+                po_records=po_records, adsorptive=adsorptive_properties.mnemonic if adsorptive_properties else "",
+            ))
         if used_asap_point_table:
             method_options["asap_quantity_source"] = "raw_cm3_stp_free_space_corrected_and_normalized"
             if free_space.vfree_factor_cm3 is not None:
@@ -391,15 +401,25 @@ class TriStarSmpParser:
         if len(block) <= 1000:
             adsorptive_short = _first_string_at_or_after(strings, 330, max_offset=345)
             adsorptive_name = _first_string_at_or_after(strings, 600, max_offset=635)
+            # ASAP 2460 (991-byte block) uses the same structure as MicroActive; checked
+            # in MicroActive 7.00 (Free Space and Equilibration dialogs) on a file copy.
+            located = _microactive_conditions(block)
+            if located is not None:
+                fs_eq, ambient, analysis, interval = located
+            else:
+                interval = _plausible(_read_double(block, 93), 0.5, 3600.0)
+                fs_eq = _plausible(_read_double(block, 155), 0.0, 1000.0)
+                ambient = _plausible(_read_double(block, 173), 0.0, 1000.0)
+                analysis = _plausible(_read_double(block, 181), 0.0, 1000.0)
             return RunConditions(
                 evacuation_rate_mmHg_s=_read_double(block, 61),
                 unrestricted_evacuate_from_mmHg=_read_double(block, 69),
                 evacuation_time_h=_read_double(block, 77),
                 leak_test_time_s=None,
-                equilibration_interval_s=_read_double(block, 93),
-                free_space_equilibration_time_h=_read_double(block, 155),
-                ambient_free_space_entered_cm3=_read_double(block, 173),
-                analysis_free_space_entered_cm3=_read_double(block, 181),
+                equilibration_interval_s=interval,
+                free_space_equilibration_time_h=fs_eq,
+                ambient_free_space_entered_cm3=ambient,
+                analysis_free_space_entered_cm3=analysis,
                 desorption_test_time_s=_int_from_double(block, 165),
                 po_reference_mmHg=_read_double(block, 563),
                 bath_temperature_K=_read_double(block, 571),
@@ -424,15 +444,27 @@ class TriStarSmpParser:
         if po_reference is not None and not (100.0 < po_reference < 1000.0):
             po_reference = None
 
+        # These fixed offsets hold for TriStar II 3020 (checked against its reports).
+        # TriStar II Plus (MicroActive) and ASAP 2460 store other data here: when the
+        # equilibration interval is not a plausible value, the whole group is unknown.
+        equilibration = _plausible(_read_double(block, 91), 0.5, 3600.0)
+        known = equilibration is not None
+        microactive = None if known else _microactive_conditions(block)
+        if microactive is not None:
+            free_space_eq, ambient_entered, analysis_entered, equilibration = microactive
+        else:
+            free_space_eq = _plausible(_read_double(block, 112), 0.0, 1000.0) if known else None
+            ambient_entered = _plausible(_read_double(block, 120), 0.0, 1000.0) if known else None
+            analysis_entered = _plausible(_read_double(block, 128), 0.0, 1000.0) if known else None
         return RunConditions(
             evacuation_rate_mmHg_s=_read_double(block, 61),
             unrestricted_evacuate_from_mmHg=_read_double(block, 69),
             evacuation_time_h=_read_double(block, 77),
             leak_test_time_s=_read_uint32(block, 87),
-            equilibration_interval_s=_read_double(block, 91),
-            free_space_equilibration_time_h=_read_double(block, 112),
-            ambient_free_space_entered_cm3=_read_double(block, 120),
-            analysis_free_space_entered_cm3=_read_double(block, 128),
+            equilibration_interval_s=equilibration,
+            free_space_equilibration_time_h=free_space_eq,
+            ambient_free_space_entered_cm3=ambient_entered,
+            analysis_free_space_entered_cm3=analysis_entered,
             desorption_test_time_s=_read_uint32(block, 138),
             po_reference_mmHg=po_reference,
             bath_temperature_K=bath_temperature,
@@ -598,6 +630,32 @@ class TriStarSmpParser:
         ):
             options["vendor_bjh_thickness_method"] = "harkins_jura"
             options["vendor_bjh_thickness_source"] = "SMP subsets 315/316 selected thickness model"
+        return options
+
+    @staticmethod
+    def _parse_single_point_options(block: bytes, method_options: dict[str, object]) -> dict[str, object]:
+        """Micromeritics single-point BET: report target and calculation rule.
+
+        Verified against 10 same-run SMP/XLS report pairs: the reported area is
+        V(1 - P/P0) at the measured adsorption point nearest the target (no
+        interpolation). The target itself is read only for TriStar II Plus,
+        whose subset 306 ("Summary" options) stores it at offset 93 (407-byte
+        layout) or 23 (341-byte layout); 5/5 such pairs reproduce the report.
+        3Flex 3500 uses the same 341-byte layout (3/3 reports reproduced).
+        TriStar II 3020 / ASAP 2460 targets are not identified, so none is read.
+        """
+        options: dict[str, object] = {"single_point_bet_method": "nearest_measured_point"}
+        if method_options.get("instrument_model") not in ("TriStar II Plus", "3Flex 3500") or len(block) < 101:
+            return options
+        offset = None
+        if len(block) == 407 and b"S\x00u\x00m\x00m\x00a\x00r\x00y\x00" in block[:60]:
+            offset = 93
+        elif len(block) == 341:
+            offset = 23
+        value = _read_double(block, offset) if offset is not None else None
+        if value is not None and 0.0 < value < 1.0:
+            options.update(single_point_bet_pressure=float(value),
+                           single_point_bet_pressure_source=f"SMP subset 306 offset {offset}")
         return options
 
     def _parse_target_pressure_table(self, block: bytes) -> list[TargetPressureRow]:
@@ -1035,8 +1093,14 @@ class TriStarSmpParser:
         if sample_tube_rel is None:
             return None
 
-        warm = _read_double(block, sample_tube_rel - 24)
-        cold = _read_double(block, sample_tube_rel - 16)
+        # Before "Sample Tube": entered analysis/ambient free space at -48/-40,
+        # measured ones at -24/-16. The byte at +196 is the free-space mode the
+        # vendor uses (0 measured, 2 entered; checked in MicroActive 7.00 and
+        # against the E41 report). The calculations below use whichever applies.
+        mode = block[sample_tube_rel + 196] if sample_tube_rel + 196 < len(block) else 0
+        values_at = sample_tube_rel - (48 if mode == MICROACTIVE_FREE_SPACE_ENTERED else 24)
+        warm = _read_double(block, values_at)
+        cold = _read_double(block, values_at + 8)
         if warm is None or cold is None or not (0.0 < warm < 200.0 and 0.0 < cold < 200.0):
             return None
 
@@ -1077,8 +1141,12 @@ class TriStarSmpParser:
             analysis_entered_cm3=float(cold),
             ambient_entered_cm3=float(warm),
             nonideality_factor=nonideality,
-            cold_free_space_cm3=float(cold),
-            warm_free_space_cm3=float(warm),
+            # Display fields follow the MicroActive report: "Warm Free Space" is the
+            # value at tube-16 (local name cold) and "Cold Free Space" the one at
+            # tube-24 (local name warm); verified on 10 same-run report pairs. The
+            # local names stay because the calculations above were fitted with them.
+            cold_free_space_cm3=float(warm),
+            warm_free_space_cm3=float(cold),
             stem_volume_cm3=0.0,
             vbath_cm3=vbath,
             vfree_factor_cm3=vfree,
@@ -2169,6 +2237,249 @@ def _write_csv(path: Path, rows: list[dict[str, object]]) -> Path:
         else:
             handle.write("")
     return path
+
+
+# Micromeritics report options ("SUBSET311" BET, "312" Langmuir, "314" t-Plot).
+# Verified against same-run XLS reports: TriStar II 3020 (18), ASAP 2460 (14),
+# ASAP 2020 Plus (1), TriStar II Plus 3.04 (7 of 9; the other two reports were
+# exported before the saved selection changed) and 3Flex (3).
+MICROMERITICS_THICKNESS_MODELS = (
+    "halsey", "harkins_jura", "carbon_black_stsa", "broekhoff_de_boer", "reference", "kjs",
+)
+MICROMERITICS_REPORT_SETTINGS_MODELS = ("TriStar II 3020", "TriStar II Plus", "ASAP 2460", "ASAP 2020 Plus", "3Flex 3500")
+_TRISTAR_3020_POINT_TAG_OFFSET = 27
+_TAG_BET = 0x67
+_TAG_LANGMUIR = 0x68
+
+
+def _report_range_pair(block: bytes) -> tuple[float, float] | None:
+    """Selection interval saved at the end of a report-options subset.
+
+    Layout: ``02 | lo1 hi1 | flag u16 | lo2 hi2 | 00 00``. With flag 0 the
+    vendor uses the first interval; with flag 1 it uses the points inside both
+    intervals (their intersection). Other flag values are not decoded.
+    """
+    n = len(block)
+    if n < 40 or block[n - 2:] != b"\x00\x00" or block[n - 37] != 2:
+        return None
+    flag = _read_uint16(block, n - 20)
+    lo1, hi1 = struct.unpack_from("<dd", block, n - 36)
+    lo2, hi2 = struct.unpack_from("<dd", block, n - 18)
+    if flag not in (0, 1) or not all(math.isfinite(v) for v in (lo1, hi1, lo2, hi2)):
+        return None
+    lo, hi = (lo1, hi1) if flag == 0 else (max(lo1, lo2), min(hi1, hi2))
+    return (lo, hi) if 0.0 <= lo < hi else None
+
+
+def _tristar_3020_point_tags(block: bytes, record_offset: int) -> tuple[int, ...] | None:
+    """Per-point report tags after each TriStar II 3020 isotherm record.
+
+    0x67 BET, 0x68 Langmuir, 0x69 t-Plot, 0x6a/0x6b BJH adsorption/desorption,
+    0x64 single-point pore volume (matched to the report tables).
+    """
+    at = record_offset + _TRISTAR_3020_POINT_TAG_OFFSET
+    count = _read_uint16(block, at)
+    if count is None or not 1 <= count <= 16 or at + 2 + 2 * count > len(block):
+        return None
+    codes = tuple(struct.unpack_from(f"<{count}H", block, at + 2))
+    return codes if all(0x60 <= code <= 0x9F for code in codes) else None
+
+
+def _contiguous_pressure_range(selected, adsorption) -> tuple[float, float] | None:
+    """(min, max) P/P0 when the selected points form one unbroken run."""
+    if len(selected) < 2:
+        return None
+    chosen = {id(point) for point in selected}
+    flags = [id(point) in chosen for point in adsorption]
+    first, last = flags.index(True), len(flags) - 1 - flags[::-1].index(True)
+    if not all(flags[first:last + 1]):
+        return None
+    return float(adsorption[first].relative_pressure), float(adsorption[last].relative_pressure)
+
+
+def _micromeritics_t_plot_settings(block: bytes) -> dict[str, object]:
+    if len(block) < 80:
+        return {}
+    if block[18] == 5:  # ASAP 2460 / 3Flex layout: model index right after the header
+        index = _read_uint16(block, 19)
+    elif block[65:69] == b"\x69\x00\x01\x00":  # TriStar II 3020 / Plus / ASAP 2020 Plus
+        index = _read_uint16(block, 69)
+    else:
+        return {}
+    anchor = block.find(b"\x00\x00\x00\x00\x00\x00\xf0\x3f\x01\x00\x01\x00\x04")
+    if index is None or not 0 <= index < len(MICROMERITICS_THICKNESS_MODELS) or anchor < 16:
+        return {}
+    t_min, t_max = struct.unpack_from("<dd", block, anchor - 16)
+    if not (math.isfinite(t_min) and math.isfinite(t_max) and 0.0 < t_min < t_max < 200.0):
+        return {}
+    method = MICROMERITICS_THICKNESS_MODELS[index]
+    options: dict[str, object] = {
+        "vendor_t_plot_thickness_method": method,
+        "stored_t_plot_thickness_min_nm": t_min / 10.0,
+        "stored_t_plot_thickness_max_nm": t_max / 10.0,
+        "stored_t_plot_range_source": "SMP subset 314 thickness Angstrom / 10",
+    }
+    # P/P0 window of the t-Plot data table ("02 | lo hi | 01 00", 47 bytes
+    # after the anchor); points outside it are not listed or fitted.
+    window_at = anchor + 47
+    if window_at + 18 <= len(block) and block[window_at - 1] == 2 and block[window_at + 16:window_at + 18] == b"\x01\x00":
+        p_lo, p_hi = struct.unpack_from("<dd", block, window_at)
+        if math.isfinite(p_lo) and math.isfinite(p_hi) and 0.0 <= p_lo < p_hi <= 1.0:
+            options["stored_t_plot_pressure_window_min"] = p_lo
+            options["stored_t_plot_pressure_window_max"] = p_hi
+    if method == "reference":
+        for at in range(anchor, len(block) - 22):
+            count = _read_uint16(block, at)
+            if not count or not 5 <= count <= 500 or at + 2 + 18 * count > len(block):
+                continue
+            if all(block[at + 2 + 18 * k:at + 4 + 18 * k] == b"\x02\x00" for k in range(count)):
+                rows = [struct.unpack_from("<dd", block, at + 4 + 18 * k) for k in range(count)]
+                if all(0.0 < p <= 1.0 and 0.0 <= t for p, t in rows):
+                    options["vendor_t_plot_reference_points"] = [(p, t / 10.0) for p, t in rows]
+                    options["vendor_t_plot_thickness_params"] = {
+                        "reference_name": "SMP subset 314 table",
+                        "reference_path": "",
+                        "reference_points": options["vendor_t_plot_reference_points"],
+                        "interpolation": "micromeritics_akima",
+                    }
+                    break
+    return options
+
+
+def micromeritics_report_settings(blocks: dict[int, bytes], isotherm, method_options) -> dict[str, object]:
+    """Fit selections saved with a Micromeritics report (see constants above)."""
+    model = str(method_options.get("instrument_model", ""))
+    if model not in MICROMERITICS_REPORT_SETTINGS_MODELS:
+        return {}
+    adsorption = sorted(
+        (p for p in isotherm if p.phase == "adsorption" and p.relative_pressure is not None
+         and p.quantity_adsorbed_cm3_g_stp is not None and 0.0 < p.relative_pressure < 1.0
+         and p.quantity_adsorbed_cm3_g_stp > 0.0),
+        key=lambda p: p.relative_pressure,
+    )
+    options: dict[str, object] = {}
+    if model == "TriStar II 3020":
+        points_block = blocks.get(303, b"")
+        tagged = {p.index: _tristar_3020_point_tags(points_block, p.record_rel_offset) for p in adsorption}
+        if not tagged or any(codes is None for codes in tagged.values()):
+            return {}
+        bet = [p for p in adsorption if _TAG_BET in tagged[p.index]]
+        langmuir = [p for p in adsorption if _TAG_LANGMUIR in tagged[p.index]]
+        source = "SMP subset 303 per-point report tags"
+    else:
+        bet_range = _report_range_pair(blocks.get(311, b""))
+        bet = [p for p in adsorption if bet_range and bet_range[0] <= p.relative_pressure <= bet_range[1]]
+        langmuir_range = _report_range_pair(blocks.get(312, b""))  # absolute pressure, mmHg
+        langmuir = [
+            p for p in adsorption
+            if langmuir_range and p.absolute_pressure_mmHg is not None
+            and langmuir_range[0] <= p.absolute_pressure_mmHg <= langmuir_range[1]
+        ]
+        if langmuir_range:
+            options["stored_langmuir_absolute_pressure_min_mmHg"] = langmuir_range[0]
+            options["stored_langmuir_absolute_pressure_max_mmHg"] = langmuir_range[1]
+        source = "SMP subsets 311/312 saved selection intervals (intersection)"
+    bet_span = _contiguous_pressure_range(bet, adsorption)
+    if bet_span is not None:
+        options.update(
+            stored_bet_pressure_min=bet_span[0], stored_bet_pressure_max=bet_span[1],
+            stored_bet_range_source=source, vendor_bet_point_indices=[p.index for p in bet],
+        )
+    langmuir_span = _contiguous_pressure_range(langmuir, adsorption)
+    if langmuir_span is not None:
+        options.update(
+            stored_langmuir_pressure_min=langmuir_span[0], stored_langmuir_pressure_max=langmuir_span[1],
+            stored_langmuir_range_source=source,
+        )
+    t_plot = _micromeritics_t_plot_settings(blocks.get(314, b""))
+    # Verified: Harkins-Jura (3020, ASAP 2460/2020 Plus, 3Flex) and the
+    # reference table with MicroActive's interpolation (TriStar II Plus, 83/90
+    # reports; the rest were exported before the file's settings changed).
+    method = t_plot.get("vendor_t_plot_thickness_method")
+    if method == "harkins_jura" or (method == "reference" and "vendor_t_plot_thickness_params" in t_plot):
+        t_plot["use_vendor_t_plot_settings"] = True
+    options.update({key: value for key, value in t_plot.items()})
+    if not ("stored_bet_pressure_min" in options or "stored_langmuir_pressure_min" in options):
+        return options
+    options["use_stored_fit_ranges"] = True
+    options["micromeritics_report_settings"] = source
+    # The vendor fits P/Q against absolute pressure P (mmHg); with a P0 that
+    # varies per point this differs slightly from the P/P0 form.
+    options["langmuir_fit_axis"] = "absolute_pressure"
+    if model in ("TriStar II 3020", "ASAP 2460", "ASAP 2020 Plus") and bet_span is not None:
+        # Calculations manual (Summary report): "pressure closest to 0.3 of the
+        # relative pressure points designated for surface area calculations".
+        options.update(
+            single_point_bet_pressure=0.3,
+            single_point_bet_pressure_source="Micromeritics summary rule: BET point closest to P/P0 0.3",
+            single_point_bet_candidates="vendor_bet_points",
+        )
+    return options
+
+
+def _microactive_conditions(block: bytes) -> tuple[float, float, float, float | None] | None:
+    """TriStar II Plus (MicroActive) analysis conditions in subset 302.
+
+    Verified on file copies in MicroActive 3.04 (TriStar II Plus) and 7.00
+    (TriStar II Plus, ASAP 2460), Free Space and Equilibration dialogs: four
+    doubles spaced 10/8/8 bytes hold the free-space "Evacuation time" (h, with
+    "Lower dewar for evacuation"), outgas-test duration (s), entered ambient
+    and analysis free space (cm3); later the equilibration table follows as a
+    uint16 row count and rows of (uint16 interval s, float64 P/P0 upper bound),
+    the last bound being 1.0. The group sits at different offsets in the 991-,
+    4761- and 5245-byte layouts, so it is located by this structure.
+    Returns (evacuation_h, ambient_cm3, analysis_cm3, interval_s), where the
+    interval is the first table row, as the vendor report prints it (ASAP 2460
+    table 20 s / 10 s, report "Equilibration interval: 20 s"); None when the
+    group is not found uniquely.
+    """
+    def double(offset):
+        return _read_double(block, offset) if 0 <= offset <= len(block) - 8 else None
+
+    def u16(offset):
+        return struct.unpack_from("<H", block, offset)[0] if 0 <= offset <= len(block) - 2 else None
+
+    groups = []
+    for start in range(40, min(len(block) - 34, 600)):
+        values = [double(start), double(start + 10), double(start + 18), double(start + 26)]
+        if None in values:
+            continue
+        fs_eq, leak, ambient, analysis = values
+        if not (0.001 <= fs_eq <= 100.0 and 1.0 <= leak <= 100000.0 and float(leak).is_integer()
+                and _plausible(ambient, 0.0, 1000.0) is not None and _plausible(analysis, 0.0, 1000.0) is not None):
+            continue
+        table = None
+        for count_at in range(start + 34, min(start + 120, len(block) - 12)):
+            count = u16(count_at)
+            if not count or count > 30:
+                continue
+            rows = [(u16(count_at + 2 + 10 * i), double(count_at + 4 + 10 * i)) for i in range(count)]
+            if any(r[0] is None or r[1] is None for r in rows):
+                continue
+            bounds = [r[1] for r in rows]
+            if (all(1 <= r[0] <= 3600 for r in rows) and all(0.0 < b <= 1.0 for b in bounds)
+                    and all(b < c for b, c in zip(bounds, bounds[1:])) and bounds[-1] == 1.0):
+                table = rows
+                break
+        if table is not None:
+            groups.append((fs_eq, ambient, analysis, table))
+    if len(groups) != 1:
+        return None
+    fs_eq, ambient, analysis, table = groups[0]
+    return fs_eq, ambient, analysis, float(table[0][0])
+
+
+def _plausible(value: float | None, low: float, high: float) -> float | None:
+    """Display-only guard: drop reads from layouts where the offset holds other data.
+
+    Rejects values outside [low, high] and subnormal/near-zero garbage such as
+    3.47e-310, which appeared for TriStar II Plus files; exact 0 is kept.
+    """
+    if value is None or not math.isfinite(value):
+        return None
+    if value != 0.0 and abs(value) < 1e-9:
+        return None
+    return value if low <= value <= high else None
 
 
 def _read_double(data: bytes, rel: int) -> float | None:
