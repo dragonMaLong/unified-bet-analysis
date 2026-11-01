@@ -10,6 +10,12 @@ without the Micromeritics TriStar II Plus software installed.
 """
 from pathlib import Path
 
+# PyInstaller normally reports missing imports as warnings and still creates an EXE.
+# Fail early when an isolated build directory omitted a local runtime package.
+for package in ("tristar_bet", "bet_telemetry"):
+    if not (Path(SPECPATH) / package / "__init__.py").is_file():
+        raise RuntimeError(f"Missing runtime package in build source: {package}")
+
 datas = [
     ("tristar_bet/reference_data", "tristar_bet/reference_data"),
     ("tristar_bet/assets", "tristar_bet/assets"),

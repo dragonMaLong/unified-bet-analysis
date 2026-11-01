@@ -27,7 +27,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-export", action="store_true", help="Only print a CLI summary")
     parser.add_argument("--ui", action="store_true", help="Start the Chinese Qt analysis interface")
     parser.add_argument("--self-test-dft", metavar="REPORT_JSON", help=argparse.SUPPRESS)
+    parser.add_argument("--self-test-ui", metavar="REPORT_JSON", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+
+    if args.self_test_ui:
+        from tristar_bet.release_smoke import run_ui_smoke
+        return run_ui_smoke(Path(args.self_test_ui))
 
     if args.self_test_dft:
         from tristar_bet.release_smoke import run_dft_smoke

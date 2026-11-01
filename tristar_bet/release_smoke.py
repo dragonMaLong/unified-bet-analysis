@@ -4,6 +4,75 @@ from pathlib import Path
 from types import SimpleNamespace
 
 
+def run_ui_smoke(report_path: Path) -> int:
+    """Import, display and close the real main window in the frozen application.
+
+    Settings are private to this explicit diagnostic run. Only automatic network
+    start-up callbacks are disabled; the complete UI and its imports are exercised.
+    """
+    import os
+    import tempfile
+    import traceback
+    from .version import __version__
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    os.environ.setdefault("PYQTGRAPH_QT_LIB", "PyQt5")
+    report = {"version": __version__, "ok": False}
+    report_path = report_path.resolve()
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    window = None
+    app = None
+    try:
+        from PyQt5 import QtCore, QtGui, QtWidgets
+        from .ui.main_window import MainWindow
+        import bet_telemetry.schema
+
+        with tempfile.TemporaryDirectory(prefix="bet-ui-smoke-") as directory:
+            QtCore.QSettings.setDefaultFormat(QtCore.QSettings.IniFormat)
+            QtCore.QSettings.setPath(QtCore.QSettings.IniFormat, QtCore.QSettings.UserScope, directory)
+            QtCore.QSettings.setPath(QtCore.QSettings.IniFormat, QtCore.QSettings.SystemScope, directory)
+            app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+            app.setStyle("windowsvista")
+            app.setFont(QtGui.QFont("Microsoft YaHei UI", 9))
+
+            class SmokeWindow(MainWindow):
+                def _auto_check_for_updates(self):
+                    pass
+
+                def _initialize_telemetry(self):
+                    pass
+
+            window = SmokeWindow()
+            window.show()
+
+            def inspect_and_close():
+                try:
+                    if not window.isVisible() or not window.windowTitle():
+                        raise RuntimeError("Main window did not become visible")
+                    snapshot = report_path.with_suffix(".png")
+                    if not window.grab().save(str(snapshot)):
+                        raise RuntimeError("Could not capture the main window")
+                    report.update(ok=True, title=window.windowTitle(),
+                                  screenshot=str(snapshot), telemetry_schema_imported=True,
+                                  widget_count=len(window.findChildren(QtWidgets.QWidget)))
+                except Exception:
+                    report["error"] = traceback.format_exc()
+                finally:
+                    window.close()
+                    app.quit()
+
+            QtCore.QTimer.singleShot(1200, inspect_and_close)
+            app.exec_()
+            window.close()
+            window.deleteLater()
+            QtCore.QCoreApplication.sendPostedEvents(None, QtCore.QEvent.DeferredDelete)
+            window = None
+    except Exception:
+        report["error"] = traceback.format_exc()
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    return 0 if report["ok"] else 1
+
+
 def run_dft_smoke(report_path: Path) -> int:
     import numpy as np
     from .analysis import dft_pore_distribution

@@ -32,6 +32,20 @@ jobs:
           Copy-Item telemetry_config.example.json telemetry_config.json
           pyinstaller --noconfirm BET.spec
 
+      - name: Verify frozen GUI and DFT workers
+        shell: python
+        run: |
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          exe = Path("dist/BET-DragonScience.exe").resolve()
+          for kind in ("ui", "dft"):
+              report = Path(os.environ["RUNNER_TEMP"]) / f"bet-frozen-{kind}.json"
+              subprocess.run([str(exe), f"--self-test-{kind}", str(report)],
+                             cwd=exe.parent, check=True, timeout=180)
+              assert json.loads(report.read_text(encoding="utf-8"))["ok"], report
+
       - name: Write SHA256 checksum
         shell: pwsh
         run: |
