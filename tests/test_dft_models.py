@@ -5,6 +5,8 @@ import unittest
 
 import numpy as np
 
+from qt_window_support import isolated_main_window
+
 from tristar_bet.dft_models import (
     convert_dft_kernel_to_pore_volume_basis,
     dft_model_options,
@@ -163,7 +165,7 @@ class DftModelArchiveTests(unittest.TestCase):
         from tristar_bet.ui.main_window import MainWindow
 
         app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-        window = MainWindow()
+        window = isolated_main_window(self, MainWindow)
 
         def select(combo, value: str) -> None:
             index = combo.findData(value)
@@ -205,7 +207,7 @@ class DftModelArchiveTests(unittest.TestCase):
         from tristar_bet.ui.main_window import MainWindow
 
         app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-        window = MainWindow()
+        window = isolated_main_window(self, MainWindow)
         try:
             window.visible_results = [True, False]
             window._dft_distribution_rows_by_index = {

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch, MagicMock
 import numpy as np
+from qt_window_support import isolated_main_window
 from tristar_bet.halsey_dft import nonnegative_least_squares
 from tristar_bet.quantachrome_dft import prepare_gai
 from tristar_bet.dft_models import load_dft_model_kernel
@@ -116,7 +117,7 @@ class DftPerformanceTests(unittest.TestCase):
         from PyQt5 import QtWidgets
         from tristar_bet.ui.main_window import MainWindow
         app=QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-        window=MainWindow()
+        window=isolated_main_window(self, MainWindow)
         samples=[reference_job()[0] for _ in range(10)]
         options=reference_job()[1]
         settings=window._default_dft_settings()

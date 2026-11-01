@@ -13,6 +13,8 @@ from unittest.mock import patch
 
 import numpy as np
 
+from qt_window_support import isolated_main_window
+
 from tristar_bet.analysis import dft_pore_distribution
 from tristar_bet.dft_models import GAI_MODEL_SPECS, load_dft_model_kernel, _read_model_file, _parse_model_file
 from tristar_bet.quantachrome_dft import (
@@ -145,7 +147,7 @@ class QuantachromeDftTests(unittest.TestCase):
         from PyQt5 import QtWidgets
         from tristar_bet.ui.main_window import MainWindow
         app=QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-        window=MainWindow()
+        window=isolated_main_window(self, MainWindow)
         try:
             settings=window._default_dft_settings()
             settings.update(model='n2_77_silica_cylinder_nldft_ads',geometry='cylinder')
@@ -192,7 +194,7 @@ class QuantachromeDftTests(unittest.TestCase):
         from PyQt5 import QtWidgets
         from tristar_bet.ui.main_window import MainWindow, RegularizationSlider
         app=QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-        window=MainWindow()
+        window=isolated_main_window(self, MainWindow)
         try:
             checkbox=window.dft_auto_regularization_checkbox
             for spec in GAI_MODEL_SPECS:
@@ -234,7 +236,7 @@ class QuantachromeDftTests(unittest.TestCase):
         from PyQt5 import QtWidgets
         from tristar_bet.ui.main_window import MainWindow
         app=QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-        window=MainWindow()
+        window=isolated_main_window(self, MainWindow)
         try:
             samples=[self.sample(),self.sample('60115DML-1')]
             models=['n2_77_silica_cylinder_nldft_ads','n2_77_carbon_slit_qsdft_eq']

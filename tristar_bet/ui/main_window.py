@@ -179,44 +179,65 @@ def _make_update_available_icon(size: int = 28) -> QtGui.QIcon:
     return QtGui.QIcon(pixmap)
 
 
-class UpdateCheckWorker(QtCore.QObject):
-    finished = Signal(object, bool)
-    failed = Signal(str, bool)
+class BackgroundNetworkJob(QtCore.QObject):
+    """Run one blocking network call off the GUI thread and report back on the GUI thread.
 
-    def __init__(self, current_version: str, repository: str, manual: bool) -> None:
-        super().__init__()
-        self.current_version = current_version
-        self.repository = repository
-        self.manual = manual
+    The job is deliberately not owned by any window and does not use ``QThread``.  A
+    ``QThread`` parented to ``MainWindow`` is destroyed together with the window; if the
+    request is still blocked in the network at that moment Qt reports
+    "QThread: Destroyed while thread is still running" and aborts the whole process.
+    Here the request runs on a daemon ``threading.Thread`` (like ``TelemetryClient``),
+    the job object is kept alive by ``_active`` until the GUI thread has seen it end, and
+    signal connections to a window that has already been destroyed are dropped by Qt.
+    Receivers must therefore be bound methods of a ``QObject`` (not lambdas capturing
+    the window), which is why ``context`` travels with every result.
+    """
 
-    def run(self) -> None:
-        try:
-            info = check_for_update(self.current_version, repository=self.repository)
-        except Exception as exc:
-            self.failed.emit(str(exc), self.manual)
-            return
-        self.finished.emit(info, self.manual)
-
-
-class UpdateDownloadWorker(QtCore.QObject):
     progress = Signal(int, int)
-    finished = Signal(object, str)
-    failed = Signal(str)
+    finished = Signal(object, object)
+    failed = Signal(str, object)
+    _ended = Signal()
 
-    def __init__(self, info: UpdateInfo) -> None:
+    _active: set["BackgroundNetworkJob"] = set()
+
+    def __init__(self, target, name: str, context=None) -> None:
         super().__init__()
-        self.info = info
+        self._target = target
+        self.context = context
+        self._name = name
+        self._thread: threading.Thread | None = None
+        self._ended.connect(self._release)
 
-    def run(self) -> None:
+    def start(self) -> None:
+        BackgroundNetworkJob._active.add(self)
+        self._thread = threading.Thread(target=self._run, name=self._name, daemon=True)
+        self._thread.start()
+
+    def is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def _run(self) -> None:
         try:
-            path = download_update(
-                self.info,
-                progress_callback=lambda downloaded, total: self.progress.emit(downloaded, total),
-            )
+            result = self._target(self.progress.emit)
         except Exception as exc:
-            self.failed.emit(str(exc))
-            return
-        self.finished.emit(self.info, str(path))
+            self.failed.emit(str(exc), self.context)
+        else:
+            self.finished.emit(result, self.context)
+        finally:
+            self._ended.emit()
+
+    def _release(self) -> None:
+        # Runs on the GUI thread after the worker has emitted its last signal.  Joining
+        # first guarantees the worker thread has dropped its own reference, so the Qt
+        # object is always released on the thread that owns it.
+        thread = self._thread
+        if thread is not None:
+            thread.join()
+        BackgroundNetworkJob._active.discard(self)
+
+    @classmethod
+    def active_jobs(cls) -> tuple["BackgroundNetworkJob", ...]:
+        return tuple(cls._active)
 
 
 class SelectAllCheckBox(QtWidgets.QCheckBox):
@@ -2251,10 +2272,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._setting_hk_region = False
         self._setting_dft_region = False
         self._checking_for_updates = False
-        self._update_thread: QtCore.QThread | None = None
-        self._update_worker: UpdateCheckWorker | None = None
-        self._update_download_thread: QtCore.QThread | None = None
-        self._update_download_worker: UpdateDownloadWorker | None = None
+        self._update_job: BackgroundNetworkJob | None = None
+        self._update_download_job: BackgroundNetworkJob | None = None
         self._update_progress_dialog: QtWidgets.QProgressDialog | None = None
         self._available_update_info: UpdateInfo | None = None
         self._hovered_sample_row = -1
@@ -2868,21 +2887,16 @@ class MainWindow(QtWidgets.QMainWindow):
         if manual:
             self.statusBar().showMessage("正在连接更新源检查软件更新...", 3000)
 
-        thread = QtCore.QThread(self)
-        worker = UpdateCheckWorker(APP_VERSION, UPDATE_REPOSITORY, manual)
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-        worker.finished.connect(self._on_update_check_finished)
-        worker.failed.connect(self._on_update_check_failed)
-        worker.finished.connect(thread.quit)
-        worker.failed.connect(thread.quit)
-        worker.finished.connect(worker.deleteLater)
-        worker.failed.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(self._clear_update_check_worker)
-        self._update_thread = thread
-        self._update_worker = worker
-        thread.start()
+        job = BackgroundNetworkJob(
+            lambda _progress: check_for_update(APP_VERSION, repository=UPDATE_REPOSITORY),
+            "bet-update-check",
+            manual,
+        )
+        job.finished.connect(self._on_update_check_finished)
+        job.failed.connect(self._on_update_check_failed)
+        job._ended.connect(self._clear_update_check_worker)
+        self._update_job = job
+        job.start()
 
     def _on_update_check_finished(self, info: UpdateInfo, manual: bool) -> None:
         self._finish_update_check(manual)
@@ -2973,11 +2987,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self.settings.setValue("updates/last_auto_check_date", datetime.now().date().isoformat())
 
     def _clear_update_check_worker(self) -> None:
-        self._update_thread = None
-        self._update_worker = None
+        self._update_job = None
 
     def _download_and_install_update(self, info: UpdateInfo) -> None:
-        if self._update_download_thread is not None:
+        if self._update_download_job is not None:
             self.statusBar().showMessage("正在下载软件更新...", 3000)
             return
         if not info.download_url:
@@ -2990,22 +3003,17 @@ class MainWindow(QtWidgets.QMainWindow):
             update_button.setEnabled(False)
         self._set_update_available_indicator(info, enabled=False)
 
-        thread = QtCore.QThread(self)
-        worker = UpdateDownloadWorker(info)
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-        worker.progress.connect(self._on_update_download_progress)
-        worker.finished.connect(self._on_update_download_finished)
-        worker.failed.connect(self._on_update_download_failed)
-        worker.finished.connect(thread.quit)
-        worker.failed.connect(thread.quit)
-        worker.finished.connect(worker.deleteLater)
-        worker.failed.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(self._clear_update_download_worker)
-        self._update_download_thread = thread
-        self._update_download_worker = worker
-        thread.start()
+        job = BackgroundNetworkJob(
+            lambda progress: str(download_update(info, progress_callback=progress)),
+            "bet-update-download",
+            info,
+        )
+        job.progress.connect(self._on_update_download_progress)
+        job.finished.connect(self._on_update_download_job_finished)
+        job.failed.connect(self._on_update_download_job_failed)
+        job._ended.connect(self._clear_update_download_worker)
+        self._update_download_job = job
+        job.start()
 
     def _show_update_progress(self, info: UpdateInfo) -> None:
         dialog = QtWidgets.QProgressDialog(f"正在下载 v{info.latest_version}...", None, 0, 100, self)
@@ -3055,6 +3063,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.statusBar().showMessage(f"已下载 v{info.latest_version}，正在安装更新，请稍后重新打开软件。", 3000)
         QtCore.QTimer.singleShot(800, lambda: self._launch_downloaded_update(path))
 
+    def _on_update_download_job_finished(self, path: str, info: UpdateInfo) -> None:
+        self._on_update_download_finished(info, path)
+
+    def _on_update_download_job_failed(self, message: str, _info: UpdateInfo) -> None:
+        self._on_update_download_failed(message)
+
     def _on_update_download_failed(self, message: str) -> None:
         dialog = self._update_progress_dialog
         if dialog is not None:
@@ -3068,8 +3082,7 @@ class MainWindow(QtWidgets.QMainWindow):
         QtWidgets.QMessageBox.warning(self, "软件更新失败", message)
 
     def _clear_update_download_worker(self) -> None:
-        self._update_download_thread = None
-        self._update_download_worker = None
+        self._update_download_job = None
 
     def _launch_downloaded_update(self, path: str) -> None:
         try:

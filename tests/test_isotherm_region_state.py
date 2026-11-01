@@ -10,6 +10,8 @@ from PyQt5 import QtWidgets
 
 from tristar_bet.ui.main_window import MainWindow
 
+from qt_window_support import isolated_main_window
+
 
 class _StubRegion:
     def __init__(self, pressure_range):
@@ -25,7 +27,7 @@ class IsothermRegionStateTests(unittest.TestCase):
         cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
     def setUp(self):
-        self.window = MainWindow()
+        self.window = isolated_main_window(self, MainWindow)
 
     def tearDown(self):
         self.window.close()
