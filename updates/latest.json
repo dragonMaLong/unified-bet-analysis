@@ -10,14 +10,14 @@
   "github_release_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/tag/v1.3.3",
   "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.3.3/BET-DragonScience.exe",
   "asset_name": "BET-DragonScience.exe",
-  "sha256": "c75d24014788cfd99ba8e6592717831f908d0c1ed96042972be4ac7e59e74a8a",
+  "sha256": "b2437c8e3d2e4d1df1f7ab940fa6a8b2b76e6ba93636371e1f15b65de34cd198",
   "platforms": {
     "windows-x64": {
       "asset_name": "BET-DragonScience.exe",
       "download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.3.3/BET-DragonScience.exe",
       "gitee_download_url": "https://gitee.com/dragonMalong/unified-bet-analysis/releases/download/v1.3.3/BET-DragonScience.exe",
       "github_download_url": "https://github.com/dragonMaLong/unified-bet-analysis/releases/download/v1.3.3/BET-DragonScience.exe",
-      "sha256": "c75d24014788cfd99ba8e6592717831f908d0c1ed96042972be4ac7e59e74a8a"
+      "sha256": "b2437c8e3d2e4d1df1f7ab940fa6a8b2b76e6ba93636371e1f15b65de34cd198"
     },
     "macos-x64": {
       "asset_name": "BET-DragonScience-macos-x64.dmg",
@@ -35,5 +35,5 @@
     }
   },
   "published_at": "2026-11-01",
-  "release_notes": "改进精微高博文件导入与等温线计算，修复部分特殊编号文件无法导入的问题。\n\n完善麦克系列文件中 BET、Langmuir、t-Plot 及孔径分析设置的读取与计算，改进单点 BET 显示、结果排序和导出，新增 PDF 报告导出。\n\n修复更新检查或下载尚未结束时关闭窗口可能导致程序异常退出的问题。修复若干界面问题，提升稳定性。\n\n说明：部分原生格式的计算仍在验证中。精微高博同次导出对照不代表所有型号和测试配置均已验证；假设 Q 值不能替代本次实验校准。"
+  "release_notes": "改进精微高博文件导入与等温线计算，修复部分特殊编号文件无法导入的问题。\n\n完善麦克系列文件中 BET、Langmuir、t-Plot 及孔径分析设置的读取与计算，改进单点 BET 显示、结果排序和导出，新增 PDF 报告导出。\n\n修复部分更新包无法启动的问题。修复更新检查或下载尚未结束时关闭窗口可能导致程序异常退出的问题。修复若干界面问题，提升稳定性。\n\n说明：部分原生格式的计算仍在验证中。精微高博同次导出对照不代表所有型号和测试配置均已验证；假设 Q 值不能替代本次实验校准。"
 }
