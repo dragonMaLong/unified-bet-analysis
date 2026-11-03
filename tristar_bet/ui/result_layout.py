@@ -4,6 +4,24 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from .detail_tables import RESULT_STATUS_ROLE, paint_status_badge
 
 
+def configure_tab_scroll_buttons(tabs):
+    # Windows' native tab scroll buttons can be transparent, letting the
+    # partially scrolled tab label show through the arrows.
+    tabs.tabBar().setStyleSheet("""
+        QTabBar::scroller { width: 48px; }
+        QTabBar QToolButton {
+            background: palette(button);
+            border: 1px solid palette(mid);
+            border-radius: 2px;
+            margin: 0;
+            padding: 0;
+            width: 22px;
+        }
+        QTabBar QToolButton:hover { background: palette(light); }
+        QTabBar QToolButton:pressed { background: palette(midlight); }
+    """)
+
+
 def transpose_icon():
     pixmap = QtGui.QPixmap(20, 20)
     pixmap.fill(QtCore.Qt.transparent)

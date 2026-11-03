@@ -113,6 +113,19 @@ def paint_status_badge(painter, rect, status):
     painter.restore()
 
 
+def table_grid_mime_data(grid):
+    """Encode cells for Excel and plain-text clipboard consumers."""
+    stream = io.StringIO(newline="")
+    csv.writer(stream, delimiter="\t", lineterminator="\r\n").writerows(grid)
+    mime = QtCore.QMimeData()
+    mime.setText(stream.getvalue())
+    mime.setHtml("<html><body><table>" + "".join(
+        "<tr>" + "".join("<td>" + html.escape(value).replace("\n", "<br>") + "</td>" for value in row) + "</tr>"
+        for row in grid
+    ) + "</table></body></html>")
+    return mime
+
+
 class TableCopyController(QtCore.QObject):
     def __init__(self, table, views):
         super().__init__(table)
@@ -164,16 +177,7 @@ class TableCopyController(QtCore.QObject):
         for column in range(min(columns), max(columns) + 1):
             value = self.table.model().headerData(column, QtCore.Qt.Horizontal, QtCore.Qt.DisplayRole)
             headers.append("" if value is None else str(value))
-        grid = [headers] + grid
-        stream = io.StringIO(newline="")
-        csv.writer(stream, delimiter="\t", lineterminator="\r\n").writerows(grid)
-        mime = QtCore.QMimeData()
-        mime.setText(stream.getvalue())
-        mime.setHtml("<html><body><table>" + "".join(
-            "<tr>" + "".join("<td>" + html.escape(value).replace("\n", "<br>") + "</td>" for value in row) + "</tr>"
-            for row in grid
-        ) + "</table></body></html>")
-        return mime
+        return table_grid_mime_data([headers] + grid)
 
     def copy(self):
         mime = self.mime_data()

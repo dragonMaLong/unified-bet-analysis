@@ -544,6 +544,88 @@ class DetailResultTableTests(unittest.TestCase):
         self.assert_orders_match()
         self.assertEqual(self.w.metrics_table.rowCount(), 0)
 
+    def test_sample_blank_menu_copies_entire_displayed_list_with_headers(self):
+        self.w.sort_samples_by_file_name(False)
+        table = self.w.sample_table
+        self.w.resize(1000, 800)
+        self.w.show()
+        self.app.processEvents()
+        table.selectRow(1)
+        table.horizontalScrollBar().setValue(table.horizontalScrollBar().maximum())
+        table.item(0, 1).setText('样品 & <A>\t"备注"\n第二行')
+        expected = [[table.horizontalHeaderItem(c).text() for c in range(1, 7)]] + [
+            [table.item(r, c).text() for c in range(1, 7)] for r in range(3)
+        ]
+        selection = self.w._selected_sample_rows()
+        clipboard = Mock()
+
+        def choose_copy(menu, *_args):
+            self.assertEqual([a.text() for a in menu.actions()], ["清空列表", "复制列表"])
+            return menu.actions()[1]
+
+        with patch.object(QtWidgets.QApplication, "clipboard", return_value=clipboard), \
+                patch.object(QtWidgets.QMenu, "exec_", choose_copy):
+            self.w.show_sample_context_menu(QtCore.QPoint(220, table.rowViewportPosition(2) + table.rowHeight(2) + 8))
+        mime = clipboard.setMimeData.call_args.args[0]
+        self.assertEqual(list(csv.reader(io.StringIO(mime.text()), delimiter="\t")), expected)
+        self.assertIn("&amp; &lt;A&gt;", mime.html())
+        self.assertIn("<br>", mime.html())
+        self.assertEqual(self.w._selected_sample_rows(), selection)
+        self.assertEqual(table.rowCount(), 3)
+
+    def test_sample_frozen_blank_menu_clears_all_samples_and_results(self):
+        table = self.w.sample_table
+        self.w.resize(1600, 950)
+        self.w.show()
+        self.app.processEvents()
+        self.w.custom_t_plot_fit_ranges[id(self.samples[0])] = (0.3, 0.5)
+        # Clear must also run the real plot refresh, not just remove table rows.
+        self.w.refresh_isotherm_plot = MainWindow.refresh_isotherm_plot.__get__(self.w)
+        self.w.refresh_analysis_plots = MainWindow.refresh_analysis_plots.__get__(self.w)
+
+        def choose_clear(menu, *_args):
+            self.assertEqual([a.text() for a in menu.actions()], ["清空列表", "复制列表"])
+            return menu.actions()[0]
+
+        pos = QtCore.QPoint(20, table.rowViewportPosition(2) + table.rowHeight(2) + 8)
+        viewport = table._frozen_table.viewport()
+        event = QtGui.QContextMenuEvent(QtGui.QContextMenuEvent.Mouse, pos, viewport.mapToGlobal(pos))
+        with patch.object(QtWidgets.QMenu, "exec_", choose_clear):
+            QtWidgets.QApplication.sendEvent(viewport, event)
+        self.assertEqual(self.w.results, [])
+        self.assertEqual(self.w.visible_results, [])
+        self.assertEqual(self.w.active_index, -1)
+        self.assertEqual(self.w.custom_t_plot_fit_ranges, {})
+        self.assertEqual(self.w._analysis_detail_cache, {})
+        for candidate in [table, self.w.metrics_table, self.w.isotherm_table,
+                          *self.w.analysis_result_tables.values()]:
+            self.assertEqual(candidate.rowCount(), 0)
+
+    def test_sample_empty_list_menu_disables_actions_and_preserves_clipboard(self):
+        self.w.delete_sample_rows([0, 1, 2])
+
+        def dismiss(menu, *_args):
+            self.assertEqual([a.text() for a in menu.actions()], ["清空列表", "复制列表"])
+            self.assertTrue(all(not a.isEnabled() for a in menu.actions()))
+            return None
+
+        with patch.object(QtWidgets.QApplication, "clipboard") as clipboard, \
+                patch.object(QtWidgets.QMenu, "exec_", dismiss):
+            self.w.show_sample_context_menu(QtCore.QPoint(20, 20))
+            self.w.copy_sample_list()
+        clipboard.assert_not_called()
+
+    def test_sample_row_context_menu_keeps_delete_and_export_actions(self):
+        def dismiss(menu, *_args):
+            labels = [a.text() for a in menu.actions() if not a.isSeparator()]
+            self.assertEqual(labels, ["删除", "导出 Excel…", "导出 PDF…"])
+            return None
+
+        with patch.object(QtWidgets.QMenu, "exec_", dismiss):
+            self.w.show_sample_context_menu(QtCore.QPoint(1, 1))
+        self.assertEqual(self.w._selected_sample_rows(), [0])
+        self.assertEqual(len(self.w.results), 3)
+
     def _show_table(self, table):
         self.w.resize(1600, 950)
         self.w.show()

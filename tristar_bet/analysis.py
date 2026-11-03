@@ -1089,6 +1089,38 @@ def vendor_t_plot_pressure_window(result: TriStarResult) -> tuple[float, float] 
     return None
 
 
+def vendor_t_plot_default_thickness_range(result: TriStarResult) -> tuple[float, float] | None:
+    """Thickness interval *shown* for the vendor default t-Plot selection.
+
+    Display only.  The vendor fits the points inside both the saved thickness range and
+    the saved P/P0 window; that point set is computed directly (``t_plot_analysis`` and
+    ``MainWindow._cached_t_plot_thickness_analysis``), never from this interval, because
+    a P/P0 window is not always a thickness interval: reference curves can be flat, so
+    points on both sides of the window edge may share one thickness.  For ordinary files
+    the two coincide, so the first drag of the region does not change the selected points.
+    """
+    stored = _stored_t_plot_thickness_range(result)
+    if stored is None:
+        return None
+    window = vendor_t_plot_pressure_window(result)
+    if window is None:
+        return stored
+    method = _t_plot_thickness_method(result, None)
+    params = vendor_t_plot_thickness_params(result)
+    lower, upper = stored
+    window_lower = thickness_nm(window[0], method, params) if window[0] > 0.0 else None
+    window_upper = thickness_nm(window[1], method, params) if window[1] < 1.0 else None
+    if window_lower is not None:
+        lower = max(lower, window_lower)
+    if window_upper is not None:
+        upper = min(upper, window_upper)
+    if not lower < upper:
+        # The saved settings select no point (the vendor table is empty too); show the
+        # saved range.  The default result still applies the window and stays empty.
+        return stored
+    return lower, upper
+
+
 def _minimum_fit_points(result: TriStarResult) -> int:
     # The 3.02 reports explicitly fit two selected points, including t-Plot
     # fits after nonpositive adsorption measurements have been excluded.

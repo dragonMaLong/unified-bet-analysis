@@ -23,6 +23,7 @@ from tristar_bet.analysis import (
     DEFAULT_THICKNESS_METHOD,
     uses_vendor_t_plot_settings,
     reports_signed_t_plot_results,
+    vendor_t_plot_default_thickness_range,
     vendor_t_plot_pressure_window,
     vendor_t_plot_thickness_params,
     DFT_DEFAULT_ANALYSIS_TYPE,
@@ -30,6 +31,7 @@ from tristar_bet.analysis import (
     DFT_DEFAULT_MODEL,
     DFT_DEFAULT_REGULARIZATION,
     DFT_REGULARIZATION_VALUES,
+    FitResult,
     HK_ADSORBENT_PRESETS,
     HK_ADSORPTIVE_PRESETS,
     HK_DEFAULT_ADSORBENT,
@@ -114,10 +116,11 @@ from tristar_bet.ui.detail_tables import (
     RESULT_STATUS_ROLE, RESULT_WARNING_ROLE, RESULT_NOTE_ROLE, ResultFileDelegate, configure_cell_copy,
     DetailTableInteractionController,
     fit_multiline_row_heights,
+    table_grid_mime_data,
 )
 from tristar_bet.version import __version__
 from tristar_bet.ui.region_endpoints import RegionEndpointControls
-from tristar_bet.ui.result_layout import AnalysisHeader
+from tristar_bet.ui.result_layout import AnalysisHeader, configure_tab_scroll_buttons
 
 
 APP_NAME = "BET 综合分析-DragonScience"
@@ -592,10 +595,8 @@ class SampleTableWidget(QtWidgets.QTableWidget):
                 if self._accept_file_drop_event(event):
                     return True
             if event.type() == QtCore.QEvent.ContextMenu:
-                row = self._frozen_table.rowAt(event.pos().y())
-                if row >= 0:
-                    self.customContextMenuRequested.emit(QtCore.QPoint(0, event.pos().y()))
-                    return True
+                self.customContextMenuRequested.emit(QtCore.QPoint(0, event.pos().y()))
+                return True
             if event.type() == QtCore.QEvent.MouseButtonPress and event.button() == QtCore.Qt.LeftButton:
                 self._begin_row_drag(self._frozen_to_main_viewport_pos(event.pos()))
                 return False
@@ -2593,6 +2594,7 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
         self.plot_tabs = QtWidgets.QTabWidget()
+        configure_tab_scroll_buttons(self.plot_tabs)
         self.plot_tabs.addTab(self.bet_tab, "BET")
         self.plot_tabs.addTab(self.langmuir_tab, "Langmuir")
         self.plot_tabs.addTab(self.t_plot_tab, "t-Plot")
@@ -2667,6 +2669,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.pore_volume_results_table = self.linked_result_tables["pore_volume"]
 
         self.detail_tabs = QtWidgets.QTabWidget()
+        configure_tab_scroll_buttons(self.detail_tabs)
         self.detail_tabs.addTab(self.metrics_table, "结果参数")
         self.detail_tabs.addTab(self.bet_results_table, "BET")
         self.detail_tabs.addTab(self.langmuir_results_table, "Langmuir")
@@ -6214,7 +6217,24 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def show_sample_context_menu(self, position: QtCore.QPoint) -> None:
         row = self.sample_table.rowAt(position.y())
-        if row < 0 or row >= len(self.results):
+        if row < 0 or row >= len(self.results) or self.sample_table.columnAt(position.x()) < 0:
+            menu = QtWidgets.QMenu(self.sample_table)
+            menu.setStyleSheet("""
+                QMenu::item { padding: 4px 8px; margin: 0; }
+                QMenu::item:selected { background: palette(highlight); color: palette(highlighted-text); }
+                QMenu::item:disabled { color: palette(mid); }
+                QMenu::indicator { width: 0; height: 0; }
+            """)
+            clear_action = menu.addAction("清空列表")
+            copy_action = menu.addAction("复制列表")
+            clear_action.setEnabled(bool(self.results))
+            copy_action.setEnabled(bool(self.results))
+            exec_menu = getattr(menu, "exec_", None) or getattr(menu, "exec")
+            chosen = exec_menu(self.sample_table.viewport().mapToGlobal(position))
+            if chosen == clear_action:
+                self.delete_sample_rows(list(range(len(self.results))))
+            elif chosen == copy_action:
+                self.copy_sample_list()
             return
         selected_rows = self._selected_sample_rows()
         if row not in selected_rows:
@@ -6235,6 +6255,24 @@ class MainWindow(QtWidgets.QMainWindow):
         elif chosen in (excel_action, pdf_action):
             self._export_results([self.results[row] for row in selected_rows],
                                  "xlsx" if chosen == excel_action else "pdf")
+
+    def copy_sample_list(self) -> None:
+        table = self.sample_table
+        if table.rowCount() == 0:
+            return
+        header = table.horizontalHeader()
+        # Copy all data columns, including those outside the scrolled viewport.
+        # The checkbox column controls plotting and is not a result value.
+        columns = [header.logicalIndex(index) for index in range(table.columnCount())
+                   if header.logicalIndex(index) != VISIBLE_COLUMN
+                   and not table.isColumnHidden(header.logicalIndex(index))]
+        grid = [[table.horizontalHeaderItem(column).text() for column in columns]]
+        grid.extend([
+            table.item(row, column).text() if table.item(row, column) is not None else ""
+            for column in columns
+        ] for row in range(table.rowCount()))
+        QtWidgets.QApplication.clipboard().setMimeData(table_grid_mime_data(grid))
+        self.statusBar().showMessage(f"已复制 {table.rowCount()} 个样品（含表头）", 3000)
 
     def _selected_sample_rows(self) -> list[int]:
         selection_model = self.sample_table.selectionModel()
@@ -9414,6 +9452,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self._store_fit_analysis_cache(cache_key, analysis)
         return analysis
 
+    def _t_plot_default_pressure_window(self, result) -> tuple[float, float] | None:
+        """Vendor P/P0 window, applied only while the file's own t-Plot interval is in use.
+
+        Every t-Plot consumer (sample table, fit line, highlighted points) goes through
+        ``_cached_t_plot_thickness_analysis``, so they always use the same point set: the
+        vendor's points by default, and simply the points inside the interval once the user
+        has moved it.
+        """
+        if not uses_vendor_t_plot_settings(result) or id(result) in self.custom_t_plot_fit_ranges:
+            return None
+        return vendor_t_plot_pressure_window(result)
+
     def _cached_t_plot_thickness_analysis(
         self,
         result,
@@ -9424,6 +9474,14 @@ class MainWindow(QtWidgets.QMainWindow):
         thickness_params: dict[str, object] | None = None,
         thickness_method: str = DEFAULT_T_PLOT_THICKNESS_METHOD,
     ):
+        window = self._t_plot_default_pressure_window(result)
+        if window is not None:
+            p_min = window[0] if p_min is None else max(float(p_min), window[0])
+            p_max = window[1] if p_max is None else min(float(p_max), window[1])
+            if p_min > p_max:
+                # An empty intersection must not reach _points_in_range, which sorts
+                # reversed endpoints and would select points outside both windows.
+                return FitResult("t-Plot", "not_enough_points", 0, t_min, t_max)
         cache_key = self._fit_analysis_cache_key(
             "t_plot_thickness",
             result,
@@ -9524,10 +9582,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if custom_range is not None:
             return custom_range
         if uses_vendor_t_plot_settings(result):
-            lo = result.method_options.get("stored_t_plot_thickness_min_nm")
-            hi = result.method_options.get("stored_t_plot_thickness_max_nm")
-            if isinstance(lo, (int, float)) and isinstance(hi, (int, float)) and 0.0 < lo < hi < 10.0:
-                return (float(lo), float(hi))
+            vendor_range = vendor_t_plot_default_thickness_range(result)
+            if vendor_range is not None and 0.0 < vendor_range[0] < vendor_range[1] < 10.0:
+                return (float(vendor_range[0]), float(vendor_range[1]))
         return self.custom_t_plot_fit_ranges.get(
             id(result),
             self._default_t_plot_fit_range(
@@ -9583,13 +9640,12 @@ class MainWindow(QtWidgets.QMainWindow):
     def _t_plot_analysis_for_result(self, result):
         settings = self._t_plot_settings_for_result(result)
         fit_range = self._t_plot_fit_range_for_result(result)
-        window = vendor_t_plot_pressure_window(result) if uses_vendor_t_plot_settings(result) else None
+        # Same provider as the plot and its fit line, so the table never filters points the
+        # plot shows as selected (the vendor P/P0 window is applied there, for the default).
         return self._cached_t_plot_thickness_analysis(
             result,
             fit_range[0],
             fit_range[1],
-            window[0] if window else None,
-            window[1] if window else None,
             thickness_params=dict(settings["thickness_params"]),
             thickness_method=str(settings["thickness_method"]),
         )
