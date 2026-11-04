@@ -102,7 +102,8 @@ class TelemetryUiTests(unittest.TestCase):
         client = SimpleNamespace(enabled=False, available=True, endpoint="https://stats.example/api/v1/events")
         dialog = TelemetryDetailsDialog(client)
         text = "\n".join(label.text() for label in dialog.findChildren(QtWidgets.QLabel))
-        for required in ("版本覆盖", "文件兼容性", "包含", "不包含", "7 天", "90 天", "隐私设置", "清空", "无法撤回", client.endpoint):
+        for required in ("版本覆盖", "文件兼容性", "包含", "不包含", "语言环境", "仪器型号", "打开时长", "活跃时长",
+                         "长期保存", "隐私设置", "清空", "无法撤回", client.endpoint):
             self.assertIn(required, text)
         self.assertEqual(dialog.findChildren(QtWidgets.QCheckBox), [])
         self.assertEqual([button.text() for button in dialog.findChildren(QtWidgets.QPushButton)], ["关闭"])

@@ -68,7 +68,15 @@ from tristar_bet.reference_thickness import (
 )
 from tristar_bet.update_checker import DEFAULT_UPDATE_REPOSITORY, UpdateInfo, check_for_update
 from tristar_bet.updater import UpdateDownloadError, download_update, launch_update_and_exit
+from tristar_bet.ui.app_settings import (
+    EXPORT_FORMATS,
+    SINGLE_POINT_PRESSURE_RANGE,
+    AppSettings,
+    AppSettingsDialog,
+    make_gear_icon,
+)
 from tristar_bet.ui.native_import_picker import choose_import_files
+from tristar_bet.ui.usage_timer import UsageTimer
 from tristar_bet.telemetry import TelemetryClient, configured_endpoint
 from tristar_bet.ui.telemetry_settings import TelemetrySettingsDialog, TelemetryUpdateDialog, startup_environment
 from tristar_bet.ui.plots import (
@@ -131,6 +139,45 @@ AUTO_UPDATE_CHECK_DELAY_MS = 3000
 FIT_ANALYSIS_CACHE_LIMIT = 2048
 BJH_DISTRIBUTION_CACHE_LIMIT = 1024
 Signal = getattr(QtCore, "Signal", None) or getattr(QtCore, "pyqtSignal")
+
+
+def _telemetry_instrument(result, parser: str) -> str:
+    """Bounded instrument category (bet_telemetry.schema.INSTRUMENTS) for an imported file."""
+    options = getattr(result, "method_options", None) or {}
+    model = str(options.get("instrument_model", "") or "")
+    manufacturer = str(options.get("instrument_manufacturer", "") or "").lower()
+    for needle, category in (
+        ("TriStar II Plus", "tristar_ii_plus"), ("TriStar II 3020", "tristar_ii_3020"),
+        ("ASAP 2460", "asap_2460"), ("ASAP 2020 Plus", "asap_2020_plus"), ("ASAP 2020", "asap_2020"),
+        ("ASAP 2010", "asap_2010"), ("3Flex", "3flex"),
+    ):
+        if needle.lower() in model.lower():
+            return category
+    if "micromeritics" in manufacturer:
+        return "micromeritics_other"
+    if "bel" in manufacturer or parser == "bel":
+        return "belsorp"
+    if "quantachrome" in manufacturer or parser == "quantachrome":
+        return "quantachrome"
+    if "jwgb" in manufacturer or parser == "jwgb":
+        return "jwgb"
+    if "bsd" in manufacturer:
+        return "bsd"
+    if parser == "excel":
+        return "excel"
+    return "other"
+
+
+IMPORT_FAILURE_CONTACT ="导入失败请联系软件开发者：kuailelong101@163.com"
+
+
+def _with_import_contact(text: str) -> str:
+    return f"{text}\n\n{IMPORT_FAILURE_CONTACT}"
+
+
+def _no_isotherm_message(result) -> str:
+    reason = str((getattr(result, "method_options", None) or {}).get("no_isotherm_reason") or "").strip()
+    return f"没有解析到实际等温线（{reason}），已跳过" if reason else "没有解析到实际等温线，已跳过"
 
 
 def _qt_enum_int(value) -> int:
@@ -1042,6 +1089,8 @@ BET_DISPLAY_SINGLE = "single"
 BET_DISPLAY_MULTI = "multi"
 BET_DISPLAY_LABELS = {BET_DISPLAY_DEFAULT: "默认", BET_DISPLAY_SINGLE: "单点", BET_DISPLAY_MULTI: "多点"}
 DEFAULT_SINGLE_POINT_PRESSURE = 0.2
+# New key: "results/single_point_pressure" values from versions before 1.3.3 stay ignored.
+SINGLE_POINT_PRESSURE_KEY = "results/single_point_pressure_setting"
 TEST_TIME_COLUMN = 2
 BET_COLUMN = 3
 LANGMUIR_COLUMN = 4
@@ -1801,7 +1850,9 @@ class FileImportDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.warning(
                 self,
                 "部分文件未添加",
-                "以下文件不存在或格式不受支持，未加入待导入列表：\n" + "\n".join(str(path) for path in rejected),
+                _with_import_contact(
+                    "以下文件不存在或格式不受支持，未加入待导入列表：\n" + "\n".join(str(path) for path in rejected)
+                ),
             )
         if directory is None and not paths:
             return
@@ -2122,6 +2173,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._telemetry_initialized = False
         self._telemetry_closed = False
         self._telemetry_startup_sent = False
+        self._usage_timer = UsageTimer(self)
         self.results = []
         self.visible_results: list[bool] = []
         self.active_index = -1
@@ -2299,6 +2351,14 @@ class MainWindow(QtWidgets.QMainWindow):
         open_button.clicked.connect(self.open_files)
         export_button = QtWidgets.QPushButton("导出文件")
         export_button.clicked.connect(self.export_xlsx)
+        self.settings_button = QtWidgets.QToolButton()
+        self.settings_button.setIcon(make_gear_icon(28))
+        self.settings_button.setIconSize(QtCore.QSize(22, 22))
+        self.settings_button.setFixedSize(32, 32)
+        self.settings_button.setAutoRaise(True)
+        self.settings_button.setCursor(QtCore.Qt.PointingHandCursor)
+        self.settings_button.setToolTip("设置")
+        self.settings_button.clicked.connect(self.show_app_settings)
         self.update_available_button = QtWidgets.QToolButton()
         self.update_available_button.setIcon(_make_update_available_icon(28))
         self.update_available_button.setIconSize(QtCore.QSize(24, 24))
@@ -2714,6 +2774,7 @@ class MainWindow(QtWidgets.QMainWindow):
         button_row.setSpacing(6)
         button_row.addWidget(open_button)
         button_row.addWidget(export_button)
+        button_row.addWidget(self.settings_button)
         button_row.addStretch(1)
         button_row.addWidget(self.update_available_button)
         button_row.addWidget(self.update_button)
@@ -2762,7 +2823,9 @@ class MainWindow(QtWidgets.QMainWindow):
         splitter.setSizes([390, 890])
         self.setCentralWidget(splitter)
 
-        self.statusBar().showMessage("打开或拖入 SMP、RAW、JWGBT、DAT、QPS 或官方 Excel 导出文件")
+        self.statusBar().showMessage(
+            "打开或拖入 SMP、RAW、JWGBT、DAT、QPS 或官方 Excel 导出文件；导入失败请发送失败文件至kuailelong101@163.com"
+        )
         self.privacy_button = QtWidgets.QToolButton(self)
         self.privacy_button.setText("隐私设置")
         self.privacy_button.setAutoRaise(True)
@@ -2853,6 +2916,7 @@ class MainWindow(QtWidgets.QMainWindow):
             extension = "other"
         started = time.monotonic()
         error_code = "none"
+        result = None
         try:
             result = load_file(path)
             if result.point_count <= 0:
@@ -2868,10 +2932,14 @@ class MainWindow(QtWidgets.QMainWindow):
             error_code = "unexpected_error"
             raise
         finally:
+            # Instrument family from the parsed file only (never names or paths);
+            # unknown when the file could not be parsed.
+            instrument = {"instrument": _telemetry_instrument(result, parser)} if result is not None else {}
             self._record_telemetry(
                 "import_file", extension=extension, parser=parser,
                 status="success" if error_code == "none" else "failure", error_code=error_code,
                 duration_ms=min(86400000, max(0, int((time.monotonic() - started) * 1000))),
+                **instrument,
             )
 
     def _auto_check_for_updates(self) -> None:
@@ -5731,6 +5799,12 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._store_dft_result_cache(key, distribution)
 
     def closeEvent(self, event) -> None:
+        usage_timer = getattr(self, "_usage_timer", None)
+        if not getattr(self, "_telemetry_closed", False) and usage_timer is not None:
+            # Open time and active time of this run; recorded (queued on disk)
+            # before the client closes and uploaded with the next batch.
+            open_s, active_s = usage_timer.finish()
+            self._record_telemetry("session_end", duration_s=open_s, active_s=active_s)
         self._telemetry_closed = True
         if self._telemetry is not None:
             self._telemetry.close()
@@ -5835,13 +5909,13 @@ class MainWindow(QtWidgets.QMainWindow):
                 errors.append(f"{Path(path).name}: {exc}")
                 continue
             if result.point_count <= 0:
-                errors.append(f"{Path(path).name}: 没有解析到实际等温线，已跳过")
+                errors.append(f"{Path(path).name}: {_no_isotherm_message(result)}")
                 continue
             new_results.append(result)
             imported_new = True
 
         if errors:
-            QtWidgets.QMessageBox.warning(self, "部分文件未加载", "\n".join(errors))
+            QtWidgets.QMessageBox.warning(self, "部分文件未加载", _with_import_contact("\n".join(errors)))
         if not new_results:
             return
 
@@ -5892,12 +5966,12 @@ class MainWindow(QtWidgets.QMainWindow):
                 errors.append(f"{Path(path).name}: {exc}")
                 continue
             if result.point_count <= 0:
-                errors.append(f"{Path(path).name}: 没有解析到实际等温线，已跳过")
+                errors.append(f"{Path(path).name}: {_no_isotherm_message(result)}")
                 continue
             parsed.append(result)
 
         if errors:
-            QtWidgets.QMessageBox.warning(self, "部分文件未加载", "\n".join(errors))
+            QtWidgets.QMessageBox.warning(self, "部分文件未加载", _with_import_contact("\n".join(errors)))
         if not parsed:
             return
 
@@ -5940,6 +6014,42 @@ class MainWindow(QtWidgets.QMainWindow):
         self.refresh_all()
         self._record_feature_view(self.plot_tabs.currentIndex(), "plot")
 
+    def _default_export_format(self) -> str:
+        value = str(self.settings.value("export/default_format", "xlsx") or "xlsx")
+        return value if value in EXPORT_FORMATS else "xlsx"
+
+    def show_app_settings(self) -> None:
+        current = AppSettings(
+            export_format=self._default_export_format(),
+            export_directory=self.export_directory,
+            bet_display_mode=self.bet_display_mode,
+            samples_as_columns=bool(self._analysis_tables_transposed),
+            single_point_pressure=float(self.single_point_default_pressure),
+        )
+        dialog = AppSettingsDialog(self, current, BET_DISPLAY_LABELS, APP_VERSION, self.import_directory)
+        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+            return
+        self._apply_app_settings(dialog.values())
+
+    def _apply_app_settings(self, values: AppSettings) -> None:
+        if values.export_format in EXPORT_FORMATS:
+            self.settings.setValue("export/default_format", values.export_format)
+        if values.export_directory.is_dir():
+            self.export_directory = values.export_directory
+            self._write_directory_setting("export_directory", values.export_directory)
+        self.set_bet_display_mode(values.bet_display_mode)
+        if values.samples_as_columns != bool(self._analysis_tables_transposed):
+            self._toggle_analysis_table_orientation()
+        low, high = SINGLE_POINT_PRESSURE_RANGE
+        pressure = values.single_point_pressure
+        if low <= pressure <= high and not math.isclose(pressure, self.single_point_default_pressure, abs_tol=1e-9):
+            self.single_point_default_pressure = pressure
+            self.settings.setValue(SINGLE_POINT_PRESSURE_KEY, pressure)
+            self._update_bet_header()
+            if self.results:
+                self.refresh_all()
+        self.statusBar().showMessage("设置已保存", 3000)
+
     def export_xlsx(self) -> None:
         """Toolbar export of checked samples; the file type is chosen in the dialog."""
         selected = [result for result, visible in zip(self.results, self.visible_results) if visible]
@@ -5950,7 +6060,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _export_results(self, selected, file_format: str | None = None) -> None:
         filters = {"xlsx": "Excel 工作簿 (*.xlsx)", "pdf": "PDF 报告 (*.pdf)"}
-        offered = [file_format] if file_format in filters else ["xlsx", "pdf"]
+        default_format = self._default_export_format() if hasattr(self, "_default_export_format") else "xlsx"
+        offered = [file_format] if file_format in filters else [default_format] + [key for key in filters if key != default_format]
         stem = (f"{_display_file_name(selected[0])}" if len(selected) == 1
                 else f"BET解析导出_{len(selected)}个样品")
         path, chosen_filter = QtWidgets.QFileDialog.getSaveFileName(
@@ -6155,8 +6266,14 @@ class MainWindow(QtWidgets.QMainWindow):
     def _load_bet_display_settings(self) -> None:
         mode = str(self.settings.value("results/bet_display_mode", BET_DISPLAY_DEFAULT) or BET_DISPLAY_DEFAULT)
         self.bet_display_mode = mode if mode in BET_DISPLAY_LABELS else BET_DISPLAY_DEFAULT
-        # Fixed, not user-adjustable: files without their own single-point setting use P/P0 = 0.2.
-        self.single_point_default_pressure = DEFAULT_SINGLE_POINT_PRESSURE
+        # Files without their own single-point setting use this P/P0 (0.2 unless
+        # changed in the settings dialog); a file's own setting always wins.
+        try:
+            pressure = float(self.settings.value(SINGLE_POINT_PRESSURE_KEY, DEFAULT_SINGLE_POINT_PRESSURE))
+        except (TypeError, ValueError):
+            pressure = DEFAULT_SINGLE_POINT_PRESSURE
+        low, high = SINGLE_POINT_PRESSURE_RANGE
+        self.single_point_default_pressure = pressure if low <= pressure <= high else DEFAULT_SINGLE_POINT_PRESSURE
 
     def _update_bet_header(self) -> None:
         item = self.sample_table.horizontalHeaderItem(BET_COLUMN)
@@ -6166,7 +6283,7 @@ class MainWindow(QtWidgets.QMainWindow):
         item.setToolTip(
             f"当前显示：{BET_DISPLAY_LABELS[self.bet_display_mode]}。右键切换 默认 / 单点 / 多点；点击排序。\n"
             "默认：优先有效多点 BET，JWGB 多点无效时显示并标注单点。\n"
-            "单点：文件有单点压力设置时用文件设置，否则按 P/P0=0.2 计算。"
+            f"单点：文件有单点压力设置时用文件设置，否则按 P/P0={self.single_point_default_pressure:g} 计算（可在设置中修改）。"
         )
 
     def show_sample_header_context_menu(self, position: QtCore.QPoint) -> None:

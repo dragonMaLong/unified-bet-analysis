@@ -16,6 +16,10 @@ except ImportError:  # pragma: no cover - Python < 3.9 fallback
     ZoneInfo = None
 
 from .micromeritics_pores import pore_report_settings
+from .real_gas import compressibility as real_gas_compressibility
+from .real_gas import saturation as real_gas_saturation
+from .real_gas import saturation_temperature as real_gas_saturation_temperature
+from .real_gas import tabulated_compressibility as real_gas_tabulated_compressibility
 from .models import (
     AdsorptiveProperties,
     FreeSpaceInfo,
@@ -131,6 +135,14 @@ class TriStarSmpParser:
         if tristar_plus_v3:
             sample = self._with_tristar_plus_v3_sample_info(sample, blocks.get(301, b""))
             run_conditions = self._parse_tristar_plus_v3_run_conditions(blocks.get(302, b""), adsorptive_properties)
+        asap_2425 = "ASAP 2425" in asap_software
+        if asap_2425:
+            # The compact mass reader can land on a neighbouring double (Carbon
+            # Black example: "Lot Number" shifts the layout); the record
+            # [mass, empty tube, tube + sample, density] is unambiguous.
+            recorded = self._with_row_frame_sample_mass(sample, blocks.get(301, b""))
+            if recorded.sample_mass_g is not None:
+                sample = recorded
         free_space = self._parse_free_space(
             blocks.get(303, b""),
             self._payload_size(subsets, 303),
@@ -140,18 +152,44 @@ class TriStarSmpParser:
         )
         # Version 3.02 stores P/P0 and elapsed minutes in each point row. The
         # old separate-P0 scanner otherwise mistakes point bytes for P0 data.
-        po_records = [] if tristar_plus_v3 else self._parse_po_records(blocks.get(303, b""), self._payload_size(subsets, 303))
-        isotherm = [] if tristar_plus_v3 else self._parse_isotherm(blocks.get(303, b""), po_records, sample, free_space)
+        # Gemini VII files share the legacy record layout but not its meaning
+        # (no free-space correction), so they never go through the other paths.
+        gemini = self._is_gemini(blocks.get(303, b""))
+        gemini_inputs = None
+        # Raw 3Flex files are only read by their own path: the generic
+        # fallbacks would apply free-space formulas that were never validated
+        # for this instrument.
+        flex = self._parse_3flex_raw(blocks, subsets, sample, adsorptive_properties) if (
+            not gemini and self._is_3flex_raw(blocks.get(303, b""))) else None
+        handled = gemini or flex is not None
+        if flex is not None:
+            po_records = []
+            isotherm = list(flex.get("isotherm", []))
+            if isotherm:
+                sample, free_space = flex["sample"], flex["free_space"]
+                if flex.get("density_conversion_factor") and adsorptive_properties is not None:
+                    adsorptive_properties = replace(
+                        adsorptive_properties, density_conversion_factor=flex["density_conversion_factor"])
+        elif gemini:
+            po_records = []
+            gemini_inputs = self._gemini_inputs(blocks, adsorptive_properties.mnemonic if adsorptive_properties else "")
+            if gemini_inputs is not None:
+                sample = replace(sample, sample_mass_g=gemini_inputs["mass"],
+                                 sample_density_g_cm3=gemini_inputs["density"] or sample.sample_density_g_cm3)
+            isotherm = self._parse_gemini_isotherm(blocks.get(303, b""), self._payload_size(subsets, 303), gemini_inputs)
+        else:
+            po_records = [] if tristar_plus_v3 else self._parse_po_records(blocks.get(303, b""), self._payload_size(subsets, 303))
+            isotherm = [] if tristar_plus_v3 else self._parse_isotherm(blocks.get(303, b""), po_records, sample, free_space)
         used_microactive_point_table = False
         used_asap_point_table = False
         used_3flex_manual_point_table = False
-        if not isotherm:
+        if not isotherm and not handled:
             isotherm = self._parse_asap_isotherm(blocks.get(303, b""), self._payload_size(subsets, 303), po_records, sample, free_space)
             used_asap_point_table = bool(isotherm)
-        if not isotherm:
+        if not isotherm and not handled:
             isotherm = self._parse_microactive_isotherm(blocks.get(303, b""), self._payload_size(subsets, 303), sample, free_space)
             used_microactive_point_table = bool(isotherm)
-        if not isotherm:
+        if not isotherm and not handled:
             manual_run_conditions = self._with_3flex_manual_run_conditions(run_conditions, blocks.get(302, b""))
             manual_adsorptive_properties = self._with_3flex_manual_adsorptive_properties(
                 self._parse_3flex_adsorptive_properties(blocks.get(320, b"")) or adsorptive_properties
@@ -176,6 +214,73 @@ class TriStarSmpParser:
                 )
                 adsorptive_properties = manual_adsorptive_properties
                 free_space = manual_free_space
+        row_frame_family = ""
+        row_frame_failure = ""
+        transpiration_note: dict[str, object] = {}
+        if asap_2425 and used_asap_point_table:
+            isotherm, transpiration_note = self._apply_asap_2425_transpiration(isotherm, blocks, subsets, adsorptive_properties)
+        if not isotherm and not handled:
+            # Last resort, only for software versions whose layout was decoded
+            # (vendor example files of TriStar II 3020 V1.0x / early ASAP 2020
+            # Plus): fixed 58-byte point frames and a "Sample Tube" anchored
+            # free-space record. Earlier paths are left untouched.
+            row_frame_family = self._row_frame_family(blocks.get(303, b""))
+            if row_frame_family:
+                frame_sample = self._with_row_frame_sample_mass(sample, blocks.get(301, b""))
+                frame_free_space = self._parse_row_frame_free_space(
+                    blocks.get(303, b""), row_frame_family, run_conditions, adsorptive_properties,
+                )
+                real_gas = None
+                # Temperature location and the model are verified on ASAP 2020 Plus
+                # files only (TriStar 302 has another layout).
+                if (
+                    row_frame_family == "ASAP 2020 Plus"
+                    and "real_gas_eos" in frame_free_space.vfree_factor_source
+                    and adsorptive_properties is not None
+                ):
+                    temperature = self._asap_row_frame_bath_temperature(
+                        blocks.get(302, b""), blocks.get(303, b""), self._payload_size(subsets, 303),
+                        adsorptive_properties.mnemonic,
+                    )
+                    density_factor = adsorptive_properties.density_conversion_factor
+                    gas = adsorptive_properties.mnemonic
+                    if (
+                        temperature is not None
+                        and density_factor is not None
+                        and 0.0 < float(density_factor) < 0.01
+                        and real_gas_compressibility(gas, 1.0, temperature) is not None
+                    ):
+                        real_gas = (gas, temperature, float(density_factor))
+                        frame_free_space = replace(
+                            frame_free_space,
+                            vfree_factor_source=frame_free_space.vfree_factor_source.replace(
+                                "real_gas_eos_approximated", "real_gas_eos_span2000"
+                            ),
+                        )
+                isotherm = self._parse_row_frame_isotherm(
+                    blocks.get(303, b""), self._payload_size(subsets, 303), frame_sample, frame_free_space, real_gas,
+                )
+                # Without a usable free space or sample mass the frames give only
+                # dosed gas; do not present that as an adsorption isotherm.
+                if isotherm and all(point.quantity_adsorbed_cm3_g_stp is not None for point in isotherm):
+                    sample, free_space = frame_sample, frame_free_space
+                    if row_frame_family == "ASAP 2020 Plus":
+                        isotherm, transpiration_note = self._apply_row_frame_transpiration(
+                            isotherm, blocks, subsets, adsorptive_properties,
+                        )
+                else:
+                    isotherm = []
+                    row_frame_failure = (
+                        "已识别数据点，但缺少可用的自由空间或样品质量，无法计算吸附量"
+                        if self._scan_row_frames(blocks.get(303, b""), self._payload_size(subsets, 303))
+                        else ""
+                    )
+                    row_frame_family = ""
+        legacy_v6_options: dict[str, object] = {}
+        if not isotherm and blocks.get(303, b"")[18:19] == b"\x06":
+            legacy = self._parse_legacy_v6(blocks, sample)
+            if legacy is not None:
+                isotherm, free_space, adsorptive_properties, legacy_v6_options = legacy
         method_options = self._parse_method_options(blocks.get(302, b""), b"" if tristar_plus_v3 else blocks.get(725, b""), blocks.get(320, b""))
         method_options.update(self._parse_instrument_info(blocks))
         method_options.update(self._parse_stored_bet_range(blocks.get(311, b"")))
@@ -262,6 +367,101 @@ class TriStarSmpParser:
             method_options["vendor_bjh_correction"] = "faas"
             method_options["vendor_bjh_smooth_derivative"] = False
             method_options["format_family"] = "3Flex manual SMP"
+        if row_frame_family:
+            method_options["format_family"] = f"{row_frame_family} row-frame SMP"
+            method_options.setdefault("instrument_manufacturer", "Micromeritics")
+            method_options.setdefault("instrument_model", row_frame_family)
+            method_options["row_frame_quantity_source"] = (
+                "raw_cm3_stp_free_space_corrected_and_normalized"
+                if all(point.quantity_adsorbed_cm3_g_stp is not None for point in isotherm)
+                else "unavailable_missing_free_space_or_sample_mass"
+            )
+            method_options["row_frame_free_space_source"] = free_space.vfree_factor_source
+            real_gas = "real_gas_eos_approximated" in free_space.vfree_factor_source
+            method_options["row_frame_validation"] = (
+                "MicroActive 7.00 vendor uses a real-gas equation of state for this file and none is available "
+                "for this adsorptive here; quantities use the ideal-gas correction and are approximate"
+                if real_gas
+                else "real-gas free space (Span et al. 2000 N2 equation of state, adsorbed-phase correction) as "
+                "selected in the file; checked against MicroActive 7.00"
+                if "real_gas_eos_span2000" in free_space.vfree_factor_source
+                else "points, P/P0, dosed gas and sample mass match MicroActive 7.00 exactly and adsorbed "
+                "quantity within 0.1 % on 6 vendor example files; default BET (report range from subset 311) within "
+                "0.1 % of MicroActive on 7 files"
+            )
+            if real_gas:
+                method_options["row_frame_quantity_source"] = "approximate_ideal_gas_vendor_used_real_gas_eos"
+            method_options.update(transpiration_note)
+            # t-Plot: thickness model, thickness range and P/P0 window saved in
+            # subset 314 (same layout as the families already decoded). With
+            # them the external area matches MicroActive within 0.011 %.
+            t_plot_settings = _micromeritics_t_plot_settings(blocks.get(314, b""))
+            if t_plot_settings:
+                method_options.update(t_plot_settings)
+                method_options["use_vendor_t_plot_settings"] = True
+                method_options["use_stored_fit_ranges"] = True
+            stored_bet = self._row_frame_stored_bet_range(blocks.get(311, b""))
+            if stored_bet is not None:
+                method_options["stored_bet_pressure_min"], method_options["stored_bet_pressure_max"] = stored_bet
+                method_options["stored_bet_range_source"] = "row-frame SMP subset 311 report selection"
+                method_options["use_stored_fit_ranges"] = True
+        if asap_2425:
+            method_options.update(transpiration_note)
+            if free_space.vfree_factor_source == "asap_2425_free_space_mode_not_decoded":
+                # Points without quantities would load as an empty result.
+                isotherm = []
+                method_options["no_isotherm_reason"] = "该 ASAP 2425 文件的自由空间方式尚未解析，暂不计算吸附量"
+        if flex is not None:
+            method_options.update(flex.get("options", {}))
+            if not isotherm:
+                method_options["no_isotherm_reason"] = flex.get("reason", "3Flex 文件暂不能计算吸附量")
+        if gemini:
+            method_options["instrument_manufacturer"] = "Micromeritics"
+            method_options["instrument_model"] = "Gemini VII 2390"
+            software = next((item.text.strip() for item in self._read_mic_strings(blocks.get(303, b""))
+                             if item.text.startswith("Gemini VII")), "")
+            if software:
+                method_options["instrument_software"] = software
+            method_options["format_family"] = "Gemini VII SMP"
+            block303 = blocks.get(303, b"")
+            bet_ids = [point.index for point in isotherm
+                       if point.phase == "adsorption" and 103 in self._gemini_point_tags(block303, point.record_rel_offset)]
+            if len(bet_ids) >= 3:
+                # The selection can skip points (silaliso: every other point), so
+                # pass the points themselves rather than a pressure range.
+                method_options["use_official_raw_bet_points"] = True
+                method_options["jwgb_raw_bet_fit_point_ids"] = bet_ids
+                method_options["bet_point_selection_source"] = "Gemini SMP point tag 103"
+            # Subset 314 has the TriStar layout; with its thickness model and
+            # range, t-Plot equals MicroActive's to 1e-8 (carbiso STSA,
+            # sialfull / silaliso Harkins-Jura).
+            t_plot = _micromeritics_t_plot_settings(blocks.get(314, b""))
+            if t_plot.get("vendor_t_plot_thickness_method") in ("harkins_jura", "carbon_black_stsa"):
+                method_options.update(t_plot)
+                method_options["use_vendor_t_plot_settings"] = True
+                method_options["use_stored_fit_ranges"] = True
+            if gemini_inputs is not None:
+                method_options["gemini_free_space_mode"] = gemini_inputs["mode"]
+                method_options["gemini_free_space_difference_cm3"] = gemini_inputs["difference"]
+                if gemini_inputs["temperature"] is not None:
+                    method_options["gemini_bath_temperature_K"] = gemini_inputs["temperature"]
+            elif not isotherm:
+                method_options["no_isotherm_reason"] = "Gemini 文件的自由空间设置未能识别，暂不计算吸附量"
+        if legacy_v6_options:
+            method_options.update(legacy_v6_options)
+            # Point tag 103 marks the report's BET selection: on it the BET
+            # fit equals MicroActive's (Alumina Kr 0.482461 vs 0.482460 m2/g,
+            # C 73.626; Carbon Black D-4 24.3777 vs 24.3793).
+            selected = [p.relative_pressure for p, tags in zip(isotherm, legacy_v6_options["legacy_v6_point_tags"]) if 103 in tags]
+            if len(selected) >= 2:
+                method_options["stored_bet_pressure_min"] = min(selected)
+                method_options["stored_bet_pressure_max"] = max(selected)
+                method_options["stored_bet_range_source"] = "legacy ASAP v6 point tag 103"
+                method_options["use_stored_fit_ranges"] = True
+        if not isotherm:
+            reason = row_frame_failure or self._no_isotherm_reason(blocks, sample)
+            if reason:
+                method_options.setdefault("no_isotherm_reason", reason)
         if self._target_pressure_rows_valid(target_pressure_table):
             method_options["target_pressure_table_source"] = "method_file"
         else:
@@ -867,6 +1067,10 @@ class TriStarSmpParser:
         asap_free_space = self._parse_asap_free_space(block, run, adsorptive_properties)
         if asap_free_space is not None:
             return asap_free_space
+        if "ASAP 2425" in self._asap_software_text(block):
+            # Mode 4 (Y-Zeolite Nitrogen example) is not decoded; the generic
+            # fallbacks below would read unrelated doubles as free space.
+            return FreeSpaceInfo(None, None, None, None, None, None, None, None, "asap_2425_free_space_mode_not_decoded")
 
         microactive_free_space = self._parse_microactive_free_space(block, run, adsorptive_properties, log_block)
         if microactive_free_space is not None:
@@ -1022,8 +1226,21 @@ class TriStarSmpParser:
         if sample_tube_rel is None:
             return None
 
-        cold = _read_double(block, sample_tube_rel - 24)
-        warm = _read_double(block, sample_tube_rel - 16)
+        if "ASAP 2425" in software:
+            # Other modes can retain plausible measured volumes from an
+            # earlier run. They must not silently use the measured formula.
+            if sample_tube_rel + 196 >= len(block) or block[sample_tube_rel + 196] not in (0, MICROACTIVE_FREE_SPACE_ENTERED):
+                return None
+
+        # ASAP 2425: mode byte at Sample Tube + 196; 2 = entered free space,
+        # stored at -48/-40 instead of the measured -24/-16 (MicroActive 7.00).
+        entered = (
+            "ASAP 2425" in software
+            and sample_tube_rel + 196 < len(block)
+            and block[sample_tube_rel + 196] == MICROACTIVE_FREE_SPACE_ENTERED
+        )
+        cold = _read_double(block, sample_tube_rel - (48 if entered else 24))
+        warm = _read_double(block, sample_tube_rel - (40 if entered else 16))
         if cold is None or warm is None or not (0.0 < float(warm) < float(cold) < 300.0):
             return None
 
@@ -1053,7 +1270,8 @@ class TriStarSmpParser:
                 + ASAP_2460_VBATH_COLD_COEFF * float(cold)
                 + ASAP_2460_VBATH_WARM_COEFF * float(warm)
             )
-            source = "asap_2460_sample_tube_fields"
+            # ASAP 2425 example files fit the same coefficients exactly.
+            source = "asap_2425_sample_tube_fields" if "ASAP 2425" in software else "asap_2460_sample_tube_fields"
 
         nonideality = (
             float(adsorptive_properties.nonideality_factor)
@@ -1075,8 +1293,12 @@ class TriStarSmpParser:
 
     def _asap_software_text(self, block: bytes) -> str:
         for item in self._read_mic_strings(block):
-            if re.search(r"\bASAP\s+(?:2460|2020(?:\s+Plus)?)\s+(?:Version\s+)?V?\d", item.text, re.IGNORECASE):
+            if re.search(r"\bASAP\s+(?:2460|2425|2020(?:\s+Plus)?)\s+(?:Version\s+)?V?\d", item.text, re.IGNORECASE):
                 return item.text
+        # Some ASAP 2425 example files keep only the bare model name.
+        for item in self._read_mic_strings(block):
+            if item.text.strip() == "ASAP 2425":
+                return item.text.strip()
         return ""
 
     def _parse_microactive_free_space(
@@ -1345,6 +1567,916 @@ class TriStarSmpParser:
             )
         return points
 
+    # --- Row-frame SMP (TriStar II 3020 V1.0x, early ASAP 2020 Plus) -------------
+    # Subset 303 record version 13 written by these versions keeps each point in
+    # a fixed 58-byte frame: 05 00 | E0 + NaN double | 04 00 | P_abs, P/P0,
+    # Q_dosed (3 little-endian doubles) | u32 | padding. The same frames occur in
+    # TriStar II Plus files, where the existing parser's offsets, pressures and
+    # raw quantities match the frame values exactly (119 of 121 files).
+    _ROW_FRAME_PREFIX = re.compile(rb"\x05\x00\xe0\x00\x00\x00\x00\x00\x00\xf8\x7f\x04\x00")
+    _ROW_FRAME_STRIDE = 58
+
+    def _row_frame_family(self, block: bytes) -> str:
+        if len(block) <= 18 or block[18] != 13:
+            return ""
+        texts = [item.text for item in self._read_mic_strings(block[:400]) if item.text]
+        software = texts[0].strip() if texts else ""
+        if re.fullmatch(r"TriStar II 3020 V1\.\d\d", software):
+            return "TriStar II 3020"
+        if software == "ASAP 2020 Plus":
+            return "ASAP 2020 Plus"
+        return ""
+
+    def _scan_row_frames(self, block: bytes, payload_size: int) -> list[tuple[int, float, float, float]]:
+        limit = min(len(block), payload_size + 18)
+        frames: list[tuple[int, float, float, float]] = []
+        for match in self._ROW_FRAME_PREFIX.finditer(block, 0, limit):
+            rel = match.end()
+            if rel + 24 > limit:
+                break
+            absolute, relative, quantity = struct.unpack_from("<ddd", block, rel)
+            if not (math.isfinite(absolute) and math.isfinite(relative) and math.isfinite(quantity)):
+                continue
+            # P0 bounds cover krypton (about 2.4 mmHg) as well as nitrogen/argon.
+            if not (0.0 < absolute < 1200.0 and 0.0 < relative < 1.2 and -1000.0 < quantity < 100000.0):
+                continue
+            if not (0.5 < absolute / relative < 1200.0):
+                continue
+            frames.append((rel, absolute, relative, quantity))
+        # Keep the longest run with the fixed stride; stray matches elsewhere
+        # in the block are not point rows.
+        best: list[tuple[int, float, float, float]] = []
+        run: list[tuple[int, float, float, float]] = []
+        for frame in frames:
+            if run and frame[0] - run[-1][0] != self._ROW_FRAME_STRIDE:
+                run = []
+            run.append(frame)
+            if len(run) > len(best):
+                best = list(run)
+        return best if len(best) >= 3 else []
+
+    @staticmethod
+    def _row_frame_analysis_temperature(run_block: bytes) -> float | None:
+        # Subset 302: the analysis (bath) temperature sits 149 bytes before the
+        # P0/temperature table (rows 18 bytes apart). MicroActive reports this
+        # value (77.3 K) as "analysis temperature"; the 77.35 K read elsewhere
+        # is a table entry.
+        for start in range(149, len(run_block) - 4 * 18 - 8):
+            temps = [_read_double(run_block, start + 18 * k) for k in range(4)]
+            if all(t is not None and 50.0 < t < 150.0 for t in temps) and all(a < b for a, b in zip(temps, temps[1:])):
+                value = _read_double(run_block, start - 149)
+                if value is not None and 50.0 < value < 150.0:
+                    return value
+        return None
+
+    def _asap_row_frame_bath_temperature(self, run_block: bytes, sample_block: bytes, payload_size: int, mnemonic: str) -> float | None:
+        """Analysis bath temperature MicroActive uses for an ASAP 2020 Plus row-frame file.
+
+        Subset 302: the entered temperature is the double 31 bytes before the
+        adsorptive mnemonic string (followed by standard pressure and ambient
+        temperature); the byte 18 before it is 1 when the temperature is
+        derived from P0. Then MicroActive takes the mean of the measured P0
+        records in subset 303 and interpolates T linearly in ln(P0) over the
+        P0/T table of subset 302: 13X gives 77.183016 K vs 77.183008 K
+        (float32) reported by MicroActive; Y-Zeolite uses the entered 77.15 K.
+        """
+        entered_at = None
+        for item in self._read_mic_strings(run_block):
+            if item.text != mnemonic:
+                continue
+            at = item.rel_offset - 31
+            temperature = _read_double(run_block, at)
+            standard = _read_double(run_block, at + 8)
+            ambient = _read_double(run_block, at + 16)
+            if (
+                temperature is not None and 50.0 < temperature < 150.0
+                and standard is not None and 500.0 < standard < 900.0
+                and ambient is not None and 250.0 < ambient < 330.0
+                and at >= 18
+            ):
+                entered_at = at
+                break
+        if entered_at is None:
+            return None
+        entered = float(_read_double(run_block, entered_at))
+        if run_block[entered_at - 18] != 1:
+            return entered
+        table: list[tuple[float, float]] = []
+        for at in range(entered_at, len(run_block) - 18):
+            if run_block[at:at + 2] != b"\x02\x00":
+                continue
+            rows = []
+            pos = at
+            while pos + 18 <= len(run_block) and run_block[pos:pos + 2] == b"\x02\x00":
+                pressure, temperature = struct.unpack_from("<dd", run_block, pos + 2)
+                rows.append((pressure, temperature))
+                pos += 18
+            rows = [(p, t) for p, t in rows if 100.0 < p < 1500.0 and 50.0 < t < 150.0]
+            if len(rows) >= 3 and all(a[0] < b[0] for a, b in zip(rows, rows[1:])):
+                table = rows
+                break
+        records = self._parse_po_records(sample_block, payload_size)
+        if len(table) < 2 or not records:
+            return entered
+        mean_p0 = sum(r.saturation_pressure_mmHg for r in records) / len(records)
+        logs = [math.log(p) for p, _ in table]
+        x = math.log(mean_p0)
+        if x <= logs[0]:
+            i = 0
+        elif x >= logs[-1]:
+            i = len(logs) - 2
+        else:
+            i = next(k for k in range(len(logs) - 1) if logs[k] <= x <= logs[k + 1])
+        t0, t1 = table[i][1], table[i + 1][1]
+        return t0 + (t1 - t0) * (x - logs[i]) / (logs[i + 1] - logs[i])
+
+    def _apply_asap_2425_transpiration(
+        self,
+        isotherm: list[IsothermPoint],
+        blocks: dict[int, bytes],
+        subsets: Sequence[SubsetEntry],
+        props: AdsorptiveProperties | None,
+    ) -> tuple[list[IsothermPoint], dict[str, object]]:
+        """Thermal transpiration in ASAP 2425 files.
+
+        Unlike the MicroActive TriStar/ASAP files, the 2425 stores the measured
+        absolute pressure next to an already corrected P/P0, and its quantities
+        use the measured pressure. MicroActive 7.00 reports the absolute pressure
+        times the Weber ratio (Y-Zeolite Reference Material: 17 points to 1e-16).
+        """
+        diameter = self._row_frame_transpiration_setting(blocks.get(304, b""))
+        if diameter is None:
+            return isotherm, {}
+        hard_sphere = props.thermal_transpiration_hard_sphere_A if props else None
+        bath = self._asap_row_frame_bath_temperature(
+            blocks.get(302, b""), blocks.get(303, b""), self._payload_size(subsets, 303), props.mnemonic if props else "",
+        )
+        if hard_sphere is None or not 1.0 < hard_sphere < 10.0 or bath is None:
+            return isotherm, {"thermal_transpiration": "selected_in_file_but_inputs_missing"}
+        corrected: list[IsothermPoint] = []
+        active = True
+        count = 0
+        for point in isotherm:
+            ratio = self._weber_transpiration_ratio(point.absolute_pressure_mmHg, diameter, hard_sphere, bath) if active else 1.0
+            if ratio >= 0.99:
+                active = False
+                corrected.append(point)
+                continue
+            count += 1
+            corrected.append(replace(point, absolute_pressure_mmHg=point.absolute_pressure_mmHg * ratio))
+        return corrected, {
+            "thermal_transpiration": "weber_micromeritics_asap_2425_absolute_pressure",
+            "thermal_transpiration_tube_diameter_mm": diameter,
+            "thermal_transpiration_hard_sphere_A": hard_sphere,
+            "thermal_transpiration_bath_temperature_K": bath,
+            "thermal_transpiration_corrected_points": count,
+        }
+
+    def _apply_row_frame_transpiration(
+        self,
+        isotherm: list[IsothermPoint],
+        blocks: dict[int, bytes],
+        subsets: Sequence[SubsetEntry],
+        props: AdsorptiveProperties | None,
+    ) -> tuple[list[IsothermPoint], dict[str, object]]:
+        diameter = self._row_frame_transpiration_setting(blocks.get(304, b""))
+        if diameter is None:
+            return isotherm, {}
+        hard_sphere = props.thermal_transpiration_hard_sphere_A if props else None
+        bath = self._asap_row_frame_bath_temperature(
+            blocks.get(302, b""), blocks.get(303, b""), self._payload_size(subsets, 303), props.mnemonic if props else "",
+        )
+        if hard_sphere is None or not 1.0 < hard_sphere < 10.0 or bath is None:
+            return isotherm, {"thermal_transpiration": "selected_in_file_but_inputs_missing"}
+        corrected: list[IsothermPoint] = []
+        active = True
+        count = 0
+        for point in isotherm:
+            ratio = self._weber_transpiration_ratio(point.absolute_pressure_mmHg, diameter, hard_sphere, bath) if active else 1.0
+            if ratio >= 0.99:
+                # "performed until the pressure ratio (PC/P) is >= 0.99": from
+                # here on pressures are used as measured.
+                active = False
+                corrected.append(point)
+                continue
+            count += 1
+            corrected.append(replace(
+                point,
+                absolute_pressure_mmHg=point.absolute_pressure_mmHg * ratio,
+                relative_pressure=point.relative_pressure * ratio,
+            ))
+        return corrected, {
+            "thermal_transpiration": "weber_micromeritics_2020_asap",
+            "thermal_transpiration_tube_diameter_mm": diameter,
+            "thermal_transpiration_hard_sphere_A": hard_sphere,
+            "thermal_transpiration_bath_temperature_K": bath,
+            "thermal_transpiration_corrected_points": count,
+        }
+
+    @staticmethod
+    def _row_frame_transpiration_setting(report_block: bytes) -> float | None:
+        # Subset 304 ends with the sample tube inside diameter (mm, 15 bytes
+        # before the end) and, 8 bytes later, the "Apply thermal transpiration
+        # correction" flag (1 in 13X and Y-Zeolite, 0 elsewhere).
+        if len(report_block) < 40:
+            return None
+        at = len(report_block) - 15
+        diameter = _read_double(report_block, at)
+        if report_block[at + 8] != 1 or diameter is None or not 1.0 < diameter < 50.0:
+            return None
+        return float(diameter)
+
+    @staticmethod
+    def _weber_transpiration_ratio(
+        pressure_mmHg: float, tube_diameter_mm: float, hard_sphere_A: float, bath_K: float, ambient_K: float = 298.0,
+    ) -> float:
+        # Calculations - 2020 ASAP (Micromeritics, Apr 2024), "Thermal Transpiration
+        # Correction" (Weber). mu printed as (1+G)Y/((1+H)Y) is (1+G*Y)/(1+H*Y);
+        # with that, 13X and Y-Zeolite agree with MicroActive to 2e-16.
+        alpha, beta, g, h = 0.033, 0.245, 2.5, 2.0
+        average = (bath_K + ambient_K) / 2.0
+        y = pressure_mmHg * tube_diameter_mm * hard_sphere_A ** 2 / (2.33 * average) * 1e3
+        mu = (1.0 + g * y) / (1.0 + h * y)
+        f = 1.0 / (alpha * y * y + beta * y + mu)
+        return 1.0 - f * (1.0 - math.sqrt(bath_K / ambient_K))
+
+    @staticmethod
+    def _real_gas_quantity(
+        absolute_pressure: float,
+        dosed: float,
+        sample: SampleInfo,
+        free_space: FreeSpaceInfo,
+        compressibility: float,
+        adsorbed_phase_factor: float,
+    ) -> float | None:
+        # MicroActive "Real gas equation of state" + "Ads.-phase F.S. correction":
+        # gas in free space = x (Vc - Vb) + x Vb / Z - x k n_ads / Z, x = P/760,
+        # Vb the immersed (cold) part, k = liquid volume per cm3 STP adsorbed at
+        # bath temperature. Reproduces MicroActive's Activated Carbon quantities
+        # to 3e-5 relative when fed MicroActive's own Z.
+        if not sample.sample_mass_g or free_space.cold_free_space_cm3 is None or free_space.vbath_cm3 is None:
+            return None
+        x = float(absolute_pressure) / 760.0
+        vc, vb = float(free_space.cold_free_space_cm3), float(free_space.vbath_cm3)
+        denominator = 1.0 - x * adsorbed_phase_factor / compressibility
+        if abs(denominator) < 1e-12:
+            return None
+        adsorbed = (float(dosed) - x * (vc - vb) - x * vb / compressibility) / denominator
+        return adsorbed / float(sample.sample_mass_g)
+
+    def _parse_row_frame_isotherm(
+        self,
+        block: bytes,
+        payload_size: int,
+        sample: SampleInfo,
+        free_space: FreeSpaceInfo,
+        real_gas: tuple[str, float, float] | None = None,
+    ) -> list[IsothermPoint]:
+        """real_gas: (adsorptive, analysis temperature K, density conversion factor)."""
+        rows = self._scan_row_frames(block, payload_size)
+        if not rows:
+            return []
+        # MicroActive 7.00 leaves out frames above saturation (P/P0 1.0008 in
+        # Titania, 1.0001 in Silica Gel) and keeps 0.99976 (ASAP Silica-Alumina).
+        phased = self._phase_points_dropping_saturation(rows)
+        if len(phased) < 3:
+            return []
+        points: list[IsothermPoint] = []
+        for idx, ((rel, absolute, relative, dosed), phase) in enumerate(phased, start=1):
+            if real_gas is not None:
+                gas, temperature, density_factor = real_gas
+                z = real_gas_compressibility(gas, absolute, temperature)
+                quantity = (
+                    self._real_gas_quantity(absolute, dosed, sample, free_space, z, density_factor * 273.15 / temperature)
+                    if z is not None
+                    else None
+                )
+            else:
+                quantity = self._calculate_quantity(absolute, dosed, sample, free_space)
+            points.append(
+                IsothermPoint(
+                    index=idx,
+                    phase=phase,
+                    record_rel_offset=rel,
+                    absolute_pressure_mmHg=absolute,
+                    relative_pressure=relative,
+                    raw_internal_cm3_stp=dosed,
+                    saturation_pressure_mmHg=absolute / relative,
+                    # The u32 after the doubles rises like an elapsed time, but
+                    # its unit is not confirmed for these versions.
+                    elapsed_seconds=None,
+                    quantity_adsorbed_cm3_g_stp=quantity,
+                    quantity_adsorbed_mmol_g=quantity / CM3_STP_PER_MMOL if quantity is not None else None,
+                )
+            )
+        return points
+
+    @staticmethod
+    def _with_row_frame_sample_mass(sample: SampleInfo, block: bytes) -> SampleInfo:
+        # Subset 301 keeps [sample mass, empty tube, tube + sample, density]
+        # (confirmed by the MicroActive Mass panel: 1.1320 / 1.0000 / 2.1320 / 1.000).
+        # Where the tube was not weighed the tube slot is 1.0 and the total is
+        # mass + 1.0, so the total must not be taken as the sample mass.
+        for rel in range(19, max(19, len(block) - 31)):
+            mass, tube, total, density = struct.unpack_from("<dddd", block, rel)
+            if not all(math.isfinite(value) for value in (mass, tube, total, density)):
+                continue
+            if not (1e-5 < mass < 100.0 and 0.0 < tube < 1000.0 and 0.0 < density < 100.0):
+                continue
+            if abs(mass + tube - total) <= 1e-7 * max(1.0, total):
+                sample_density = density if not math.isclose(density, 1.0, abs_tol=1e-12) else sample.sample_density_g_cm3
+                return replace(sample, sample_mass_g=mass, sample_density_g_cm3=sample_density)
+        return replace(sample, sample_mass_g=None)
+
+    def _parse_row_frame_free_space(
+        self,
+        block: bytes,
+        family: str,
+        run: RunConditions,
+        props: AdsorptiveProperties | None,
+    ) -> FreeSpaceInfo:
+        missing = FreeSpaceInfo(None, None, None, None, None, None, None, None, "row_frame_missing_free_space")
+        tube = next((item.rel_offset for item in self._read_mic_strings(block) if item.text == "Sample Tube"), None)
+        if tube is None or tube < 57 or tube + 226 > len(block):
+            return missing
+        if block[tube + 196] not in (0, MICROACTIVE_FREE_SPACE_ENTERED):
+            return missing
+        # Byte tube+196: 0 measured (tube-24/-16), 2 entered (tube-48/-40);
+        # both stored as (cold, warm). Measured values are stored before the
+        # correction at tube+218: stored + correction equals the "Measured free
+        # space" line of the analysis log in all four TriStar example files.
+        entered = block[tube + 196] == MICROACTIVE_FREE_SPACE_ENTERED
+        cold = _read_double(block, tube - (48 if entered else 24))
+        warm = _read_double(block, tube - (40 if entered else 16))
+        correction = 0.0 if entered else (_read_double(block, tube + 218) or 0.0)
+        if cold is None or warm is None or not (0.0 < warm < cold < 300.0) or not (-warm < correction <= 0.0):
+            return missing
+        nonideality = _read_double(block, tube - 32)
+        if nonideality is None or not (0.0 <= nonideality < 0.01):
+            nonideality = props.nonideality_factor if props else None
+        if nonideality is None:
+            return missing
+        mode = "entered" if entered else "measured"
+        # A stored factor of exactly 0 went with "Real gas equation of state"
+        # + "Ads.-phase F.S. correction" in both files checked in MicroActive
+        # (Activated Carbon, Glass). That EOS is not implemented here; the
+        # ideal-gas result differs from MicroActive by up to 6.6 % at high
+        # P/P0 (Activated Carbon), 0.05 % in BET.
+        if nonideality == 0.0:
+            mode += "_real_gas_eos_approximated"
+        if family == "TriStar II 3020":
+            ambient = _read_double(block, tube - 57)
+            if ambient is None or not 250.0 <= ambient <= 330.0:
+                ambient = ASSUMED_AMBIENT_TEMPERATURE_K
+            bath = run.bath_temperature_K
+            if bath is None or not 50.0 < bath < 150.0:
+                return missing
+            # Same TriStar II 3020 coefficients as the report-validated legacy
+            # path; the correction takes the place of its stem term.
+            vfree = VFREE_INTERCEPT + VFREE_COLD_COEFF * cold + VFREE_WARM_COEFF * warm + VFREE_STEM_COEFF * correction
+            vbath = (cold - warm) / (1.0 - bath / ambient)
+            source = f"tristar_3020_v1_row_frame_{mode}_free_space"
+        else:
+            ambient = ASSUMED_AMBIENT_TEMPERATURE_K
+            vfree = ASAP_2020_PLUS_VFREE_COLD_COEFF * cold + ASAP_2020_PLUS_VFREE_WARM_COEFF * warm
+            vbath = ASAP_2020_PLUS_VBATH_DIFF_COEFF * (cold - warm)
+            source = f"asap_2020_plus_row_frame_{mode}_free_space"
+        return FreeSpaceInfo(
+            analysis_entered_cm3=cold,
+            ambient_entered_cm3=warm,
+            nonideality_factor=nonideality,
+            cold_free_space_cm3=cold + correction,
+            warm_free_space_cm3=warm + correction,
+            stem_volume_cm3=correction,
+            vbath_cm3=vbath,
+            vfree_factor_cm3=vfree,
+            vfree_factor_source=source,
+            ambient_temperature_K_assumed=ambient,
+        )
+
+    @staticmethod
+    def _row_frame_stored_bet_range(block: bytes) -> tuple[float, float] | None:
+        # Subset 311 ends with 02 | P/P0 min | P/P0 max | 01 | 0.0 | 1.0 | 00 00.
+        # The first pair is the report's BET range: on MicroActive's own
+        # quantities it reproduces its monolayer capacity and C exactly
+        # (Titania 0.046804-0.296619, Silica Gel 0.055625-0.299947). The last
+        # pair (0-1) is what the generic reader picks up.
+        if len(block) < 60 or block[-37] != 2 or block[-20] != 1:
+            return None
+        p_min, p_max = struct.unpack_from("<dd", block, len(block) - 36)
+        # A lower bound of exactly 0 (13X 0-1, Activated Carbon 0-0.3) is not
+        # the range MicroActive fitted: there the vendor BET (C 1.6e5 / 1763)
+        # follows the automatic micropore range instead.
+        if not (math.isfinite(p_min) and math.isfinite(p_max) and 0.0 < p_min < p_max <= 1.0):
+            return None
+        return float(p_min), float(p_max)
+
+    # --- 3Flex 3500 raw SMP (subset 303 record version 12/13) ------------------
+    # Checked against MicroActive 7.00 on 3Flex example files (N2, Ar 87 K,
+    # Kr, CO2 273 K, n-butane, n-pentane): 58-byte point frames as in the
+    # TriStar/ASAP row-frame files, real-gas free space with the adsorptive's
+    # equation of state, and the analysis temperature from the measured P0.
+
+    def _is_3flex_raw(self, block: bytes) -> bool:
+        return len(block) > 18 and block[18] in (12, 13) and any(
+            item.text == "3Flex" for item in self._read_mic_strings(block))
+
+    def _flex_frames(self, block: bytes) -> list[tuple[int, float, float, float]]:
+        # Same frames as _scan_row_frames, with P0 up to CO2 at 273 K (~26600 mmHg).
+        frames: list[tuple[int, float, float, float]] = []
+        for match in self._ROW_FRAME_PREFIX.finditer(block):
+            rel = match.end()
+            if rel + 24 > len(block):
+                break
+            absolute, relative, dosed = struct.unpack_from("<ddd", block, rel)
+            if not (all(math.isfinite(v) for v in (absolute, relative, dosed))
+                    and 0.0 < absolute < 2000.0 and 0.0 < relative < 1.2 and 0.5 < absolute / relative < 50000.0
+                    and -1000.0 < dosed < 100000.0):
+                continue
+            if frames and rel - frames[-1][0] != 58:
+                if len(frames) >= 3:
+                    break
+                frames = []
+            frames.append((rel, absolute, relative, dosed))
+        return frames if len(frames) >= 3 else []
+
+    @staticmethod
+    def _flex_p0_log(block: bytes, start: int, stop: int) -> list[float]:
+        """Logged P0 values: u16 count, 10 bytes, then count x (u16 time, double P0)."""
+        best: list[float] = []
+        for at in range(start, max(start, stop - 12)):
+            count = struct.unpack_from("<H", block, at)[0]
+            first = at + 12
+            if not 2 <= count <= 5000 or first + 10 * count > stop:
+                continue
+            records = [struct.unpack_from("<Hd", block, first + 10 * k) for k in range(count)]
+            values = [value for _, value in records]
+            if (all(math.isfinite(v) and 0.1 < v < 50000.0 for v in values) and max(values) / min(values) < 1.05
+                    and all(a[0] < b[0] for a, b in zip(records, records[1:])) and len(values) > len(best)):
+                best = values
+        return best
+
+    def _flex_analysis_temperature(
+        self, run_block: bytes, block: bytes, frames, tube: int, adsorptive: str,
+    ) -> tuple[float | None, str]:
+        # Subset 302: entered temperature 31 bytes before the bath-gas mnemonic,
+        # ambient 16 bytes after it; the byte 18 before it is 1 when the
+        # temperature is derived from P0.
+        entered_at = None
+        for item in self._read_mic_strings(run_block):
+            at = item.rel_offset - 31
+            if at < 18:
+                continue
+            temperature, ambient = _read_double(run_block, at), _read_double(run_block, at + 16)
+            if temperature is not None and 50.0 < temperature < 400.0 and ambient is not None and 250.0 < ambient < 330.0:
+                entered_at = at
+                break
+        if entered_at is None:
+            return None, "entered temperature not found"
+        entered = float(_read_double(run_block, entered_at))
+        if run_block[entered_at - 18] != 1:
+            return entered, "entered"
+        # Derived from P0: saturation temperature of the mean measured P0.
+        # Normally the logged P0 of the P0 tube; when the P0 field after the
+        # frames is not the default 760 (one example, "12 mm Tube N2"),
+        # MicroActive used the mean of the point P0 values instead.
+        frames_end = frames[-1][0] + 52
+        logged = self._flex_p0_log(block, frames_end, tube)
+        p0_field = _read_double(block, frames_end + 48)
+        if logged and (p0_field is None or abs(p0_field - 760.0) < 1e-9):
+            p0, source = sum(logged) / len(logged), "mean logged P0"
+        elif logged:
+            p0, source = sum(a / r for _, a, r, _ in frames) / len(frames), "mean point P0"
+        else:
+            p0, source = _read_double(block, tube - 90), "P0 before Sample Tube"
+        if p0 is None or not 0.1 < p0 < 50000.0:
+            return None, "P0 not found"
+        # The P0 tube may hold the bath gas rather than the adsorptive (Kr runs
+        # use N2 P0): take the gas whose saturation temperature is near the
+        # entered one.
+        candidates = []
+        for gas in dict.fromkeys((adsorptive, "N2")):
+            temperature = real_gas_saturation_temperature(gas, p0, entered)
+            if temperature is not None and abs(temperature - entered) < 3.0:
+                candidates.append((abs(temperature - entered), temperature, gas))
+        if not candidates:
+            return None, "no saturation temperature for P0"
+        _, temperature, gas = min(candidates)
+        return temperature, f"saturation temperature of {gas} at {source}"
+
+    def _parse_3flex_raw(
+        self, blocks: dict[int, bytes], subsets: Sequence[SubsetEntry], sample: SampleInfo,
+        props: AdsorptiveProperties | None,
+    ) -> dict[str, object]:
+        block = blocks.get(303, b"")
+        frames = self._flex_frames(block)
+        if not frames:
+            return {"reason": "3Flex 文件中未找到数据点"}
+        tube = next((item.rel_offset for item in self._read_mic_strings(block) if item.text == "Sample Tube"), None)
+        if tube is None or tube < 90 or tube + 197 > len(block):
+            return {"reason": "3Flex 文件中未找到自由空间记录"}
+        mode = block[tube + 196]
+        if mode not in (0, 1, 4):
+            return {"reason": f"3Flex 文件的自由空间方式（{mode}）尚未解析，暂不计算吸附量"}
+        ambient = _read_double(block, tube - 57)
+        if ambient is None or not 250.0 <= ambient <= 330.0:
+            ambient = ASSUMED_AMBIENT_TEMPERATURE_K
+        sample_block = blocks.get(301, b"")
+        if block[18] == 12:
+            mass = _read_double(sample_block, 19)
+            label = next((item.rel_offset for item in self._read_mic_strings(sample_block) if item.text == "Sample:"), None)
+            density = _read_double(sample_block, label + 106) if label is not None else None
+        else:
+            recorded = self._with_row_frame_sample_mass(sample, sample_block)
+            mass, density = recorded.sample_mass_g, recorded.sample_density_g_cm3
+        if mass is None or not 1e-6 < mass < 100.0:
+            return {"reason": "3Flex 文件中未找到样品质量"}
+        adsorptive = props.mnemonic if props else ""
+        temperature, temperature_source = self._flex_analysis_temperature(
+            blocks.get(302, b""), block, frames, tube, adsorptive)
+        if temperature is None:
+            return {"reason": f"3Flex 文件的分析温度未能确定（{temperature_source}）"}
+        if mode == 4:
+            # "Calculated" free space: the empty-tube cold / warm free space of
+            # the tube definition (subset 1021, before the 8163.688 sentinel)
+            # minus the sample volume m / rho at analysis and ambient
+            # temperature. D-7 example: Vc equals MicroActive's to 1e-6; the
+            # quantities to 3e-5.
+            tube_block = blocks.get(1021, b"")
+            empty_warm = _read_double(tube_block, len(tube_block) - 26) if len(tube_block) >= 26 else None
+            empty_cold = _read_double(tube_block, len(tube_block) - 18) if len(tube_block) >= 18 else None
+            if (empty_cold is None or empty_warm is None or not 0.0 < empty_warm < empty_cold < 300.0
+                    or not density or not 0.0 < density < 30.0):
+                return {"reason": "3Flex 文件按计算自由空间测试，但缺少样品管体积或样品密度"}
+            volume = mass / density
+            cold = empty_cold - volume * 273.15 / temperature
+            warm = empty_warm - volume * 273.15 / ambient
+        else:
+            cold, warm = _read_double(block, tube - 24), _read_double(block, tube - 16)
+        if cold is None or warm is None or not 0.0 < warm <= cold < 300.0:
+            return {"reason": "3Flex 文件的自由空间数值无效"}
+        if real_gas_compressibility(adsorptive, 1.0, temperature) is None:
+            return {"reason": f"暂不支持 {adsorptive or '该吸附质'} 的真实气体状态方程，暂不计算吸附量"}
+        # Immersed (cold) part; near ambient the whole free space is at the
+        # analysis temperature (n-butane / n-pentane examples).
+        vbath = min((cold - warm) / (1.0 - temperature / ambient), cold) if temperature < ambient else cold
+        # Adsorbed-phase correction (liquid volume per cm3 STP adsorbed): from
+        # the saturated liquid density (N2, Ar, CO2, n-pentane, n-hexane);
+        # below the triple point the stored factor (Kr at 77 K). None when the
+        # saturation pressure exceeds the maximum manifold pressure and P0 was
+        # set to that maximum (n-butane at 296.65 K: P0 925 mmHg, two files).
+        mean_p0 = sum(a / r for _, a, r, _ in frames) / len(frames)
+        saturation = real_gas_saturation(adsorptive, temperature)
+        manifold_max = props.max_manifold_pressure_mmHg if props and props.max_manifold_pressure_mmHg else 925.0
+        if saturation is None:
+            factor = props.density_conversion_factor if props and props.density_conversion_factor else None
+            if factor is None or not 0.0 < factor < 0.05:
+                return {"reason": "3Flex 文件的吸附相修正系数无效"}
+            k_source = "stored density conversion factor"
+        elif saturation[0] > manifold_max and abs(mean_p0 - manifold_max) < 1e-6 * manifold_max:
+            factor = 0.0
+            k_source = "none (P0 limited to the maximum manifold pressure)"
+        else:
+            factor = 1.0 / (saturation[1] * 22.414)
+            k_source = "saturated liquid density (equation of state)"
+        k = factor * 273.15 / temperature
+        # MicroActive also converts gas to liquid volume (t-Plot micropore
+        # volume and external area) with the saturated liquid density: Ar
+        # ZSM-5 and n-pentane t-Plot results equal ours only with it.
+        liquid_factor = 1.0 / (saturation[1] * 22.414) if saturation is not None else None
+        rows = self._phase_points_dropping_saturation(frames)
+        points: list[IsothermPoint] = []
+        for idx, ((rel, absolute, relative, dosed), phase) in enumerate(rows, start=1):
+            z = real_gas_tabulated_compressibility(adsorptive, absolute, temperature)
+            if z is None or not math.isfinite(z) or z <= 0.0:
+                return {"reason": f"3Flex 第 {idx} 个数据点的真实气体压缩因子无效，暂不计算吸附量"}
+            x = absolute / 760.0
+            denominator = 1.0 - x * k / z
+            if not math.isfinite(denominator) or denominator <= 1e-12:
+                return {"reason": f"3Flex 第 {idx} 个数据点的吸附相自由空间修正无效，暂不计算吸附量"}
+            quantity = (dosed - x * (cold - vbath) - x * vbath / z) / denominator / mass
+            points.append(IsothermPoint(
+                index=idx, phase=phase, record_rel_offset=rel, absolute_pressure_mmHg=absolute,
+                relative_pressure=relative, raw_internal_cm3_stp=dosed, saturation_pressure_mmHg=absolute / relative,
+                elapsed_seconds=None, quantity_adsorbed_cm3_g_stp=quantity,
+                quantity_adsorbed_mmol_g=quantity / CM3_STP_PER_MMOL,
+            ))
+        options: dict[str, object] = {
+            "format_family": "3Flex raw SMP",
+            "flex_analysis_temperature_K": temperature,
+            "flex_analysis_temperature_source": temperature_source,
+            "flex_free_space_mode": mode,
+            "flex_adsorbed_phase_factor_source": k_source,
+            "row_frame_quantity_source": "real gas equation of state with adsorbed-phase free-space correction",
+        }
+        # Thermal transpiration: quantities use the stored (measured) pressure;
+        # MicroActive reports P and P/P0 times the Weber ratio (13X: 8e-9).
+        diameter = self._row_frame_transpiration_setting(blocks.get(304, b""))
+        hard_sphere = props.thermal_transpiration_hard_sphere_A if props else None
+        if diameter is not None and hard_sphere is not None and 1.0 < hard_sphere < 10.0:
+            corrected, active, count = [], True, 0
+            for point in points:
+                ratio = self._weber_transpiration_ratio(
+                    point.absolute_pressure_mmHg, diameter, hard_sphere, temperature) if active else 1.0
+                if ratio >= 0.99:
+                    active = False
+                    corrected.append(point)
+                    continue
+                count += 1
+                corrected.append(replace(point, absolute_pressure_mmHg=point.absolute_pressure_mmHg * ratio,
+                                         relative_pressure=point.relative_pressure * ratio))
+            points = corrected
+            options.update({
+                "thermal_transpiration": "weber_micromeritics_3flex",
+                "thermal_transpiration_tube_diameter_mm": diameter,
+                "thermal_transpiration_hard_sphere_A": hard_sphere,
+                "thermal_transpiration_bath_temperature_K": temperature,
+                "thermal_transpiration_corrected_points": count,
+            })
+        free_space = FreeSpaceInfo(
+            analysis_entered_cm3=cold, ambient_entered_cm3=warm, nonideality_factor=0.0,
+            cold_free_space_cm3=cold, warm_free_space_cm3=warm, stem_volume_cm3=0.0, vbath_cm3=vbath,
+            vfree_factor_cm3=cold, vfree_factor_source=f"3flex_real_gas_eos_mode_{mode}",
+            ambient_temperature_K_assumed=ambient,
+        )
+        return {"isotherm": points, "sample": replace(sample, sample_mass_g=mass), "free_space": free_space,
+                "options": options, "density_conversion_factor": liquid_factor}
+
+    # --- Gemini VII (2390) -----------------------------------------------------
+    # Point records: P_abs, P/P0, Q_dosed (3 doubles) followed by variable-length
+    # tag lists; every record is preceded by E0 + NaN double + 02 00. Gemini
+    # measures against a balanced reference tube, so MicroActive reports
+    # quantity adsorbed = quantity dosed / sample mass (its free-space gas is 0).
+    _GEMINI_PREFIX = re.compile(rb"\xe0\x00\x00\x00\x00\x00\x00\xf8\x7f\x02\x00", re.S)
+
+    def _is_gemini(self, block: bytes) -> bool:
+        # The software string follows the point table, so search the whole block.
+        return b"G\x00e\x00m\x00i\x00n\x00i\x00 \x00V\x00I\x00I\x00" in block and any(
+            item.text.startswith("Gemini VII") for item in self._read_mic_strings(block))
+
+    def _gemini_rows(self, block: bytes, payload_size: int) -> list[tuple[int, float, float, float]]:
+        limit = min(len(block), payload_size + 18)
+        rows: list[tuple[int, float, float, float]] = []
+        for match in self._GEMINI_PREFIX.finditer(block, 0, limit):
+            at = match.end()
+            if at + 24 > limit:
+                break
+            absolute, relative, dosed = struct.unpack_from("<ddd", block, at)
+            if not (all(math.isfinite(v) for v in (absolute, relative, dosed))
+                    and 0.0 < absolute < 1200.0 and 0.0 < relative < 1.2 and 0.5 < absolute / relative < 1200.0
+                    and -1000.0 < dosed < 100000.0):
+                continue
+            if rows and not 30 <= at - rows[-1][0] <= 200:
+                # Records follow each other closely; a distant match is other data.
+                if len(rows) >= 3:
+                    break
+                rows = []
+            rows.append((at, absolute, relative, dosed))
+        return rows if len(rows) >= 3 else []
+
+    @staticmethod
+    def _phase_points_dropping_saturation(rows):
+        """Pair each row with its branch and drop rows above saturation (P/P0 > 1).
+
+        MicroActive ends the adsorption branch at the highest remaining point,
+        unless a P/P0 > 1 record comes first, in which case it ends just before
+        that record (TriStar Titania: ..., 0.98909, [1.0008], 0.99007 des;
+        Gemini sialfull: ..., 0.99772, 0.99558 des, [1.0015], ...).
+        """
+        kept = [i for i, row in enumerate(rows) if row[2] <= 1.0]
+        if not kept:
+            return []
+        top = max(rows[i][2] for i in kept)
+        boundary = max(i for i in kept if rows[i][2] == top)
+        first_saturation = next((i for i, row in enumerate(rows) if row[2] > 1.0), None)
+        if first_saturation is not None and first_saturation < boundary:
+            boundary = first_saturation - 1
+        return [(rows[i], "adsorption" if i <= boundary else "desorption") for i in kept]
+
+    @staticmethod
+    def _gemini_point_tags(block: bytes, at: int) -> tuple[int, ...]:
+        # After the three doubles: u16 elapsed, 1 byte, u16 tag count, tags (u16).
+        # Tag 103 marks the report's BET points (fits on them equal MicroActive's
+        # monolayer capacity and C on all six Gemini example files).
+        count = _read_uint16(block, at + 27)
+        if count is None or count > 40 or at + 29 + 2 * count > len(block):
+            return ()
+        return tuple(struct.unpack_from("<" + "H" * count, block, at + 29)) if count else ()
+
+    def _gemini_inputs(self, blocks: dict[int, bytes], mnemonic: str) -> dict[str, object] | None:
+        """Mass, density, bath temperature and free-space difference of a Gemini file.
+
+        Checked against MicroActive 7.00 on five example files: mass at subset
+        301 offset 19; density at "Sample:" + 86; bath temperature 15 bytes
+        before the adsorptive mnemonic in subset 302; at "Sample Tube" in 303
+        the non-ideality factor (-32), the free-space difference (-24) and the
+        mode byte (+196): 0 measured (stored value), 4 calculated
+        (-(mass/density) * 273.15 / T), 6 none.
+        """
+        sample_block, run_block, block = blocks.get(301, b""), blocks.get(302, b""), blocks.get(303, b"")
+        mass = _read_double(sample_block, 19)
+        if mass is None or not 1e-6 < mass < 100.0:
+            return None
+        label = next((s.rel_offset for s in self._read_mic_strings(sample_block) if s.text == "Sample:"), None)
+        density = _read_double(sample_block, label + 86) if label is not None else None
+        temperature = next((
+            _read_double(run_block, s.rel_offset - 15) for s in self._read_mic_strings(run_block)
+            if mnemonic and s.text == mnemonic and _read_double(run_block, s.rel_offset - 15) is not None
+            and 50.0 < _read_double(run_block, s.rel_offset - 15) < 400.0), None)
+        tube = next((s.rel_offset for s in self._read_mic_strings(block) if s.text == "Sample Tube"), None)
+        if tube is None or tube < 32 or tube + 197 > len(block):
+            return None
+        nonideality = _read_double(block, tube - 32)
+        if nonideality is None or not 0.0 <= nonideality < 0.01:
+            return None
+        mode = block[tube + 196]
+        if mode == 0:
+            difference = _read_double(block, tube - 24)
+            source = "measured"
+        elif mode == 4:
+            if not density or density <= 0 or temperature is None:
+                return None
+            difference = -(mass / density) * 273.15 / temperature
+            source = "calculated_from_density"
+        elif mode == 6:
+            difference, source = 0.0, "none"
+        else:
+            return None
+        if difference is None or not math.isfinite(difference) or abs(difference) > 50.0:
+            return None
+        return {"mass": mass, "density": density, "temperature": temperature, "nonideality": nonideality,
+                "difference": difference, "mode": source}
+
+    def _parse_gemini_isotherm(self, block: bytes, payload_size: int, inputs: dict[str, object] | None) -> list[IsothermPoint]:
+        rows = self._gemini_rows(block, payload_size)
+        if not rows or inputs is None:
+            return []
+        mass = float(inputs["mass"])
+        difference = float(inputs["difference"])
+        alpha = float(inputs["nonideality"])
+        phased = self._phase_points_dropping_saturation(rows)
+        points = []
+        for idx, ((at, absolute, relative, dosed), phase) in enumerate(phased, start=1):
+            # Gas not balanced by the reference tube: x * V * (1 + alpha * P).
+            x = absolute / 760.0
+            quantity = (dosed - x * difference * (1.0 + alpha * absolute)) / mass
+            points.append(IsothermPoint(
+                index=idx,
+                phase=phase,
+                record_rel_offset=at,
+                absolute_pressure_mmHg=absolute,
+                relative_pressure=relative,
+                raw_internal_cm3_stp=dosed,
+                saturation_pressure_mmHg=absolute / relative,
+                elapsed_seconds=None,
+                quantity_adsorbed_cm3_g_stp=quantity,
+                quantity_adsorbed_mmol_g=quantity / CM3_STP_PER_MMOL,
+            ))
+        return points
+
+    # --- Legacy ASAP SMP, subset 303 record version 6 ("ASAP 2010 V5.00") -------
+    @staticmethod
+    def _legacy_v6_records(block: bytes) -> list[tuple[int, float, float, float, int, tuple[int, ...]]]:
+        # u16 point count at 86; records from 119: P, P/P0, Q_dosed (doubles),
+        # u16 elapsed, u16 tag count, tags (u16 each), one pad byte. Decoded
+        # values equal MicroActive's absolute pressure and quantity dosed
+        # exactly (Carbon Black D-4, Alumina Kr example files).
+        if len(block) < 150 or block[18] != 6:
+            return []
+        count = _read_uint16(block, 86) or 0
+        rows = []
+        at = 119
+        for _ in range(count):
+            if at + 28 > len(block):
+                return []
+            absolute, relative, dosed = struct.unpack_from("<ddd", block, at)
+            elapsed, tags = struct.unpack_from("<HH", block, at + 24)
+            if tags > 8 or at + 29 + 2 * tags > len(block):
+                return []
+            if not (all(math.isfinite(v) for v in (absolute, relative, dosed)) and 0.0 < absolute < 1200.0
+                    and 0.0 < relative < 1.2 and 0.5 < absolute / relative < 1200.0 and -1000.0 < dosed < 100000.0):
+                return []
+            tag_values = struct.unpack_from("<" + "H" * tags, block, at + 28) if tags else ()
+            rows.append((at, absolute, relative, dosed, elapsed, tag_values))
+            at += 28 + 2 * tags + 1
+        return rows if len(rows) >= 3 else []
+
+    def _parse_legacy_v6(
+        self, blocks: dict[int, bytes], sample: SampleInfo,
+    ) -> tuple[list[IsothermPoint], FreeSpaceInfo, AdsorptiveProperties, dict[str, object]] | None:
+        block = blocks.get(303, b"")
+        rows = self._legacy_v6_records(block)
+        if not rows:
+            return None
+        # Free space before the ASCII "Sample Tube" name: entered cold/warm at
+        # -33/-25, measured cold/warm at -17/-9 (both example files measured).
+        tube = block.find(b"\x01Sample Tube")
+        if tube < 40:
+            return None
+        tube += 1
+        cold, warm = _read_double(block, tube - 17), _read_double(block, tube - 9)
+        source = "legacy_asap_v6_measured_free_space"
+        if cold is None or warm is None or not (0.0 < warm < cold < 300.0):
+            cold, warm = _read_double(block, tube - 33), _read_double(block, tube - 25)
+            source = "legacy_asap_v6_entered_free_space"
+        if cold is None or warm is None or not (0.0 < warm < cold < 300.0):
+            return None
+        adsorptive_block = blocks.get(320, b"")
+        nonideality = _read_double(adsorptive_block, 74)
+        if nonideality is None or not 0.0 <= nonideality < 0.01:
+            return None
+        # MicroActive's own quantities back-solve to the ASAP 2020 Plus
+        # coefficients (0.995947 / 0.004063 vs 0.995946 / 0.004054).
+        free_space = FreeSpaceInfo(
+            analysis_entered_cm3=cold,
+            ambient_entered_cm3=warm,
+            nonideality_factor=nonideality,
+            cold_free_space_cm3=cold,
+            warm_free_space_cm3=warm,
+            stem_volume_cm3=0.0,
+            vbath_cm3=ASAP_2020_PLUS_VBATH_DIFF_COEFF * (cold - warm),
+            vfree_factor_cm3=ASAP_2020_PLUS_VFREE_COLD_COEFF * cold + ASAP_2020_PLUS_VFREE_WARM_COEFF * warm,
+            vfree_factor_source=source,
+        )
+        max_relative = max(row[2] for row in rows)
+        max_index = max(i for i, row in enumerate(rows) if row[2] == max_relative)
+        points = []
+        for idx, (at, absolute, relative, dosed, _elapsed, _tags) in enumerate(rows, start=1):
+            quantity = self._calculate_quantity(absolute, dosed, sample, free_space)
+            points.append(IsothermPoint(
+                index=idx,
+                phase="adsorption" if idx - 1 <= max_index else "desorption",
+                record_rel_offset=at,
+                absolute_pressure_mmHg=absolute,
+                relative_pressure=relative,
+                raw_internal_cm3_stp=dosed,
+                saturation_pressure_mmHg=absolute / relative,
+                elapsed_seconds=None,
+                quantity_adsorbed_cm3_g_stp=quantity,
+                quantity_adsorbed_mmol_g=quantity / CM3_STP_PER_MMOL if quantity is not None else None,
+            ))
+        if any(point.quantity_adsorbed_cm3_g_stp is None for point in points):
+            return None
+        text = block.decode("latin1")
+        software = re.search(r"ASAP \d{4}[ A-Za-z0-9.]*", text)
+        name = adsorptive_block[19:48].split(b"\x00")[0].decode("latin1", "replace").strip()
+        mnemonic = re.sub(r"[^A-Za-z0-9]", "", adsorptive_block[60:68].split(b"\x00")[0].decode("latin1", "replace"))
+        # ASCII adsorptive record: max manifold 66, non-ideality 74, density
+        # conversion 82, hard sphere diameter 90, cross-section 98 (N2 0.162,
+        # Kr 0.21 nm2 as MicroActive reports).
+        max_manifold = _read_double(adsorptive_block, 66)
+        hard_sphere = _read_double(adsorptive_block, 90)
+        cross_section = _read_double(adsorptive_block, 98)
+        density = _read_double(adsorptive_block, 82)
+        if cross_section is None or not 0.05 < cross_section < 1.0:
+            return None
+        properties = AdsorptiveProperties(
+            adsorptive=name,
+            mnemonic=mnemonic.upper() if mnemonic.upper() == "KR" else mnemonic,
+            max_manifold_pressure_mmHg=max_manifold,
+            max_manifold_pressure_kPa=max_manifold * MMHG_TO_KPA if max_manifold is not None else None,
+            nonideality_factor=nonideality,
+            density_conversion_factor=density,
+            thermal_transpiration_hard_sphere_A=hard_sphere,
+            thermal_transpiration_hard_sphere_nm=hard_sphere / 10.0 if hard_sphere is not None else None,
+            molecular_cross_sectional_area_nm2=cross_section,
+            ui_field_rel101=None,
+            psat_table=[],
+        )
+        options: dict[str, object] = {
+            "instrument_manufacturer": "Micromeritics",
+            "instrument_model": "ASAP 2010" if "2010" in text else "ASAP (legacy)",
+            "format_family": "legacy ASAP v6 SMP",
+            "legacy_v6_point_tags": [list(row[5]) for row in rows],
+            "legacy_v6_validation": "points, dosed gas and free-space model checked against MicroActive 7.00 "
+                                    "(Carbon Black D-4, Alumina Kr example files)",
+        }
+        if software:
+            options["instrument_software"] = software.group(0).strip()
+        return points, free_space, properties, options
+
+    def _no_isotherm_reason(self, blocks: dict[int, bytes], sample: SampleInfo) -> str:
+        if 303 not in blocks:
+            texts = " ".join(
+                item.text for subset_id in (100, 302, 304) for item in self._read_mic_strings(blocks.get(subset_id, b"")) if item.text
+            ).lower()
+            for keys, label in (
+                (("mercury", "penetrometer", "autopore"), "压汞"),
+                (("chemisorption", "chemi", "tpr", "tpd", "pulse"), "化学吸附"),
+                (("pycnometer", "accupyc"), "真密度"),
+                (("breakthrough",), "穿透曲线"),
+                (("sedigraph", "particle"), "粒度"),
+            ):
+                if any(key in texts for key in keys):
+                    return f"该文件似乎是{label}数据，不含物理吸附等温线"
+            return "文件中没有物理吸附分析数据块（SUBSET303），可能不是物理吸附文件"
+        record_version = blocks[303][18] if len(blocks[303]) > 18 else None
+        if record_version is not None and record_version < 12:
+            return f"物理吸附数据块为旧版格式（记录版本 {record_version}），当前尚不支持"
+        if not self._parse_log_messages(blocks.get(705, b"")):
+            return "文件中没有分析记录，可能是尚未测试的样品/模板文件"
+        return ""
+
     def _parse_3flex_manual_isotherm(
         self,
         block: bytes,
@@ -1478,7 +2610,9 @@ class TriStarSmpParser:
         if not block or payload_size <= 0 or not self._asap_software_text(block):
             return []
 
-        rows = self._scan_asap_point_rows(block)
+        # ASAP 2425 example files include Kr (P0 ~1.7 mmHg) and CO2 at 273 K
+        # (P0 ~26000 mmHg); only the 66-byte chain is accepted there.
+        rows = self._scan_asap_point_rows(block, wide_saturation="ASAP 2425" in self._asap_software_text(block))
         if len(rows) < 3:
             return []
 
@@ -1509,8 +2643,9 @@ class TriStarSmpParser:
             )
         return points
 
-    def _scan_asap_point_rows(self, block: bytes) -> list[tuple[int, float, float, float]]:
+    def _scan_asap_point_rows(self, block: bytes, wide_saturation: bool = False) -> list[tuple[int, float, float, float]]:
         candidates: list[tuple[int, float, float, float]] = []
+        saturation_range = (0.5, 40000.0) if wide_saturation else (700.0, 800.0)
         for rel in range(0, len(block) - 24):
             absolute, relative, raw_internal = struct.unpack_from("<ddd", block, rel)
             if not (
@@ -1523,7 +2658,7 @@ class TriStarSmpParser:
             ):
                 continue
             saturation = absolute / relative
-            if 700.0 <= saturation <= 800.0:
+            if saturation_range[0] <= saturation <= saturation_range[1]:
                 candidates.append((rel, absolute, relative, raw_internal))
 
         if len(candidates) < 3:
@@ -1541,6 +2676,8 @@ class TriStarSmpParser:
                 rel += 66
             if len(sequence) > len(best):
                 best = sequence
+        if wide_saturation:
+            return best if len(best) >= 3 else []
         return best if len(best) >= 3 else candidates
 
     def _scan_microactive_point_rows(self, block: bytes, payload_size: int) -> list[tuple[int, float, float, float]]:
@@ -1685,12 +2822,38 @@ class TriStarSmpParser:
             cross_section_rel = 93
             molecular_or_ui_rel = 101
             psat_start = 132
+        # The numeric fields follow the mnemonic string at fixed distances
+        # (+8 ... +50) in both layouts above. The name before it has variable
+        # length, so when the mnemonic is not where the fixed layout expects it
+        # (e.g. "nitrogen" in a long block, "Krypton @ 77.35 K"), read the
+        # fields relative to the actual mnemonic instead of the wrong bytes.
+        actual = next(
+            (item for item in strings if name_rel < item.rel_offset <= 140 and 0 < len(item.text) <= 8),
+            None,
+        )
+        actual_mnemonic = actual.rel_offset if actual is not None else None
+        if actual_mnemonic is not None and actual_mnemonic != mnemonic_rel and not any(
+            item.rel_offset == mnemonic_rel for item in strings
+        ):
+            # The distances hold for a two-character mnemonic ("N2", "Ar");
+            # longer ones ("CO2", "nC4") push the fields back by 2 bytes per
+            # character (3Flex CO2 / butane / pentane examples).
+            shift = 2 * max(0, len(actual.text) - 2)
+            mnemonic_rel = actual_mnemonic
+            max_rel = mnemonic_rel + 8 + shift
+            nonideal_rel = mnemonic_rel + 18 + shift
+            density_rel = mnemonic_rel + 26 + shift
+            hard_sphere_rel = mnemonic_rel + 34 + shift
+            cross_section_rel = mnemonic_rel + 42 + shift
+            molecular_or_ui_rel = mnemonic_rel + 50 + shift
+            psat_start = mnemonic_rel + 71 + shift
+        psat_count_rel = psat_start - 4
 
         max_manifold = _read_double(block, max_rel)
         hard_sphere_a = _read_double(block, hard_sphere_rel)
         psat_table: list[dict[str, float | int]] = []
         if len(block) > 600:
-            count = _read_uint32(block, 138) or 0
+            count = _read_uint32(block, psat_count_rel) or 0
             rel = psat_start
             for table_index in range(count):
                 pressure = _read_double(block, rel)
@@ -1821,6 +2984,7 @@ class TriStarSmpParser:
                 or "TriStar II Plus Version" in text
                 or "TriStar II 3020 Version" in text
                 or "ASAP 2460 Version" in text
+                or "ASAP 2425 Version" in text
                 or "ASAP 2020 Plus Version" in text
                 or re.search(r"\bASAP\s+2020\s+(?:Version\s+)?V?\d", text, re.IGNORECASE)
             ):
@@ -1835,6 +2999,8 @@ class TriStarSmpParser:
             model = "TriStar II 3020"
         elif "ASAP 2460" in joined:
             model = "ASAP 2460"
+        elif "ASAP 2425" in joined:
+            model = "ASAP 2425"
         elif "ASAP 2020 Plus" in joined:
             model = "ASAP 2020 Plus"
         elif "ASAP 2020" in joined:
@@ -2246,7 +3412,7 @@ def _write_csv(path: Path, rows: list[dict[str, object]]) -> Path:
 MICROMERITICS_THICKNESS_MODELS = (
     "halsey", "harkins_jura", "carbon_black_stsa", "broekhoff_de_boer", "reference", "kjs",
 )
-MICROMERITICS_REPORT_SETTINGS_MODELS = ("TriStar II 3020", "TriStar II Plus", "ASAP 2460", "ASAP 2020 Plus", "3Flex 3500")
+MICROMERITICS_REPORT_SETTINGS_MODELS = ("TriStar II 3020", "TriStar II Plus", "ASAP 2460", "ASAP 2425", "ASAP 2020 Plus", "3Flex 3500")
 _TRISTAR_3020_POINT_TAG_OFFSET = 27
 _TAG_BET = 0x67
 _TAG_LANGMUIR = 0x68
@@ -2392,11 +3558,12 @@ def micromeritics_report_settings(blocks: dict[int, bytes], isotherm, method_opt
             stored_langmuir_range_source=source,
         )
     t_plot = _micromeritics_t_plot_settings(blocks.get(314, b""))
-    # Verified: Harkins-Jura (3020, ASAP 2460/2020 Plus, 3Flex) and the
+    # Verified: Harkins-Jura (3020, ASAP 2460/2020 Plus, 3Flex), Carbon Black
+    # STSA (ASAP 2425 Carbon Black example, MicroActive 7.00 to 1e-7) and the
     # reference table with MicroActive's interpolation (TriStar II Plus, 83/90
     # reports; the rest were exported before the file's settings changed).
     method = t_plot.get("vendor_t_plot_thickness_method")
-    if method == "harkins_jura" or (method == "reference" and "vendor_t_plot_thickness_params" in t_plot):
+    if method in ("harkins_jura", "carbon_black_stsa") or (method == "reference" and "vendor_t_plot_thickness_params" in t_plot):
         t_plot["use_vendor_t_plot_settings"] = True
     options.update({key: value for key, value in t_plot.items()})
     if not ("stored_bet_pressure_min" in options or "stored_langmuir_pressure_min" in options):
@@ -2406,7 +3573,7 @@ def micromeritics_report_settings(blocks: dict[int, bytes], isotherm, method_opt
     # The vendor fits P/Q against absolute pressure P (mmHg); with a P0 that
     # varies per point this differs slightly from the P/P0 form.
     options["langmuir_fit_axis"] = "absolute_pressure"
-    if model in ("TriStar II 3020", "ASAP 2460", "ASAP 2020 Plus") and bet_span is not None:
+    if model in ("TriStar II 3020", "ASAP 2460", "ASAP 2425", "ASAP 2020 Plus") and bet_span is not None:
         # Calculations manual (Summary report): "pressure closest to 0.3 of the
         # relative pressure points designated for surface area calculations".
         options.update(

@@ -517,6 +517,7 @@ def automatic_bet_range(result: TriStarResult) -> tuple[float, float]:
         or _uses_bsd_defaults(result)
         or _uses_micromeritics_flex_defaults(result)
         or _uses_jwgb_defaults(result)
+        or result.method_options.get("format_family") == "legacy ASAP v6 SMP"
     ):
         stored_range = _stored_bet_range(result)
         if stored_range is not None:
@@ -1032,13 +1033,14 @@ def _uses_tristar_3020_defaults(result: TriStarResult) -> bool:
 def _uses_asap_defaults(result: TriStarResult) -> bool:
     model = str(result.method_options.get("instrument_model", ""))
     software = str(result.method_options.get("instrument_software", ""))
-    return "ASAP 2460" in model or "ASAP 2020" in model or "ASAP 2460" in software or "ASAP 2020" in software
+    return any(name in model or name in software for name in ("ASAP 2460", "ASAP 2425", "ASAP 2020"))
 
 
 def _uses_asap_2460_defaults(result: TriStarResult) -> bool:
     model = str(result.method_options.get("instrument_model", ""))
     software = str(result.method_options.get("instrument_software", ""))
-    return "ASAP 2460" in model or "ASAP 2460" in software
+    # ASAP 2425 runs the same software family and free-space model as the 2460.
+    return any(name in model or name in software for name in ("ASAP 2460", "ASAP 2425"))
 
 
 def _uses_legacy_asap_2020_defaults(result: TriStarResult) -> bool:
@@ -1060,7 +1062,7 @@ def uses_vendor_t_plot_settings(result: TriStarResult) -> bool:
     return _uses_tristar_plus_v3_defaults(result) or bool(result.method_options.get("use_vendor_t_plot_settings"))
 
 
-MICROMERITICS_SIGNED_T_PLOT_MODELS = ("TriStar II 3020", "TriStar II Plus", "ASAP 2460", "ASAP 2020", "3Flex 3500")
+MICROMERITICS_SIGNED_T_PLOT_MODELS = ("TriStar II 3020", "TriStar II Plus", "ASAP 2460", "ASAP 2425", "ASAP 2020", "3Flex 3500")
 
 
 def reports_signed_t_plot_results(result: TriStarResult) -> bool:

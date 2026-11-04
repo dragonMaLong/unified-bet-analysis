@@ -1,5 +1,5 @@
 [Unit]
-Description=Expire BET telemetry events, IP observations, and redacted backups
+Description=Maintain BET telemetry WAL and expire optional backup copies
 After=bet-telemetry.service
 
 [Service]

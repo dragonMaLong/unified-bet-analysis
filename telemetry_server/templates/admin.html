@@ -5,66 +5,257 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>BET 使用统计</title>
   <style>
-    :root { color-scheme: light; font: 15px/1.6 system-ui, sans-serif; color: #172332; background: #f4f6f8; }
-    body { max-width: 1150px; margin: 32px auto; padding: 0 22px 40px; }
-    h1 { margin-bottom: 4px; font-size: 28px; } h2 { margin: 0 0 12px; font-size: 19px; }
-    p { margin: 6px 0; } .muted { color: #526170; } .metrics { display: grid; grid-template-columns: repeat(auto-fit,minmax(210px,1fr)); gap: 14px; margin: 22px 0; }
-    .metric, section { background: white; border: 1px solid #e1e6eb; border-radius: 10px; padding: 18px; }
-    .metric strong { display: block; font-size: 30px; font-variant-numeric: tabular-nums; }
-    section { margin: 16px 0; overflow-x: auto; } table { width: 100%; border-collapse: collapse; }
-    th,td { padding: 9px 12px; border-bottom: 1px solid #e7ebef; text-align: left; white-space: nowrap; }
-    th { background: #f7f9fb; font-weight: 600; } td { font-variant-numeric: tabular-nums; }
-    .empty { padding: 16px 0; color: #607080; } .dates { max-height: 340px; overflow: auto; }
-    code { font: inherit; background: #f0f3f6; padding: 1px 4px; }
+    :root { color-scheme: light; font: 14px/1.6 "Microsoft YaHei", system-ui, sans-serif; color: #1f2d3d; background: #f2f4f7;
+            --line: #e6eaf0; --muted: #6b7889; --accent: #2f7de1; --accent-soft: rgba(47,125,225,.16); --head: #f7f8fa; }
+    body { max-width: 1240px; margin: 28px auto; padding: 0 20px 40px; }
+    h1 { margin: 0 0 2px; font-size: 24px; } h2 { margin: 0; font-size: 16px; }
+    a { color: var(--accent); }
+    .updated { color: var(--muted); font-size: 13px; margin: 0; }
+    .periods { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0 14px; }
+    .periods a, .pagination a { color: #24466e; text-decoration: none; border: 1px solid #cdd7e3; border-radius: 4px; padding: 5px 14px; background: #fff; }
+    .periods a[aria-current="page"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .periods a:focus-visible, .pagination a:focus-visible, .toggle:has(input:focus-visible) { outline: 3px solid #8fc0f3; outline-offset: 2px; }
+    section { background: #fff; border: 1px solid var(--line); border-radius: 6px; margin: 0 0 16px; }
+    .section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 18px; border-bottom: 1px solid var(--line); }
+    .count { color: var(--muted); font-size: 13px; }
+    .ip-head { flex-wrap: wrap; }
+    .custom-range { align-self: center; color: var(--accent); font-size: 13px; }
+    .filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; flex: 1 1 auto; margin: 0 8px; }
+    .filters .field { display: inline-flex; align-items: center; gap: 6px; }
+    .field-label { color: var(--muted); font-size: 13px; }
+    .filters input[type="date"], .filters input[type="text"], .dd > summary { font: inherit; font-size: 13px; color: #1f2d3d; border: 1px solid #cdd7e3; border-radius: 4px; padding: 3px 8px; background: #fff; }
+    .filters input[type="text"] { width: 12em; }
+    .filters button { font: inherit; font-size: 13px; color: #fff; background: var(--accent); border: 0; border-radius: 4px; padding: 4px 14px; cursor: pointer; }
+    .filters input:focus-visible, .filters button:focus-visible, .dd > summary:focus-visible, .menu a:focus-visible { outline: 3px solid #8fc0f3; outline-offset: 1px; }
+    .reset, .clear { color: var(--muted); text-decoration: none; font-size: 13px; }
+    .clear { font-size: 16px; line-height: 1; padding: 0 2px; } .clear:hover, .reset:hover { color: #c2410c; }
+    .dd { position: relative; }
+    .dd > summary { list-style: none; cursor: pointer; min-width: 6.5em; display: inline-flex; justify-content: space-between; gap: 10px; }
+    .dd > summary::-webkit-details-marker { display: none; }
+    .dd > summary::after { content: "▾"; color: var(--accent); }
+    .dd[open] > summary::after { content: "▴"; }
+    .menu { position: absolute; z-index: 20; top: calc(100% + 4px); left: 0; min-width: 160px; background: #fff; border: 1px solid var(--line); border-radius: 4px; box-shadow: 0 6px 18px rgba(31,45,61,.14); padding: 4px 0; }
+    .menu a { display: flex; justify-content: space-between; gap: 14px; padding: 6px 14px; color: #1f2d3d; text-decoration: none; white-space: nowrap; font-size: 13px; }
+    .menu a:hover, .menu a:focus { background: #eaf2fd; }
+    .menu a.current { color: var(--accent); }
+    .menu .arrow { color: var(--muted); margin-left: 6px; }
+    .has-sub { position: relative; }
+    .menu.sub { display: none; top: -5px; left: 100%; }
+    .has-sub:hover > .menu.sub, .has-sub:focus-within > .menu.sub { display: block; }
+    .ip-link { color: inherit; text-decoration: none; border-bottom: 1px dashed #9db8da; }
+    .ip-link:hover { color: var(--accent); border-bottom-color: var(--accent); }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 13px 12px; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--line); }
+    th { background: var(--head); font-weight: normal; color: #4a5868; }
+    td { font-variant-numeric: tabular-nums; }
+    .sessions th.toggle-col, .sessions td.toggle-col { width: 28px; padding-right: 0; text-align: center; }
+    .sessions .num { width: 44px; color: #3c4a5a; }
+    .sessions .duration { text-align: right; } .sessions th.duration { text-align: right; }
+    .toggle { display: inline-flex; width: 20px; height: 20px; align-items: center; justify-content: center; cursor: pointer; color: #6b7889; font-size: 20px; line-height: 1; user-select: none; }
+    .toggle input { position: absolute; opacity: 0; pointer-events: none; }
+    .toggle .minus { display: none; }
+    tbody.session:has(.toggle input:checked) .toggle .plus { display: none; }
+    tbody.session:has(.toggle input:checked) .toggle .minus { display: inline; }
+    tbody.session:has(.toggle input:checked) tr.summary-row { background: #eef4fd; }
+    tbody.session tr.summary-row:hover { background: #f7faff; }
+    tr.detail { display: none; }
+    tbody.session:has(.toggle input:checked) tr.detail { display: table-row; }
+    tr.detail > td { padding: 0 18px 18px 50px; background: #fff; white-space: normal; }
+    .detail-box { display: grid; grid-template-columns: minmax(240px, 340px) 1fr; border: 1px solid var(--line); background: #f9fafb; margin-top: 2px; }
+    .detail-box > div { padding: 14px 18px; }
+    .detail-box > div + div { border-left: 1px solid var(--line); }
+    .detail-box h3 { margin: 0 0 8px; font-size: 13px; color: #4a5868; font-weight: 600; }
+    dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; margin: 0; }
+    dt { color: var(--muted); } dd { margin: 0; }
+    .imports { margin-top: 10px; background: #fff; border: 1px solid var(--line); }
+    .imports th, .imports td { padding: 6px 10px; font-size: 13px; }
+    .bad { color: #c2410c; } .soft { color: var(--muted); }
+    .inferred { color: var(--muted); font-size: 12px; margin-left: 4px; cursor: help; }
+    .empty { padding: 18px; color: var(--muted); }
+    .pagination { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 12px 18px; }
+    .chart-tabs { display: inline-flex; border: 1px solid #cdd7e3; border-radius: 4px; overflow: hidden; }
+    .chart-tabs label { padding: 4px 14px; cursor: pointer; color: #24466e; background: #fff; }
+    .chart-tabs label + input + label { border-left: 1px solid #cdd7e3; }
+    .chart-tabs input { position: absolute; opacity: 0; pointer-events: none; }
+    .chart-tabs input:checked + label { background: var(--accent); color: #fff; }
+    .chart-tabs:has(input:focus-visible) { outline: 3px solid #8fc0f3; outline-offset: 2px; }
+    .chart { display: none; padding: 8px 12px 10px; }
+    .chart-card:has(#chart-today:checked) .chart.today, .chart-card:has(#chart-period:checked) .chart.period { display: block; }
+    .chart svg { width: 100%; height: auto; display: block; }
+    .chart .grid { stroke: #edf0f4; } .chart .axis-text { fill: #8a96a5; font-size: 11px; }
+    .chart .area { fill: var(--accent-soft); } .chart .line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; }
+    .chart .dot { fill: #fff; stroke: var(--accent); stroke-width: 1.5; }
+    .chart .hit { fill: transparent; } .chart .hit:hover + .dot, .chart .dot:hover { fill: var(--accent); }
+    .chart-note { color: var(--muted); font-size: 13px; padding: 0 18px 12px; margin: 0; }
+    .plain th, .plain td { padding: 9px 14px; }
+    .storage { color: var(--muted); font-size: 12px; margin-top: 18px; } .warning { color: #9a4900; font-weight: 600; }
+    @media (max-width: 760px) { .detail-box { grid-template-columns: 1fr; } .detail-box > div + div { border-left: 0; border-top: 1px solid var(--line); } tr.detail > td { padding-left: 12px; } }
   </style>
 </head>
 <body>
   <h1>BET 使用统计</h1>
-  <p class="muted">更新时间 {{ summary.generated_at }} · 所有时间均为 UTC</p>
-  <p class="muted">一般统计为近 30 天。事件保留窗口为 90 天，IP 为 7 天，由定时任务清理。安装数按随机安装标识去重，不能视为用户人数；功能浏览表示展示或切换到分析页面，不是分析计算次数。</p>
-  <div class="metrics">
-    <div class="metric">近 7 天活跃安装<strong>{{ summary.active_installs['7d'] }}</strong></div>
-    <div class="metric">近 30 天活跃安装<strong>{{ summary.active_installs['30d'] }}</strong></div>
-    <div class="metric">近 30 天文件导入成功率<strong>{% if summary.imports.success_rate is not none %}{{ '%.1f'|format(summary.imports.success_rate * 100) }}%{% else %}—{% endif %}</strong>{{ summary.imports.success }} / {{ summary.imports.total }} 次</div>
-    <div class="metric">近 30 天成功导出<strong>{{ summary.exports.success }}</strong>失败 {{ summary.exports.failure }} 次</div>
-  </div>
-  <section><h2>版本占比 · 前 100 个版本</h2><p class="muted">每个近 30 天活跃安装取最新事件中的版本；占比分母为全部活跃安装。</p>
-    {% if summary.version_share %}<table><thead><tr><th>版本</th><th>安装数</th><th>占比</th></tr></thead><tbody>
-    {% for row in summary.version_share %}<tr><td>{{ row.version }}</td><td>{{ row.installs }}</td><td>{{ '%.1f'|format(row.share * 100) }}%</td></tr>{% endfor %}
-    </tbody></table>{% else %}<p class="empty">暂无数据</p>{% endif %}
+  <p class="updated">更新时间 {{ summary.generated_at_local }}（北京时间）</p>
+  <nav class="periods" aria-label="统计时间范围">
+    {% for period in summary.period_options %}<a href="{{ period.query }}"{% if period.days|string == summary.window_query %} aria-current="page"{% endif %}>{{ period.label }}</a>{% endfor %}
+    {% if summary.date_range.custom %}<span class="custom-range">自定义：{{ summary.window_label }}</span>{% endif %}
+  </nav>
+
+  <section class="chart-card" aria-labelledby="chart-title">
+    <div class="section-head">
+      <h2 id="chart-title">每日启动次数</h2>
+      <div class="chart-tabs" role="radiogroup" aria-label="图表范围">
+        <input type="radio" name="chart" id="chart-today" checked><label for="chart-today">{{ summary.date_range.day_label }}</label>
+        <input type="radio" name="chart" id="chart-period"><label for="chart-period">{{ summary.window_label }}</label>
+      </div>
+    </div>
+    {% for key, chart in [('today', summary.charts.today), ('period', summary.charts.period)] %}
+    <div class="chart {{ key }}">
+      <svg viewBox="0 0 {{ chart.width }} {{ chart.height }}" role="img" aria-label="{{ '当天每小时' if key == 'today' else summary.window_label + '每日' }}启动次数，共 {{ chart.total }} 次">
+        {% for tick in chart.ticks %}<line class="grid" x1="{{ chart.left }}" x2="{{ chart.right }}" y1="{{ tick.y }}" y2="{{ tick.y }}"/><text class="axis-text" x="{{ chart.left - 8 }}" y="{{ tick.y + 4 }}" text-anchor="end">{{ tick.value }}</text>{% endfor %}
+        {% if chart.points %}
+        <polygon class="area" points="{{ chart.area }}"/>
+        <polyline class="line" points="{{ chart.line }}"/>
+        {% for point in chart.points %}
+          {% if point.tick %}<text class="axis-text" x="{{ point.x }}" y="{{ chart.base + 18 }}" text-anchor="middle">{{ point.label[5:] if key == 'period' else point.label }}</text>{% endif %}
+          <circle class="hit" cx="{{ point.x }}" cy="{{ point.y }}" r="9"><title>{{ point.label }}：{{ point.count }} 次</title></circle>
+          <circle class="dot" cx="{{ point.x }}" cy="{{ point.y }}" r="{{ 3 if chart.points|length <= 62 else 1.5 }}"><title>{{ point.label }}：{{ point.count }} 次</title></circle>
+        {% endfor %}
+        {% endif %}
+      </svg>
+      <p class="chart-note">{% if key == 'today' %}{{ '今天 0 点至今' if summary.date_range.day_label == '当天' else summary.date_range.end + ' 全天' }}按小时统计，共 {{ chart.total }} 次{% else %}{{ summary.window_label }}按日统计，共 {{ chart.total }} 次，单日最多 {{ chart.peak }} 次{% endif %}。鼠标停在数据点上可看具体数值。</p>
+    </div>
+    {% endfor %}
   </section>
-  <section><h2>最近 7 天 IP 与版本</h2><p class="muted">最多展示 200 组 IP / 版本。IP 由服务器连接信息获得，可能是共享网络出口，不能视为用户身份。</p>
-    {% if summary.recent_ips %}<table><thead><tr><th>IP</th><th>版本</th><th>涉及安装数</th><th>最后收到（UTC）</th></tr></thead><tbody>
-    {% for row in summary.recent_ips %}<tr><td>{{ row.ip }}</td><td>{{ row.version }}</td><td>{{ row.installations }}</td><td>{{ row.last_seen_at }}</td></tr>{% endfor %}
-    </tbody></table>{% else %}<p class="empty">暂无数据</p>{% endif %}
+
+  {% set pg = summary.session_pagination %}
+  <section aria-labelledby="ip-title">
+    {% set f = summary.filters %}
+    <div class="section-head ip-head">
+      <h2 id="ip-title">IP 统计</h2>
+      <form class="filters" method="get" action="" aria-label="筛选">
+        {% if not summary.date_range.custom %}<input type="hidden" name="days" value="{{ summary.window_query }}">{% endif %}
+        {% if f.region %}<input type="hidden" name="region" value="{{ f.region }}">{% endif %}
+        {% if f.version %}<input type="hidden" name="version" value="{{ f.version }}">{% endif %}
+        <span class="field"><span class="field-label">时间</span>
+          <input type="date" name="start" value="{{ summary.date_range.start }}" max="{{ summary.date_range.today }}" aria-label="开始日期">
+          <span class="soft">至</span>
+          <input type="date" name="end" value="{{ summary.date_range.end }}" max="{{ summary.date_range.today }}" aria-label="结束日期">
+        </span>
+        <span class="field"><span class="field-label">地域</span>
+          <details class="dd">
+            <summary>{{ f.region_label }}</summary>
+            <div class="menu" role="menu">
+              <a href="{{ f.clear.region }}"{% if not f.region %} class="current"{% endif %}>全部地域</a>
+              {% for province in f.region_options %}
+              <div class="has-sub">
+                <a href="{{ province.query }}"{% if province.selected %} class="current"{% endif %}>{{ province.label }} <span class="soft">{{ province.count }}</span>{% if province.cities|length > 1 or province.cities[0].label != province.label %}<span class="arrow" aria-hidden="true">›</span>{% endif %}</a>
+                {% if province.cities|length > 1 or province.cities[0].label != province.label %}
+                <div class="menu sub">{% for city in province.cities %}<a href="{{ city.query }}"{% if city.selected %} class="current"{% endif %}>{{ city.label }} <span class="soft">{{ city.count }}</span></a>{% endfor %}</div>
+                {% endif %}
+              </div>
+              {% endfor %}
+            </div>
+          </details>
+          {% if f.region %}<a class="clear" href="{{ f.clear.region }}" title="清除地域筛选" aria-label="清除地域筛选">×</a>{% endif %}
+        </span>
+        <span class="field"><span class="field-label">IP</span>
+          <input type="text" name="ip" value="{{ f.ip }}" placeholder="点表格中的 IP 或输入" size="16" inputmode="decimal" aria-label="IP 筛选">
+          {% if f.ip %}<a class="clear" href="{{ f.clear.ip }}" title="清除 IP 筛选" aria-label="清除 IP 筛选">×</a>{% endif %}
+        </span>
+        <span class="field"><span class="field-label">版本</span>
+          <details class="dd">
+            <summary>{{ f.version or '全部版本' }}</summary>
+            <div class="menu" role="menu">
+              <a href="{{ f.clear.version }}"{% if not f.version %} class="current"{% endif %}>全部版本</a>
+              {% for option in f.version_options %}<a href="{{ option.query }}"{% if option.selected %} class="current"{% endif %}>{{ option.value }} <span class="soft">{{ option.count }}</span></a>{% endfor %}
+            </div>
+          </details>
+          {% if f.version %}<a class="clear" href="{{ f.clear.version }}" title="清除版本筛选" aria-label="清除版本筛选">×</a>{% endif %}
+        </span>
+        <button type="submit">筛选</button>
+        {% if f.active or summary.date_range.custom %}<a class="reset" href="{{ f.clear_all if not summary.date_range.custom else '?' }}">清除</a>{% endif %}
+      </form>
+      <span class="count">{% if f.active %}筛选出 {{ pg.total }} / {{ pg.window_total }} 次打开{% else %}共 {{ pg.total }} 次打开{% endif %}</span>
+    </div>
+    {% if summary.sessions %}
+    <div class="table-wrap">
+    <table class="sessions">
+      <thead><tr><th class="toggle-col"></th><th class="num"></th><th>打开时间</th><th>地域</th><th>IP</th><th>版本</th><th class="duration" title="从打开软件到关闭窗口">打开时长</th><th class="duration" title="窗口在前台且 2 分钟内有键盘或鼠标操作的累计时间">活跃时长</th></tr></thead>
+      {% for row in summary.sessions %}
+      <tbody class="session">
+        <tr class="summary-row">
+          <td class="toggle-col"><label class="toggle" title="展开详情"><input type="checkbox" aria-label="展开第 {{ row.number }} 条详情"><span class="plus" aria-hidden="true">+</span><span class="minus" aria-hidden="true">−</span></label></td>
+          <td class="num">{{ row.number }}</td>
+          <td>{{ row.opened_at_local }}</td>
+          <td>{{ row.city }}</td>
+          <td>{% if row.ip %}<a class="ip-link" href="{{ row.ip_query }}" title="只看这个 IP">{{ row.ip }}</a>{% else %}未知{% endif %}{% if row.ip and row.ip_inferred %}<span class="inferred" title="早期记录未按每次打开保存 IP，按同一安装和版本推断">（推断）</span>{% endif %}</td>
+          <td>{{ row.version }}</td>
+          <td class="duration">{{ row.duration_label }}</td>
+          <td class="duration">{{ row.active_label }}</td>
+        </tr>
+        <tr class="detail"><td colspan="8">
+          <div class="detail-box">
+            <div>
+              <h3>运行环境</h3>
+              <dl>
+                <dt>操作系统</dt><dd>{{ row.environment.os }}</dd>
+                <dt>系统版本</dt><dd>{{ row.environment.os_version }}</dd>
+                <dt>系统架构</dt><dd>{{ row.environment.architecture }}</dd>
+                <dt>屏幕分辨率</dt><dd>{{ row.environment.screen }}</dd>
+                <dt>显示缩放</dt><dd>{{ row.environment.scale }}</dd>
+                <dt>语言环境</dt><dd>{{ row.environment.locale }}</dd>
+                <dt>归属地</dt><dd>{{ row.location }}</dd>
+              </dl>
+            </div>
+            <div>
+              <h3>本次使用</h3>
+              <dl>
+                <dt>安装类型</dt><dd>{{ '首次使用' if row.install.first_run else '老用户' }}（累计打开 {{ row.install.runs }} 次，累计导入 {{ row.install.imports }} 个文件）</dd>
+                <dt>上次打开</dt><dd>{{ row.install.previous_local or '—' }}</dd>
+                <dt>首次记录</dt><dd>{{ row.install.first_seen_local }}</dd>
+                <dt>本次导入</dt><dd>{% if row.import_total %}{{ row.import_total }} 个文件，成功 {{ row.import_success }}{% if row.import_total - row.import_success %}，<span class="bad">失败 {{ row.import_total - row.import_success }}</span>{% endif %}{% else %}<span class="soft">未导入文件</span>{% endif %}</dd>
+                <dt>打开时长</dt><dd>{{ row.duration_label }}<span class="soft">（打开软件到关闭窗口）</span></dd>
+                <dt>活跃时长</dt><dd>{{ row.active_label }}<span class="soft">（窗口在前台且 2 分钟内有操作）</span></dd>
+              </dl>
+              {% if row.imports %}
+              <table class="imports">
+                <thead><tr><th>文件类型</th><th>仪器厂商</th><th>仪器型号</th><th>数量</th><th>成功</th><th>失败</th></tr></thead>
+                <tbody>{% for item in row.imports %}<tr><td>{{ item.extension|upper }}</td><td>{{ item.parser_label }}</td><td>{{ item.instrument_label }}</td><td>{{ item.total }}</td><td>{{ item.success }}</td><td{% if item.failure %} class="bad"{% endif %}>{{ item.failure }}</td></tr>{% endfor %}</tbody>
+              </table>
+              {% endif %}
+            </div>
+          </div>
+        </td></tr>
+      </tbody>
+      {% endfor %}
+    </table>
+    </div>
+    {% if pg.total_pages > 1 %}
+    <nav class="pagination" aria-label="翻页">
+      {% if pg.has_previous %}<a href="{{ pg.previous_query }}">上一页</a>{% endif %}
+      <span>第 {{ pg.page }} / {{ pg.total_pages }} 页</span>
+      {% if pg.has_next %}<a href="{{ pg.next_query }}">下一页</a>{% endif %}
+    </nav>
+    {% endif %}
+    {% else %}<p class="empty">{% if f.active %}没有符合筛选条件的记录。<a href="{{ f.clear_all }}">清除筛选</a>{% else %}暂无数据{% endif %}</p>{% endif %}
   </section>
-  <section><h2>每日启动次数 · 近 30 个 UTC 自然日</h2><div class="dates"><table><thead><tr><th>日期（UTC）</th><th>启动次数</th></tr></thead><tbody>
-    {% for row in summary.daily_startups|reverse %}<tr><td>{{ row.date }}</td><td>{{ row.count }}</td></tr>{% endfor %}
-  </tbody></table></div></section>
-  <section><h2>文件导入 · 按扩展名</h2>
-    {% if summary.imports.by_extension %}<table><thead><tr><th>扩展名</th><th>导入次数</th><th>成功</th><th>失败</th><th>成功率</th><th>平均耗时（ms）</th></tr></thead><tbody>
+
+  <section aria-labelledby="import-title">
+    <div class="section-head"><h2 id="import-title">文件导入 · 按扩展名</h2></div>
+    {% if summary.imports.by_extension %}<div class="table-wrap"><table class="plain"><thead><tr><th>扩展名</th><th>导入次数</th><th>成功</th><th>失败</th><th>成功率</th><th>平均耗时（ms）</th></tr></thead><tbody>
     {% for row in summary.imports.by_extension %}<tr><td>{{ row.extension }}</td><td>{{ row.total }}</td><td>{{ row.success }}</td><td>{{ row.failure }}</td><td>{{ '%.1f'|format(row.success_rate * 100) }}%</td><td>{{ row.average_duration_ms }}</td></tr>{% endfor %}
-    </tbody></table>{% else %}<p class="empty">暂无数据</p>{% endif %}
+    </tbody></table></div>{% else %}<p class="empty">暂无数据</p>{% endif %}
   </section>
-  <section><h2>功能页面浏览</h2>
-    {% if summary.feature_views %}<table><thead><tr><th>功能</th><th>页面</th><th>浏览次数</th></tr></thead><tbody>
-    {% for row in summary.feature_views %}<tr><td>{{ row.feature }}</td><td>{{ '分析图' if row.surface == 'plot' else '结果表' }}</td><td>{{ row.views }}</td></tr>{% endfor %}
-    </tbody></table>{% else %}<p class="empty">暂无数据</p>{% endif %}
-  </section>
-  <section><h2>导出</h2>
-    {% if summary.exports.by_format %}<table><thead><tr><th>格式</th><th>总次数</th><th>成功</th><th>失败</th><th>平均耗时（ms）</th></tr></thead><tbody>
-    {% for row in summary.exports.by_format %}<tr><td>{{ row.format }}</td><td>{{ row.total }}</td><td>{{ row.success }}</td><td>{{ row.failure }}</td><td>{{ row.average_duration_ms }}</td></tr>{% endfor %}
-    </tbody></table>{% else %}<p class="empty">暂无数据</p>{% endif %}
-  </section>
-  <section><h2>运行环境 · 前 20 组</h2><p class="muted">每个安装取近 30 天最近一次启动的系统和显示配置；屏幕尺寸为应用上报的逻辑像素。</p>
-    {% if summary.environments %}<table><thead><tr><th>系统</th><th>系统版本</th><th>架构</th><th>屏幕宽 × 高</th><th>缩放</th><th>安装数</th></tr></thead><tbody>
+
+  <section aria-labelledby="env-title">
+    <div class="section-head"><h2 id="env-title">运行环境 · 前 20 组</h2></div>
+    {% if summary.environments %}<div class="table-wrap"><table class="plain"><thead><tr><th>系统</th><th>系统版本</th><th>架构</th><th>屏幕宽 × 高</th><th>缩放</th><th>安装数</th></tr></thead><tbody>
     {% for row in summary.environments %}<tr><td>{{ row.os }}</td><td>{{ row.os_version }}</td><td>{{ row.architecture }}</td><td>{{ row.screen_width }} × {{ row.screen_height }}</td><td>{{ row.scale }}</td><td>{{ row.installs }}</td></tr>{% endfor %}
-    </tbody></table>{% else %}<p class="empty">暂无数据</p>{% endif %}
+    </tbody></table></div>{% else %}<p class="empty">暂无数据</p>{% endif %}
   </section>
-  <section><h2>错误分类排行</h2><p class="muted">仅固定错误分类，不采集异常原文、文件路径或样品信息。</p>
-    {% if summary.errors %}<table><thead><tr><th>操作</th><th>错误分类</th><th>次数</th></tr></thead><tbody>
-    {% for row in summary.errors %}<tr><td>{{ '导入' if row.event == 'import_file' else '导出' }}</td><td>{{ row.error_code }}</td><td>{{ row.count }}</td></tr>{% endfor %}
-    </tbody></table>{% else %}<p class="empty">暂无数据</p>{% endif %}
-  </section>
+
+  <p class="storage">统计数据库已用 {{ '%.2f'|format(summary.database_usage.used_bytes / 1048576) }} MiB / {{ '%.0f'|format(summary.database_usage.max_bytes / 1048576) }} MiB。</p>
+  {% if summary.database_usage.warning %}<p class="storage warning">数据库空间接近上限，请安排扩容；达到上限后新的上报可能无法保存。</p>{% endif %}
 </body>
 </html>

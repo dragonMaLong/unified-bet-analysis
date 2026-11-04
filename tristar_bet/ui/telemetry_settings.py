@@ -18,10 +18,12 @@ class TelemetryDetailsDialog(QtWidgets.QDialog):
         layout.setSpacing(14)
         description = QtWidgets.QLabel(
             "DragonScience 使用这些统计判断版本覆盖、文件兼容性和界面使用情况。\n\n"
-            "包含：软件版本、随机安装标识、操作系统、屏幕分辨率与缩放；"
-            "导入文件的格式、成功或失败及耗时；分析页面访问、导出结果和标准错误码。\n\n"
+            "包含：软件版本、随机安装标识、操作系统、系统语言环境（如 zh_CN）、屏幕分辨率与缩放；"
+            "导入文件的格式、软件识别出的仪器型号类别、成功或失败及耗时；分析页面访问、导出结果和标准错误码；"
+            "每次使用的打开时长和活跃时长（窗口在前台且 2 分钟内有操作的累计时间，只记录秒数，"
+            "不记录任何按键或操作内容）。\n\n"
             "不包含：实验内容、计算数值、样品名称、文件名或路径。\n\n"
-            "服务器会收到连接 IP，保留窗口为 7 天；其他统计为 90 天，并定期清理。"
+            "服务器会收到连接 IP。统计记录和 IP 目前长期保存，仅用于版本覆盖和兼容性统计。"
             "随机安装标识用于估算活跃安装量，不代表真实人数。\n\n"
             "你可随时在主窗口右下角的“隐私设置”关闭统计。关闭会清空本机待发记录和安装标识，"
             "停止后续发送；已发出的请求无法撤回。是否启用都不影响分析功能。"
@@ -142,7 +144,7 @@ def startup_environment(screen) -> dict:
         "i686": "x86", "arm64": "arm64", "aarch64": "arm64",
     }.get(machine, "other")
     size = screen.size() if screen is not None else QtCore.QSize(0, 0)
-    return {
+    environment = {
         "os": system if system in {"Windows", "Linux", "Darwin"} else "other",
         "os_version": release,
         "architecture": architecture,
@@ -150,3 +152,16 @@ def startup_environment(screen) -> dict:
         "screen_height": max(0, min(size.height(), 32768)),
         "scale": max(0.5, min(float(screen.devicePixelRatio()) if screen is not None else 1.0, 8.0)),
     }
+    locale = system_locale()
+    if locale:
+        environment["locale"] = locale
+    return environment
+
+
+def system_locale() -> str:
+    """System language/region code such as "zh_CN" (bounded format, no free text)."""
+    try:
+        name = QtCore.QLocale.system().name()
+    except Exception:
+        return ""
+    return name if re.fullmatch(r"[a-z]{2,3}(?:[-_][A-Za-z0-9]{2,8}){0,2}", name or "") else ""
