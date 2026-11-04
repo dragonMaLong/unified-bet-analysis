@@ -1,4 +1,4 @@
-"""Consent is an optional update choice, never a prerequisite or revocation."""
+"""Software updates leave optional usage-statistics preferences unchanged."""
 import os
 import unittest
 from dataclasses import replace
@@ -10,7 +10,6 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt5 import QtCore, QtWidgets
 
 from tristar_bet.ui.main_window import MainWindow
-from tristar_bet.ui.telemetry_settings import TelemetryUpdateDialog
 from tristar_bet.update_checker import UpdateInfo
 
 
@@ -57,107 +56,59 @@ class TelemetryUpdateTests(unittest.TestCase):
         self.receiver.deleteLater()
         QtCore.QCoreApplication.sendPostedEvents(None, QtCore.QEvent.DeferredDelete)
 
-    def choose(self, action):
-        prompt = Mock()
-
-        def execute(dialog):
-            prompt()
-            if action == "agree":
-                dialog.agree_button.click()
-            elif action == "update":
-                dialog.update_only_button.click()
-            elif action == "invalid_accept":
-                dialog.accept()
-            else:
-                dialog.reject()
-            return dialog.result()
-
-        with patch.object(TelemetryUpdateDialog, "exec_", new=execute):
-            MainWindow._show_update_available_dialog(self.receiver, UPDATE)
-        prompt.assert_called_once()
-
-    def test_explicit_consent_is_saved_before_update_and_startup_is_recorded_once(self):
-        order = []
-        client = self.receiver._telemetry
-        original_save = client._save
-
-        def save(enabled):
-            order.append(("consent", enabled))
-            return original_save(enabled)
-
-        client.set_enabled.side_effect = save
-        self.receiver._download_and_install_update.side_effect = lambda _info: order.append(("download", client.enabled))
-        self.choose("agree")
-        self.assertEqual(order, [("consent", True), ("download", True)])
-        self.assertTrue(client.enabled)
-        self.receiver._record_telemetry.assert_called_once()
-        self.assertEqual(self.receiver._record_telemetry.call_args.args, ("startup",))
-        self.receiver._record_telemetry_startup()
-        self.receiver._record_telemetry.assert_called_once()
-
-    def test_update_only_saves_decline_for_undecided_user_and_downloads(self):
-        self.choose("update")
-        client = self.receiver._telemetry
-        client.set_enabled.assert_called_once_with(False)
-        self.assertFalse(client.enabled)
-        self.assertTrue(client.consent_decided)
-        self.receiver._record_telemetry.assert_not_called()
-        self.receiver._download_and_install_update.assert_called_once_with(UPDATE)
-
-    def test_close_or_invalid_accept_does_not_change_consent_or_download(self):
-        for action in ("close", "invalid_accept"):
-            with self.subTest(action=action):
-                self.choose(action)
-                self.receiver._telemetry.set_enabled.assert_not_called()
-                self.assertFalse(self.receiver._telemetry.consent_decided)
-                self.receiver._record_telemetry.assert_not_called()
-                self.receiver._download_and_install_update.assert_not_called()
-
-    def test_saving_consent_failure_warns_but_update_still_proceeds_without_statistics(self):
-        self.receiver._telemetry = ConsentClient(save_succeeds=False)
-        with patch("tristar_bet.ui.main_window.QtWidgets.QMessageBox.information") as warning:
-            self.choose("agree")
-        warning.assert_called_once()
-        self.assertFalse(self.receiver._telemetry.enabled)
-        self.receiver._record_telemetry.assert_not_called()
-        self.receiver._download_and_install_update.assert_called_once_with(UPDATE)
-
-    def test_download_failure_does_not_revoke_explicitly_saved_consent(self):
-        self.receiver._download_and_install_update.side_effect = OSError("download failed")
-        with self.assertRaises(OSError):
-            self.choose("agree")
-        self.assertTrue(self.receiver._telemetry.enabled)
-        self.receiver._telemetry.set_enabled.assert_called_once_with(True)
-
-    def test_known_preferences_and_unavailable_clients_use_regular_update_without_consent_changes(self):
+    def test_every_telemetry_state_uses_update_or_later_without_preference_changes(self):
         scenarios = (
             ConsentClient(enabled=True, decided=True),
             ConsentClient(enabled=False, decided=True),
+            ConsentClient(enabled=False, decided=False),
             ConsentClient(available=False),
             ConsentClient(available=False, busy=True),
             None,
         )
         for client in scenarios:
-            for update in (False, True):
-                with self.subTest(client=client, update=update):
+            for action in ("update", "later", "close"):
+                with self.subTest(client=client, action=action):
                     self.receiver._telemetry = client
                     self.receiver._download_and_install_update.reset_mock()
-                    before = client.enabled if client else None
+                    before = (client.enabled, client.consent_decided) if client else None
                     update_button, later_button = object(), object()
                     box = Mock()
                     box.addButton.side_effect = [update_button, later_button]
-                    box.clickedButton.return_value = update_button if update else later_button
-                    with patch("tristar_bet.ui.main_window.QtWidgets.QMessageBox", return_value=box), patch(
-                        "tristar_bet.ui.main_window.TelemetryUpdateDialog", side_effect=AssertionError("Unexpected consent prompt")
-                    ):
+                    box.clickedButton.return_value = {
+                        "update": update_button, "later": later_button, "close": None,
+                    }[action]
+                    with patch("tristar_bet.ui.main_window.QtWidgets.QMessageBox", return_value=box):
                         MainWindow._show_update_available_dialog(self.receiver, UPDATE)
-                    if update:
+                    self.assertEqual([call.args[0] for call in box.addButton.call_args_list], ["更新", "稍后"])
+                    text = box.setText.call_args.args[0] + box.setInformativeText.call_args.args[0]
+                    self.assertIn("修复兼容性", text)
+                    self.assertNotIn("帮助 DragonScience", text)
+                    self.assertNotIn("统计", text)
+                    if action == "update":
                         self.receiver._download_and_install_update.assert_called_once_with(UPDATE)
                     else:
                         self.receiver._download_and_install_update.assert_not_called()
                     if client:
                         client.set_enabled.assert_not_called()
-                        self.assertEqual(client.enabled, before)
+                        self.assertEqual((client.enabled, client.consent_decided), before)
+                    self.receiver._initialize_telemetry.assert_not_called()
+                    self.receiver._record_telemetry.assert_not_called()
+
+    def test_download_failure_keeps_existing_telemetry_preference(self):
+        for enabled, decided in ((True, True), (False, True), (False, False)):
+            with self.subTest(enabled=enabled, decided=decided):
+                client = ConsentClient(enabled=enabled, decided=decided)
+                self.receiver._telemetry = client
+                self.receiver._download_and_install_update.side_effect = OSError("download failed")
+                update_button, later_button = object(), object()
+                box = Mock()
+                box.addButton.side_effect = [update_button, later_button]
+                box.clickedButton.return_value = update_button
+                with patch("tristar_bet.ui.main_window.QtWidgets.QMessageBox", return_value=box):
+                    with self.assertRaises(OSError):
+                        MainWindow._show_update_available_dialog(self.receiver, UPDATE)
+                self.assertEqual((client.enabled, client.consent_decided), (enabled, decided))
+                client.set_enabled.assert_not_called()
 
     def test_startup_initializer_never_prompts_and_restores_only_existing_consent(self):
         for enabled, decided, available in ((False, False, True), (False, True, True), (True, True, True), (False, False, False)):
@@ -172,7 +123,7 @@ class TelemetryUpdateTests(unittest.TestCase):
                     "tristar_bet.ui.main_window.configured_endpoint", return_value=client.endpoint
                 ), patch("tristar_bet.ui.main_window.QtCore.QStandardPaths.writableLocation", return_value="C:/telemetry-test"), patch(
                     "tristar_bet.ui.main_window.TelemetrySettingsDialog", side_effect=AssertionError("Startup must not prompt")
-                ), patch("tristar_bet.ui.main_window.TelemetryUpdateDialog", side_effect=AssertionError("Startup must not prompt")):
+                ):
                     MainWindow._initialize_telemetry(receiver)
                     MainWindow._initialize_telemetry(receiver)
                 create.assert_called_once()

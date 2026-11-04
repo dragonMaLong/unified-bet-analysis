@@ -8,12 +8,12 @@ from uuid import uuid4
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5 import QtCore, QtTest, QtWidgets
+from PyQt5 import QtCore, QtWidgets
 
 from bet_telemetry.schema import validate_event
 from tristar_bet.ui.main_window import MainWindow
 from tristar_bet.ui.telemetry_settings import (
-    TelemetryDetailsDialog, TelemetrySettingsDialog, TelemetryUpdateDialog, startup_environment,
+    TelemetryDetailsDialog, TelemetrySettingsDialog, startup_environment,
 )
 
 
@@ -35,68 +35,17 @@ class TelemetryUiTests(unittest.TestCase):
                 self.assertNotIn(client.endpoint, " ".join(labels))
                 dialog.close()
 
-    def test_update_has_two_explicit_actions_and_enter_defaults_to_update_only(self):
-        client = SimpleNamespace(enabled=False, available=True, endpoint="https://stats.example/api/v1/events")
-        dialog = TelemetryUpdateDialog("发现新版本", "更新说明", client)
-        self.assertEqual(dialog.findChildren(QtWidgets.QCheckBox), [])
-        self.assertEqual({button.text() for button in dialog.findChildren(QtWidgets.QPushButton)},
-                         {"详情", "同意统计并更新", "仅更新"})
-        self.assertTrue(dialog.update_only_button.isDefault())
-        self.assertFalse(dialog.agree_button.autoDefault())
-        self.assertIsNone(dialog.choice)
-        dialog.show()
-        self.app.processEvents()
-        dialog.setFocus()
-        QtTest.QTest.keyClick(dialog, QtCore.Qt.Key_Return)
-        self.assertEqual(dialog.result(), QtWidgets.QDialog.Accepted)
-        self.assertEqual(dialog.choice, TelemetryUpdateDialog.UPDATE_ONLY)
-        self.assertFalse(client.enabled)
-        dialog.close()
-
-    def test_update_agreement_is_explicit_and_unavailable_agreement_is_disabled(self):
-        client = SimpleNamespace(enabled=False, available=True, endpoint="https://stats.example/api/v1/events")
-        dialog = TelemetryUpdateDialog("发现新版本", "更新说明", client)
-        dialog.agree_button.click()
-        self.assertEqual(dialog.result(), QtWidgets.QDialog.Accepted)
-        self.assertEqual(dialog.choice, TelemetryUpdateDialog.CONSENT_AND_UPDATE)
-        self.assertFalse(client.enabled, "The main window applies consent only after the dialog returns")
-        dialog.close()
-        client.available = False
-        dialog = TelemetryUpdateDialog("发现新版本", "更新说明", client)
-        self.assertFalse(dialog.agree_button.isEnabled())
-        self.assertTrue(dialog.update_only_button.isEnabled())
-        dialog.agree_button.click()
-        self.assertIsNone(dialog.choice)
-        dialog.close()
-
-    def test_update_escape_and_window_close_leave_choice_undecided(self):
-        client = SimpleNamespace(enabled=False, available=True, endpoint="https://stats.example/api/v1/events")
-        for action in ("escape", "close"):
-            dialog = TelemetryUpdateDialog("发现新版本", "更新说明", client)
-            dialog.show()
-            self.app.processEvents()
-            if action == "escape":
-                QtTest.QTest.keyClick(dialog, QtCore.Qt.Key_Escape)
-            else:
-                dialog.close()
-            self.assertEqual(dialog.result(), QtWidgets.QDialog.Rejected)
-            self.assertIsNone(dialog.choice)
-            self.assertFalse(client.enabled)
-
-    def test_details_can_open_without_accepting_update_or_changing_settings(self):
+    def test_details_can_open_without_changing_privacy_settings(self):
         client = SimpleNamespace(enabled=False, available=True, endpoint="https://stats.example/api/v1/events", set_enabled=Mock())
-        for dialog in (TelemetrySettingsDialog(client), TelemetryUpdateDialog("发现新版本", "更新说明", client)):
-            details = next(button for button in dialog.findChildren(QtWidgets.QPushButton) if button.text() == "详情")
-            with patch.object(TelemetryDetailsDialog, "exec_", return_value=QtWidgets.QDialog.Rejected) as show:
-                details.click()
-            show.assert_called_once()
-            self.assertEqual(dialog.result(), QtWidgets.QDialog.Rejected)
-            if isinstance(dialog, TelemetryUpdateDialog):
-                self.assertIsNone(dialog.choice)
-            else:
-                self.assertFalse(dialog.enable_check.isChecked())
-            client.set_enabled.assert_not_called()
-            dialog.close()
+        dialog = TelemetrySettingsDialog(client)
+        details = next(button for button in dialog.findChildren(QtWidgets.QPushButton) if button.text() == "详情")
+        with patch.object(TelemetryDetailsDialog, "exec_", return_value=QtWidgets.QDialog.Rejected) as show:
+            details.click()
+        show.assert_called_once()
+        self.assertEqual(dialog.result(), QtWidgets.QDialog.Rejected)
+        self.assertFalse(dialog.enable_check.isChecked())
+        client.set_enabled.assert_not_called()
+        dialog.close()
 
     def test_details_contain_scope_purpose_retention_recipient_and_revocation(self):
         client = SimpleNamespace(enabled=False, available=True, endpoint="https://stats.example/api/v1/events")

@@ -78,7 +78,7 @@ from tristar_bet.ui.app_settings import (
 from tristar_bet.ui.native_import_picker import choose_import_files
 from tristar_bet.ui.usage_timer import UsageTimer
 from tristar_bet.telemetry import TelemetryClient, configured_endpoint
-from tristar_bet.ui.telemetry_settings import TelemetrySettingsDialog, TelemetryUpdateDialog, startup_environment
+from tristar_bet.ui.telemetry_settings import TelemetrySettingsDialog, startup_environment
 from tristar_bet.ui.plots import (
     ACTIVE_LINE_WIDTH,
     BJH_DIFFERENTIAL_LOG,
@@ -3005,18 +3005,6 @@ class MainWindow(QtWidgets.QMainWindow):
             f"{notes_hint}\n\n"
             "是否现在下载并重启到新版本？"
         )
-        self._initialize_telemetry()
-        client = self._telemetry
-        if client is not None and client.available and not client.consent_decided:
-            dialog = TelemetryUpdateDialog(title, message, client, self)
-            if dialog.exec_() != QtWidgets.QDialog.Accepted:
-                return
-            if dialog.choice not in (TelemetryUpdateDialog.CONSENT_AND_UPDATE, TelemetryUpdateDialog.UPDATE_ONLY):
-                return
-            self._apply_telemetry_consent(dialog.choice == TelemetryUpdateDialog.CONSENT_AND_UPDATE)
-            self._record_telemetry_startup()
-            self._download_and_install_update(info)
-            return
         box = QtWidgets.QMessageBox(self)
         box.setIcon(QtWidgets.QMessageBox.Information)
         box.setWindowTitle("软件更新")

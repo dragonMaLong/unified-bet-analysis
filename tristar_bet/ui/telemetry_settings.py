@@ -85,50 +85,6 @@ class TelemetrySettingsDialog(QtWidgets.QDialog):
         layout.addWidget(buttons)
 
 
-class TelemetryUpdateDialog(QtWidgets.QDialog):
-    """One update decision with an explicit, separate optional-statistics choice."""
-
-    CONSENT_AND_UPDATE = "consent_and_update"
-    UPDATE_ONLY = "update_only"
-
-    def __init__(self, title: str, message: str, client, parent=None):
-        super().__init__(parent)
-        self.choice = None  # Closing/Escape never changes a saved preference.
-        self.setWindowTitle("软件更新")
-        self.setWindowFlag(QtCore.Qt.WindowContextHelpButtonHint, False)
-        self.setMinimumWidth(480)
-        layout = QtWidgets.QVBoxLayout(self)
-        layout.setSpacing(14)
-        heading = QtWidgets.QLabel(title)
-        heading.setTextFormat(QtCore.Qt.PlainText)
-        font = heading.font()
-        font.setBold(True)
-        heading.setFont(font)
-        layout.addWidget(heading)
-        notes = QtWidgets.QPlainTextEdit()
-        notes.setPlainText(message)
-        notes.setReadOnly(True)
-        notes.setMaximumHeight(220)
-        layout.addWidget(notes)
-        _add_telemetry_summary(layout, client, self)
-        actions = QtWidgets.QHBoxLayout()
-        actions.addStretch(1)
-        self.agree_button = QtWidgets.QPushButton("同意统计并更新")
-        self.agree_button.setEnabled(bool(client.available))
-        self.agree_button.setAutoDefault(False)
-        self.update_only_button = QtWidgets.QPushButton("仅更新")
-        self.update_only_button.setDefault(True)
-        self.agree_button.clicked.connect(lambda: self._choose(self.CONSENT_AND_UPDATE))
-        self.update_only_button.clicked.connect(lambda: self._choose(self.UPDATE_ONLY))
-        actions.addWidget(self.agree_button)
-        actions.addWidget(self.update_only_button)
-        layout.addLayout(actions)
-
-    def _choose(self, choice):
-        self.choice = choice
-        self.accept()
-
-
 def startup_environment(screen) -> dict:
     """Only bounded system categories, never a host name or user name."""
     system = platform.system()
