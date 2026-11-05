@@ -23,7 +23,7 @@
 | --- | --- | --- | --- |
 | Micromeritics TriStar II 3020 | TriStar II 3020 原始数据 | `SMP` | 支持等温线、BET、Langmuir、t-Plot、BJH；保留 TriStar II 3020 的默认点数与常数差异。 |
 | Micromeritics MicroActive for TriStar II Plus | MicroActive for TriStar II Plus | `SMP`、`XLS`、`XLSX`、`XLSM` | 支持原始 SMP 与官方 Excel 导出；BET 读取官方选点区间，BJH 正在按 MicroActive 标准修正继续逼近。 |
-| Micromeritics 3Flex 3500 | 3Flex 3500 / Flex `6.03` 官方报表、MicroActive 可打开的手动点表 SMP 已验证 | `SMP`、`XLS` | 支持 SMP 内部手动等温线点表，并按 Flex `6.03` 官方 XLS 反推路径做自由空间修正与 BJH adsorption/desorption 标准修正；支持正式 Flex XLS 报表，临时导出的 `Entered Data Table` 不作为正式兼容格式。 |
+| Micromeritics 3Flex 3500 | 3Flex 3500 原始 SMP（含 `Version 5.00`）、Flex `6.03` 官方报表、MicroActive 可打开的手动点表 SMP 已验证 | `SMP`、`XLS` | 支持 SMP 内部手动等温线点表，并按 Flex `6.03` 官方 XLS 反推路径做自由空间修正与 BJH adsorption/desorption 标准修正；支持正式 Flex XLS 报表，临时导出的 `Entered Data Table` 不作为正式兼容格式。 |
 | Micromeritics ASAP 2460 | ASAP 2460 | `SMP`、`XLS`、`XLSX`、`XLSM` | 支持 ASAP 等温线与官方 Excel 导出；BET 默认区间包含 ASAP 2460 特定修正。 |
 | Micromeritics ASAP 2020 | ASAP 2020 `V4.04` | `SMP` | 支持旧版 ASAP 2020 SMP 的等温线、样品信息和测量自由空间读取；BET 使用文件保存的报告区间并兼容旧版两点拟合。 |
 | Micromeritics ASAP 2020 Plus | ASAP 2020 Plus | `SMP`、`XLS`、`XLSX`、`XLSM` | 支持 ASAP 2020 Plus 原始/导出数据读取与统一分析。 |
@@ -50,7 +50,7 @@ Gemini VII 2390（V1.00）和 ASAP 2425（Version 1.00）的 SMP 也可读取，
 - ASAP 2425 自由空间与 ASAP 2460 同一模型，另支持“输入值”方式。开启热流逸修正时，文件保存实测绝对压力及已修正的 P/P₀，原厂报告的绝对压力按 Weber 公式修正。
 - ASAP 2425 自由空间方式 4（示例 Y-Zeolite Nitrogen）尚未解析，这类文件会提示原因，不计算吸附量。
 
-3Flex 3500 原始 SMP 也可读取。3Flex 自带 68 个示例文件中有 38 个物理吸附文件，现可计算 38 个（此前 3 个），其余为化学吸附或未测试的模板，导入时会提示原因。已在 MicroActive 7.00 中对 18 个文件逐点对照：
+3Flex 3500 原始 SMP（含 Version 5.00）也可读取，Version 5.00 样本已与 Flex 6.03 官方报告核对。3Flex 自带 68 个示例文件中有 38 个物理吸附文件，现可计算 38 个（此前 3 个），其余为化学吸附或未测试的模板，导入时会提示原因。已在 MicroActive 7.00 中对 18 个文件逐点对照：
 - 点数、吸脱附分支、压力、投气量、样品质量与原厂一致，分析温度相差不超过 3e-5 K。
 - 吸附量：N₂、Kr、正丁烷、戊烷、己烷相对偏差约 1e-5 以内；Ar、CO₂ 和低比表面积样品最大约 3e-4~9e-4（原厂按实测室温计算暖区体积，本软件取文件中的 298 K）。
 - 默认 BET 相差不超过 0.001%；t-Plot 外表面积 N₂、戊烷、己烷不超过 0.02%，Ar 0.09%。Kr 的 t-Plot 偏差约 5%，原厂 Kr 在 77 K 的液体体积换算系数尚未推出。

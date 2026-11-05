@@ -38,7 +38,7 @@ SUPPORTED_INSTRUMENTS: tuple[SupportedInstrument, ...] = (
                         "SMP", LEVEL_VERIFIED, "已与 MicroActive 对照，样本较少"),
     SupportedInstrument("Micromeritics 麦克", "Gemini VII 2390（V1.00）",
                         "SMP", LEVEL_VERIFIED, "已与 MicroActive 逐点对照"),
-    SupportedInstrument("Micromeritics 麦克", "3Flex 3500（原始 SMP、Flex 6.03 报告）",
+    SupportedInstrument("Micromeritics 麦克", "3Flex 3500（原始 SMP，含 Version 5.00；Flex 6.03 报告）",
                         "SMP、XLS", LEVEL_VERIFIED,
                         "仅物理吸附；N2、Ar、Kr、CO2、正丁烷/戊烷/己烷共 18 份示例已与 MicroActive 逐点核对。"
                         "暖区按 298 K 近似，部分样品吸附量偏差约 0.03%–0.09%；Kr 的 t-Plot 偏差约 5%。"),

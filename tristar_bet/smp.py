@@ -1977,14 +1977,23 @@ class TriStarSmpParser:
     # TriStar/ASAP row-frame files, real-gas free space with the adsorptive's
     # equation of state, and the analysis temperature from the measured P0.
 
+    # Point frames: tag 04 -> 58 bytes (vendor example files, "3Flex" + version
+    # number as separate strings); tag 05 -> 66 bytes ("3Flex Version 5.00"
+    # files), whose stored P/P0 already carries the thermal transpiration
+    # correction (checked against a Flex 6.03 report: <= 2.7e-6).
+    _FLEX_FRAME_PREFIX = re.compile(rb"\x05\x00\xe0\x00\x00\x00\x00\x00\x00\xf8\x7f([\x04\x05])\x00")
+    _FLEX_FRAME_STRIDES = {4: 58, 5: 66}
+
     def _is_3flex_raw(self, block: bytes) -> bool:
         return len(block) > 18 and block[18] in (12, 13) and any(
-            item.text == "3Flex" for item in self._read_mic_strings(block))
+            item.text == "3Flex" or item.text.startswith("3Flex Version ")
+            for item in self._read_mic_strings(block))
 
     def _flex_frames(self, block: bytes) -> list[tuple[int, float, float, float]]:
         # Same frames as _scan_row_frames, with P0 up to CO2 at 273 K (~26600 mmHg).
         frames: list[tuple[int, float, float, float]] = []
-        for match in self._ROW_FRAME_PREFIX.finditer(block):
+        stride = None
+        for match in self._FLEX_FRAME_PREFIX.finditer(block):
             rel = match.end()
             if rel + 24 > len(block):
                 break
@@ -1993,12 +2002,18 @@ class TriStarSmpParser:
                     and 0.0 < absolute < 2000.0 and 0.0 < relative < 1.2 and 0.5 < absolute / relative < 50000.0
                     and -1000.0 < dosed < 100000.0):
                 continue
-            if frames and rel - frames[-1][0] != 58:
+            frame_stride = self._FLEX_FRAME_STRIDES[match.group(1)[0]]
+            if frames and (frame_stride != stride or rel - frames[-1][0] != stride):
                 if len(frames) >= 3:
                     break
                 frames = []
+            stride = frame_stride
             frames.append((rel, absolute, relative, dosed))
         return frames if len(frames) >= 3 else []
+
+    @staticmethod
+    def _flex_frame_stride(frames) -> int:
+        return frames[1][0] - frames[0][0] if len(frames) > 1 else 58
 
     @staticmethod
     def _flex_p0_log(block: bytes, start: int, stop: int) -> list[float]:
@@ -2040,7 +2055,7 @@ class TriStarSmpParser:
         # Normally the logged P0 of the P0 tube; when the P0 field after the
         # frames is not the default 760 (one example, "12 mm Tube N2"),
         # MicroActive used the mean of the point P0 values instead.
-        frames_end = frames[-1][0] + 52
+        frames_end = frames[-1][0] + 52 + (self._flex_frame_stride(frames) - 58)
         logged = self._flex_p0_log(block, frames_end, tube)
         p0_field = _read_double(block, frames_end + 48)
         if logged and (p0_field is None or abs(p0_field - 760.0) < 1e-9):
@@ -2173,6 +2188,11 @@ class TriStarSmpParser:
         # MicroActive reports P and P/P0 times the Weber ratio (13X: 8e-9).
         diameter = self._row_frame_transpiration_setting(blocks.get(304, b""))
         hard_sphere = props.thermal_transpiration_hard_sphere_A if props else None
+        stride = self._flex_frame_stride(frames)
+        options["flex_point_frame_bytes"] = stride
+        # 66-byte frames store P/P0 already corrected; only the absolute
+        # pressure is the measured value.
+        relative_stored_corrected = stride == 66
         if diameter is not None and hard_sphere is not None and 1.0 < hard_sphere < 10.0:
             corrected, active, count = [], True, 0
             for point in points:
@@ -2183,10 +2203,17 @@ class TriStarSmpParser:
                     corrected.append(point)
                     continue
                 count += 1
-                corrected.append(replace(point, absolute_pressure_mmHg=point.absolute_pressure_mmHg * ratio,
-                                         relative_pressure=point.relative_pressure * ratio))
+                absolute = point.absolute_pressure_mmHg * ratio
+                corrected.append(replace(
+                    point, absolute_pressure_mmHg=absolute,
+                    relative_pressure=point.relative_pressure if relative_stored_corrected
+                    else point.relative_pressure * ratio,
+                    saturation_pressure_mmHg=absolute / point.relative_pressure if relative_stored_corrected
+                    else point.saturation_pressure_mmHg))
             points = corrected
             options.update({
+                "thermal_transpiration_relative_pressure": "stored_corrected" if relative_stored_corrected
+                else "corrected_on_import",
                 "thermal_transpiration": "weber_micromeritics_3flex",
                 "thermal_transpiration_tube_diameter_mm": diameter,
                 "thermal_transpiration_hard_sphere_A": hard_sphere,
