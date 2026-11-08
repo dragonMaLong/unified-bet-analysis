@@ -1,5 +1,7 @@
 """Column definitions and content sizing shared by the detail tables."""
 
+from tristar_bet.i18n import tr
+
 import csv
 import html
 import io
@@ -206,7 +208,7 @@ class TableCopyController(QtCore.QObject):
             QMenu::item:selected { background: #e0ecff; }
             QMenu::indicator { width: 0; height: 0; }
         """)
-        action = menu.addAction("复制")
+        action = menu.addAction(tr("复制"))
         action.setEnabled(self.table.selectionModel().hasSelection())
         action.triggered.connect(self.copy)
         menu.exec_(view.viewport().mapToGlobal(position))

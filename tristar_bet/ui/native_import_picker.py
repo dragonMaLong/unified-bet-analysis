@@ -7,6 +7,8 @@ Interface layouts follow Microsoft's ShObjIdl_core.h and ShObjIdl.h.
 
 from __future__ import annotations
 
+from tristar_bet.i18n import tr
+
 import ctypes
 import sys
 import uuid
@@ -86,7 +88,7 @@ class _Interface(ctypes.Structure):
 
 def _check(result: int, operation: str) -> None:
     if result < 0:
-        error = NativeDialogError(f"{operation}失败（HRESULT 0x{result & 0xFFFFFFFF:08X}）")
+        error = NativeDialogError(tr('{0}失败（HRESULT 0x{1:08X}）', operation, result & 0xFFFFFFFF))
         error.hresult = result & 0xFFFFFFFF
         raise error
 
@@ -122,12 +124,12 @@ def _column_manager(dialog) -> _VOID:
     provider, browser, view, manager = (_VOID() for _ in range(4))
     try:
         _check(_call(dialog, 0, (ctypes.POINTER(_GUID), _PPVOID),
-                     ctypes.byref(_IID_SERVICE_PROVIDER), ctypes.byref(provider)), "读取窗口服务")
+                     ctypes.byref(_IID_SERVICE_PROVIDER), ctypes.byref(provider)), tr("读取窗口服务"))
         _check(_call(provider, 3, (ctypes.POINTER(_GUID), ctypes.POINTER(_GUID), _PPVOID),
-                     ctypes.byref(_SID_TOP_LEVEL_BROWSER), ctypes.byref(_IID_SHELL_BROWSER), ctypes.byref(browser)), "读取文件浏览器")
-        _check(_call(browser, 15, (_PPVOID,), ctypes.byref(view)), "读取当前文件视图")
+                     ctypes.byref(_SID_TOP_LEVEL_BROWSER), ctypes.byref(_IID_SHELL_BROWSER), ctypes.byref(browser)), tr("读取文件浏览器"))
+        _check(_call(browser, 15, (_PPVOID,), ctypes.byref(view)), tr("读取当前文件视图"))
         _check(_call(view, 0, (ctypes.POINTER(_GUID), _PPVOID),
-                     ctypes.byref(_IID_COLUMN_MANAGER), ctypes.byref(manager)), "读取文件列")
+                     ctypes.byref(_IID_COLUMN_MANAGER), ctypes.byref(manager)), tr("读取文件列"))
         return manager
     except Exception:
         _release(manager)
@@ -140,10 +142,10 @@ def _column_manager(dialog) -> _VOID:
 
 def _visible_columns(manager) -> tuple[_PropertyKey, ...]:
     count = _DWORD()
-    _check(_call(manager, 5, (_DWORD, ctypes.POINTER(_DWORD)), 2, ctypes.byref(count)), "读取可见列数量")
+    _check(_call(manager, 5, (_DWORD, ctypes.POINTER(_DWORD)), 2, ctypes.byref(count)), tr("读取可见列数量"))
     keys = (_PropertyKey * count.value)()
     if count.value:
-        _check(_call(manager, 6, (_DWORD, ctypes.POINTER(_PropertyKey), _DWORD), 2, keys, count.value), "读取可见列")
+        _check(_call(manager, 6, (_DWORD, ctypes.POINTER(_PropertyKey), _DWORD), 2, keys, count.value), tr("读取可见列"))
     return tuple(keys)
 
 
@@ -164,10 +166,10 @@ def _ensure_type_column(dialog) -> bool:
             info.size = ctypes.sizeof(info)
             info.mask = 0x1 | 0x10  # CM_MASK_WIDTH | CM_MASK_STATE
             _check(_call(manager, 4, (ctypes.POINTER(_PropertyKey), ctypes.POINTER(_ColumnInfo)),
-                         ctypes.byref(key), ctypes.byref(info)), "读取现有列设置")
+                         ctypes.byref(key), ctypes.byref(info)), tr("读取现有列设置"))
             saved.append((key, info))
         keys = (_PropertyKey * len(desired))(*desired)
-        _check(_call(manager, 7, (ctypes.POINTER(_PropertyKey), _DWORD), keys, len(keys)), "显示类型列")
+        _check(_call(manager, 7, (ctypes.POINTER(_PropertyKey), _DWORD), keys, len(keys)), tr("显示类型列"))
         restored = True
         for key, info in saved:
             # Try every restoration even if one shell-extension column fails.
@@ -189,7 +191,7 @@ def _ensure_type_column(dialog) -> bool:
 class _WindowsApi:
     def __init__(self) -> None:
         if sys.platform != "win32":
-            raise NativeDialogError("此文件选择窗口仅支持 Windows。")
+            raise NativeDialogError(tr("此文件选择窗口仅支持 Windows。"))
         self.ole32 = ctypes.WinDLL("ole32")
         self.shell32 = ctypes.WinDLL("shell32")
         self.ole32.CoInitializeEx.argtypes = [_VOID, _DWORD]
@@ -205,14 +207,14 @@ class _WindowsApi:
 
     def shell_item(self, path: Path) -> _VOID:
         item = _VOID()
-        _check(self.shell32.SHCreateItemFromParsingName(str(path), None, ctypes.byref(_IID_SHELL_ITEM), ctypes.byref(item)), "读取文件夹")
+        _check(self.shell32.SHCreateItemFromParsingName(str(path), None, ctypes.byref(_IID_SHELL_ITEM), ctypes.byref(item)), tr("读取文件夹"))
         return item
 
     def path_from_item(self, item) -> Path:
         text = _VOID()
         try:
             # IShellItem::GetDisplayName(SIGDN_FILESYSPATH).
-            _check(_call(item, 5, (_DWORD, _PPVOID), 0x80058000, ctypes.byref(text)), "读取文件路径")
+            _check(_call(item, 5, (_DWORD, _PPVOID), 0x80058000, ctypes.byref(text)), tr("读取文件路径"))
             return Path(ctypes.wstring_at(text))
         finally:
             if text:
@@ -220,12 +222,12 @@ class _WindowsApi:
 
     def paths_from_array(self, items) -> tuple[Path, ...]:
         count = _DWORD()
-        _check(_call(items, 7, (ctypes.POINTER(_DWORD),), ctypes.byref(count)), "读取文件数量")
+        _check(_call(items, 7, (ctypes.POINTER(_DWORD),), ctypes.byref(count)), tr("读取文件数量"))
         paths = []
         for index in range(count.value):
             item = _VOID()
             try:
-                _check(_call(items, 8, (_DWORD, _PPVOID), index, ctypes.byref(item)), "读取选中文件")
+                _check(_call(items, 8, (_DWORD, _PPVOID), index, ctypes.byref(item)), tr("读取选中文件"))
                 paths.append(self.path_from_item(item))
             finally:
                 _release(item)
@@ -314,14 +316,14 @@ class _DialogEvents:
         item = _VOID()
         try:
             # GetSelectedItems is valid while the dialog is still displayed.
-            _check(_call(self.dialog, 28, (_PPVOID,), ctypes.byref(items)), "读取当前选择")
+            _check(_call(self.dialog, 28, (_PPVOID,), ctypes.byref(items)), tr("读取当前选择"))
             count = _DWORD()
-            _check(_call(items, 7, (ctypes.POINTER(_DWORD),), ctypes.byref(count)), "读取当前选择数量")
+            _check(_call(items, 7, (ctypes.POINTER(_DWORD),), ctypes.byref(count)), tr("读取当前选择数量"))
             if count.value != 1:
                 return ()
             # A folder shortcut only applies to one selected item. Do not
             # resolve thousands of file paths on every Ctrl/Shift selection.
-            _check(_call(items, 8, (_DWORD, _PPVOID), 0, ctypes.byref(item)), "读取当前选择")
+            _check(_call(items, 8, (_DWORD, _PPVOID), 0, ctypes.byref(item)), tr("读取当前选择"))
             return (self.api.path_from_item(item),)
         except NativeDialogError:
             # An empty selection or an unfinished file-name entry is normal.
@@ -336,7 +338,7 @@ class _DialogEvents:
             return selected[0]
         folder = _VOID()
         try:
-            _check(_call(self.dialog, 13, (_PPVOID,), ctypes.byref(folder)), "读取当前文件夹")
+            _check(_call(self.dialog, 13, (_PPVOID,), ctypes.byref(folder)), tr("读取当前文件夹"))
             path = self.api.path_from_item(folder)
             return path if path.is_dir() else None
         except NativeDialogError:
@@ -365,7 +367,7 @@ class _DialogEvents:
             # IFileDialogCustomize::SetControlState; VISIBLE plus ENABLED only
             # when the current location (or one selected folder) can be used.
             state = 3 if self._folder_candidate() is not None else 2
-            _check(_call(self.customize, 14, (_DWORD, _DWORD), _FOLDER_BUTTON, state), "更新选择文件夹按钮")
+            _check(_call(self.customize, 14, (_DWORD, _DWORD), _FOLDER_BUTTON, state), tr("更新选择文件夹按钮"))
             return _S_OK
         except Exception as error:
             return self._fail(error)
@@ -379,7 +381,7 @@ class _DialogEvents:
                 self.selection = ImportSelection(folder)
                 # Close(S_OK) deliberately bypasses required-file validation.
                 # GetResults is unavailable after Close, so save the result now.
-                _check(_call(self.dialog, 23, (_HRESULT,), _S_OK), "确认文件夹")
+                _check(_call(self.dialog, 23, (_HRESULT,), _S_OK), tr("确认文件夹"))
             return _S_OK
         except Exception as error:
             return self._fail(error)
@@ -395,7 +397,7 @@ def choose_import_files(owner_hwnd: int, initial_dir: Path | str, suffixes: Iter
     api = _WindowsApi()
     # Both S_OK and S_FALSE add a COM initialization reference. On failure,
     # including RPC_E_CHANGED_MODE, there is no reference to balance.
-    _check(api.ole32.CoInitializeEx(None, 0x2 | 0x4), "初始化 Windows 文件选择窗口")
+    _check(api.ole32.CoInitializeEx(None, 0x2 | 0x4), tr("初始化 Windows 文件选择窗口"))
     dialog = _VOID()
     customize = _VOID()
     cookie = _DWORD()
@@ -403,49 +405,49 @@ def choose_import_files(owner_hwnd: int, initial_dir: Path | str, suffixes: Iter
     events = None
     try:
         _check(api.ole32.CoCreateInstance(ctypes.byref(_CLSID_OPEN_DIALOG), None, 1,
-                                         ctypes.byref(_IID_OPEN_DIALOG), ctypes.byref(dialog)), "创建 Windows 文件选择窗口")
+                                         ctypes.byref(_IID_OPEN_DIALOG), ctypes.byref(dialog)), tr("创建 Windows 文件选择窗口"))
         options = _DWORD()
-        _check(_call(dialog, 10, (ctypes.POINTER(_DWORD),), ctypes.byref(options)), "读取文件选择选项")
+        _check(_call(dialog, 10, (ctypes.POINTER(_DWORD),), ctypes.byref(options)), tr("读取文件选择选项"))
         # FORCEFILESYSTEM | ALLOWMULTISELECT | NOCHANGEDIR | PATHMUSTEXIST |
         # FILEMUSTEXIST. Do not set PICKFOLDERS: the browser must show files.
-        _check(_call(dialog, 9, (_DWORD,), options.value | 0x40 | 0x200 | 0x8 | 0x800 | 0x1000), "设置文件选择选项")
+        _check(_call(dialog, 9, (_DWORD,), options.value | 0x40 | 0x200 | 0x8 | 0x800 | 0x1000), tr("设置文件选择选项"))
         patterns = ";".join(f"*{suffix}" for suffix in suffixes)
         if not patterns:
-            raise NativeDialogError("至少需要一种支持的文件格式。")
-        filters = (_FilterSpec * 1)(_FilterSpec("支持的数据文件", patterns))
-        _check(_call(dialog, 4, (_DWORD, ctypes.POINTER(_FilterSpec)), 1, filters), "设置支持的文件格式")
-        _check(_call(dialog, 17, (ctypes.c_wchar_p,), "选择数据文件夹"), "设置窗口标题")
-        _check(_call(dialog, 18, (ctypes.c_wchar_p,), "添加"), "设置添加按钮")
-        _check(_call(dialog, 24, (ctypes.POINTER(_GUID),), ctypes.byref(_CLIENT_GUID)), "设置窗口标识")
+            raise NativeDialogError(tr("至少需要一种支持的文件格式。"))
+        filters = (_FilterSpec * 1)(_FilterSpec(tr("支持的数据文件"), patterns))
+        _check(_call(dialog, 4, (_DWORD, ctypes.POINTER(_FilterSpec)), 1, filters), tr("设置支持的文件格式"))
+        _check(_call(dialog, 17, (ctypes.c_wchar_p,), tr("选择数据文件夹")), tr("设置窗口标题"))
+        _check(_call(dialog, 18, (ctypes.c_wchar_p,), tr("添加")), tr("设置添加按钮"))
+        _check(_call(dialog, 24, (ctypes.POINTER(_GUID),), ctypes.byref(_CLIENT_GUID)), tr("设置窗口标识"))
         directory = Path(initial_dir).resolve()
         if directory.is_dir():
             folder = api.shell_item(directory)
             try:
-                _check(_call(dialog, 12, (_VOID,), folder), "设置初始文件夹")
+                _check(_call(dialog, 12, (_VOID,), folder), tr("设置初始文件夹"))
             finally:
                 _release(folder)
-        _check(_call(dialog, 0, (ctypes.POINTER(_GUID), _PPVOID), ctypes.byref(_IID_CUSTOMIZE), ctypes.byref(customize)), "启用窗口按钮扩展")
-        _check(_call(customize, 5, (_DWORD, ctypes.c_wchar_p), _FOLDER_BUTTON, "选择文件夹"), "添加选择文件夹按钮")
-        _check(_call(customize, 28, (_DWORD,), _FOLDER_BUTTON), "设置选择文件夹按钮位置")
+        _check(_call(dialog, 0, (ctypes.POINTER(_GUID), _PPVOID), ctypes.byref(_IID_CUSTOMIZE), ctypes.byref(customize)), tr("启用窗口按钮扩展"))
+        _check(_call(customize, 5, (_DWORD, ctypes.c_wchar_p), _FOLDER_BUTTON, tr("选择文件夹")), tr("添加选择文件夹按钮"))
+        _check(_call(customize, 28, (_DWORD,), _FOLDER_BUTTON), tr("设置选择文件夹按钮位置"))
         events = _DialogEvents(api, dialog, customize)
-        _check(_call(dialog, 7, (_VOID, ctypes.POINTER(_DWORD)), events.events_pointer, ctypes.byref(cookie)), "注册窗口操作")
+        _check(_call(dialog, 7, (_VOID, ctypes.POINTER(_DWORD)), events.events_pointer, ctypes.byref(cookie)), tr("注册窗口操作"))
         advised = True
         result = _call(dialog, 3, (_VOID,), owner_hwnd or None)
         if events.error is not None:
-            raise NativeDialogError(f"处理文件选择操作失败：{events.error}") from events.error
+            raise NativeDialogError(tr('处理文件选择操作失败：{0}', events.error)) from events.error
         if result & 0xFFFFFFFF == _CANCELLED:
             return None
-        _check(result, "显示 Windows 文件选择窗口")
+        _check(result, tr("显示 Windows 文件选择窗口"))
         if events.selection is not None:
             return events.selection
         items = _VOID()
         try:
-            _check(_call(dialog, 27, (_PPVOID,), ctypes.byref(items)), "读取选中文件")
+            _check(_call(dialog, 27, (_PPVOID,), ctypes.byref(items)), tr("读取选中文件"))
             paths = api.paths_from_array(items)
         finally:
             _release(items)
         if not paths:
-            raise NativeDialogError("文件选择窗口未返回选中的文件。")
+            raise NativeDialogError(tr("文件选择窗口未返回选中的文件。"))
         return ImportSelection(paths[0].parent, paths)
     finally:
         if advised:

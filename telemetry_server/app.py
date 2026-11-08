@@ -19,7 +19,7 @@ from urllib.parse import urlencode
 from flask import Flask, Response, jsonify, render_template, request
 from werkzeug.exceptions import BadRequest, RequestEntityTooLarge, UnsupportedMediaType
 
-from bet_telemetry.schema import MAX_BODY_BYTES, validate_batch
+from bet_telemetry.schema import APP_IDS, APP_LABELS, MAX_BODY_BYTES, validate_batch
 from telemetry_server.ip_location import enrich_ip_locations
 
 
@@ -37,7 +37,10 @@ INSTRUMENT_LABELS = {"tristar_ii_3020": "TriStar II 3020", "tristar_ii_plus": "T
                      "asap_2460": "ASAP 2460", "asap_2020_plus": "ASAP 2020 Plus", "asap_2020": "ASAP 2020",
                      "asap_2010": "ASAP 2010", "3flex": "3Flex", "micromeritics_other": "麦克其他型号",
                      "belsorp": "BELSORP", "quantachrome": "Quantachrome", "jwgb": "JWGB", "bsd": "贝士德 BSD",
-                     "excel": "Excel 报告（型号未知）", "other": "其他"}
+                     "excel": "Excel 报告（型号未知）", "other": "其他",
+                     "autopore_v": "AutoPore V", "autopore_iv": "AutoPore IV", "autopore_other": "AutoPore 其他型号"}
+# Chart colours per application (BET keeps the page accent; MIP is yellow).
+APP_COLORS = {"bet": "#2f7de1", "mercury_smp": "#e0a100"}
 OS_LABELS = {"Windows": "Windows", "Linux": "Linux", "Darwin": "macOS", "other": "其他"}
 DISPLAY_TIMEZONE = timezone(timedelta(hours=8), "Asia/Shanghai")
 
@@ -57,7 +60,8 @@ CREATE TABLE IF NOT EXISTS events (
     surface TEXT,
     export_format TEXT,
     error_code TEXT,
-    duration_ms INTEGER
+    duration_ms INTEGER,
+    app TEXT NOT NULL DEFAULT 'bet'
 );
 CREATE INDEX IF NOT EXISTS events_time ON events(occurred_at);
 CREATE INDEX IF NOT EXISTS events_name_time ON events(name, occurred_at);
@@ -107,9 +111,27 @@ def initialize_database(path):
     with _database(path) as connection:
         connection.execute("PRAGMA journal_mode = WAL")
         connection.executescript(_SCHEMA)
+        _add_app_column(connection)
     if os.name != "nt":
         path.chmod(0o600)
     return str(path)
+
+
+def _add_app_column(connection):
+    """Rows stored before MIP joined this server are BET rows (``app`` defaults to 'bet').
+
+    Several workers may start at once: the check and ALTER run under one write lock.
+    """
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(events)")}
+        if "app" not in columns:
+            connection.execute("ALTER TABLE events ADD COLUMN app TEXT NOT NULL DEFAULT 'bet'")
+        connection.execute("CREATE INDEX IF NOT EXISTS events_app_time ON events(app, occurred_at)")
+        connection.execute("COMMIT")
+    except BaseException:
+        connection.execute("ROLLBACK")
+        raise
 
 
 def purge_database(path, *, now=None):
@@ -205,6 +227,7 @@ def _invalid_json_constant(_value):
 
 
 def _save_batch(path, batch, ip_address, now):
+    app_id = batch.get("app_id", "bet")
     rows = []
     for event in batch["events"]:
         occurred_at = _event_time(event["occurred_at"])
@@ -213,10 +236,12 @@ def _save_batch(path, batch, ip_address, now):
                      batch["app_version"], event["name"], occurred_at, now,
                      json.dumps(data, ensure_ascii=True, separators=(",", ":")),
                      data.get("status"), data.get("extension"), data.get("feature"),
-                     data.get("surface"), data.get("format"), data.get("error_code"), data.get("duration_ms")))
+                     data.get("surface"), data.get("format"), data.get("error_code"), data.get("duration_ms"), app_id))
     with _database(path) as connection:
         with connection:
-            connection.executemany("INSERT OR IGNORE INTO events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
+            connection.executemany("""INSERT OR IGNORE INTO events (event_id, install_id, session_id, app_version,
+                name, occurred_at, received_at, data_json, status, extension, feature, surface, export_format,
+                error_code, duration_ms, app) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", rows)
             if ip_address is not None:
                 connection.execute("""INSERT INTO ip_observations VALUES (?, ?, ?, ?)
                     ON CONFLICT(install_id, ip_address, app_version)
@@ -263,11 +288,16 @@ def _duration_label(seconds):
     return f"{seconds}秒"
 
 
-def _chart(points, *, width=1040, height=230, label_every=1):
-    """Coordinates for a filled line chart drawn as inline SVG (the admin page runs no script)."""
+def _chart(series, *, width=1040, height=230, label_every=1):
+    """Coordinates for line charts drawn as inline SVG (the admin page runs no script).
+
+    ``series`` is a list of {"app", "points": [{"label", "count"}]} sharing the same x labels;
+    all lines share one y scale.  ``total``/``peak`` cover every series together.
+    """
     left, right, top, bottom = 44, 14, 14, 30
-    values = [point["count"] for point in points]
-    peak = max(values) if values else 0
+    labels = [point["label"] for point in series[0]["points"]] if series else []
+    combined = [sum(item["points"][index]["count"] for item in series) for index in range(len(labels))]
+    peak = max((point["count"] for item in series for point in item["points"]), default=0)
     step, magnitude = 1, 1
     while True:  # 1, 2, 5, 10, 20, 50 ...: at most five grid intervals above zero
         for factor in (1, 2, 5):
@@ -280,21 +310,27 @@ def _chart(points, *, width=1040, height=230, label_every=1):
         break
     top_value = step * max(1, -(-peak // step))
     plot_width, plot_height = width - left - right, height - top - bottom
-    count = len(points)
+    count = len(labels)
     x_step = plot_width / (count - 1) if count > 1 else 0
-    coords = []
-    for index, point in enumerate(points):
-        x = left + (x_step * index if count > 1 else plot_width / 2)
-        y = top + plot_height * (1 - point["count"] / top_value)
-        coords.append({"x": round(x, 1), "y": round(y, 1), "label": point["label"], "count": point["count"],
-                       "tick": index % label_every == 0 or index == count - 1})
-    line = " ".join(f"{c['x']},{c['y']}" for c in coords)
+    xs = [round(left + (x_step * index if count > 1 else plot_width / 2), 1) for index in range(count)]
     base = top + plot_height
-    area = (f"{coords[0]['x']},{base} {line} {coords[-1]['x']},{base}") if coords else ""
+    lines = []
+    for item in series:
+        coords = [{"x": xs[index], "y": round(top + plot_height * (1 - point["count"] / top_value), 1),
+                   "label": point["label"], "count": point["count"]} for index, point in enumerate(item["points"])]
+        line = " ".join(f"{c['x']},{c['y']}" for c in coords)
+        values = [point["count"] for point in item["points"]]
+        lines.append({"app": item["app"], "app_label": APP_LABELS.get(item["app"], item["app"]),
+                      "color": APP_COLORS.get(item["app"], "#6b7889"), "points": coords, "line": line,
+                      "area": f"{coords[0]['x']},{base} {line} {coords[-1]['x']},{base}" if coords else "",
+                      "total": sum(values), "peak": max(values, default=0)})
+    x_labels = [{"x": xs[index], "label": label} for index, label in enumerate(labels)
+                if index % label_every == 0 or index == count - 1]
     ticks = [{"value": value, "y": round(top + plot_height * (1 - value / top_value), 1)}
              for value in range(0, top_value + 1, step)]
     return {"width": width, "height": height, "left": left, "right": width - right, "base": base,
-            "points": coords, "line": line, "area": area, "ticks": ticks, "total": sum(values), "peak": peak}
+            "series": lines, "x_labels": x_labels, "ticks": ticks, "dense": count > 62,
+            "total": sum(combined), "peak": max(combined, default=0)}
 
 
 REGION_OTHER = "其他"
@@ -321,7 +357,7 @@ def _region_parts(location):
 def _query_string(current, **changes):
     """Query string for a link that keeps the current filters except ``changes``."""
     params = {**current, **changes}
-    pairs = [(key, params[key]) for key in ("days", "start", "end", "region", "ip", "version", "page")
+    pairs = [(key, params[key]) for key in ("days", "start", "end", "app", "region", "ip", "version", "page")
              if params.get(key) not in (None, "")]
     return "?" + urlencode(pairs) if pairs else "?"
 
@@ -330,6 +366,7 @@ def _session_rows(connection, window_start, window_end):
     """Every run in the window with its IP (exact per-run IP, else inferred from the installation)."""
     sessions = [dict(row) for row in connection.execute("""
         SELECT e.session_id, e.install_id, e.app_version AS version, MIN(e.occurred_at) AS opened_at,
+               MAX(e.app) AS app,
                (SELECT s.ip_address FROM session_ips s WHERE s.session_id = e.session_id) AS exact_ip
         FROM events e WHERE e.session_id IN (
             SELECT session_id FROM events WHERE occurred_at BETWEEN ? AND ?
@@ -346,6 +383,7 @@ def _session_rows(connection, window_start, window_end):
                 LIMIT 1""", (session["install_id"], session["version"], session["opened_at"], session["opened_at"])).fetchone()
             ip = row[0] if row else None
         session["ip"] = ip
+        session["app_label"] = APP_LABELS.get(session["app"], session["app"])
     return sessions
 
 
@@ -413,7 +451,9 @@ def _session_details(connection, session, now):
     }
 
 
-def _matches(session, region, ip, version):
+def _matches(session, region, ip, version, app=""):
+    if app and session["app"] != app:
+        return False
     if version and session["version"] != version:
         return False
     if ip and not (session["ip"] or "").startswith(ip):
@@ -426,13 +466,21 @@ def _matches(session, region, ip, version):
 
 
 def _sessions(connection, window_start, window_end, now, page, ip_database_dir, *, region="", ip="", version="",
-              current=None):
+              app="", current=None):
     """One row per program run, newest first; filters apply to this table only."""
     current = dict(current or {})
     every = _session_rows(connection, window_start, window_end)
     _locate(every, ip_database_dir)
-    provinces = {}
+    apps = {}
     for session in every:
+        apps[session["app"]] = apps.get(session["app"], 0) + 1
+    app_options = [{"value": value, "label": APP_LABELS[value], "count": apps.get(value, 0),
+                    "selected": value == app, "query": _query_string(current, app=value, version=None, page=None)}
+                   for value in APP_IDS]
+    # Region and version menus count the runs of the selected software only.
+    scoped = [session for session in every if not app or session["app"] == app]
+    provinces = {}
+    for session in scoped:
         entry = provinces.setdefault(session["province"], {"count": 0, "cities": {}})
         entry["count"] += 1
         entry["cities"][session["city_full"]] = entry["cities"].get(session["city_full"], 0) + 1
@@ -447,12 +495,18 @@ def _sessions(connection, window_start, window_end, now, page, ip_database_dir, 
                        for city, count in sorted(entry["cities"].items(), key=lambda item: (-item[1], item[0]))],
         })
     versions = {}
-    for session in every:
-        versions[session["version"]] = versions.get(session["version"], 0) + 1
-    version_options = [{"value": value, "count": count, "selected": value == version,
-                        "query": _query_string(current, version=value, page=None)}
-                       for value, count in sorted(versions.items(), key=lambda item: item[0], reverse=True)]
-    rows = [session for session in every if _matches(session, region, ip, version)]
+    for session in scoped:
+        key = (session["app"], session["version"])
+        versions[key] = versions.get(key, 0) + 1
+    # BET and MIP version numbers overlap (both had 1.1.2), so a version option also selects its software.
+    ordered = sorted(versions.items(), key=lambda item: item[0][1], reverse=True)
+    ordered.sort(key=lambda item: APP_IDS.index(item[0][0]) if item[0][0] in APP_IDS else len(APP_IDS))
+    version_options = [{"value": value, "app": owner, "count": count,
+                        "label": value if app else f"{APP_LABELS.get(owner, owner)} {value}",
+                        "selected": value == version and owner == (app or owner),
+                        "query": _query_string(current, app=owner, version=value, page=None)}
+                       for (owner, value), count in ordered]
+    rows = [session for session in every if _matches(session, region, ip, version, app)]
     total = len(rows)
     pages = max(1, (total + SESSION_PAGE_SIZE - 1) // SESSION_PAGE_SIZE)
     page = min(page, pages)
@@ -466,11 +520,14 @@ def _sessions(connection, window_start, window_end, now, page, ip_database_dir, 
         province, _, city = region.partition("/")
         region_label = _short_region(city) if city else _short_region(province)
     filters = {
+        "app": app, "app_label": APP_LABELS.get(app, "全部软件"), "app_options": app_options,
+        "version_label": (version if not app else f"{APP_LABELS[app]} {version}") if version else "全部版本",
         "region": region, "region_label": region_label, "ip": ip, "version": version,
         "region_options": region_options, "version_options": version_options,
-        "clear": {name: _query_string(current, **{name: None}, page=None) for name in ("region", "ip", "version")},
+        "clear": {**{name: _query_string(current, **{name: None}, page=None) for name in ("region", "ip", "version")},
+                  "app": _query_string(current, app=None, version=None, page=None)},
         "clear_all": _query_string({key: current.get(key) for key in ("days", "start", "end")}),
-        "active": bool(region or ip or version),
+        "active": bool(app or region or ip or version),
     }
     return shown, {"page": page, "per_page": SESSION_PAGE_SIZE, "total": total, "total_pages": pages,
                    "has_previous": page > 1, "has_next": page < pages,
@@ -484,16 +541,19 @@ def _day_start(day):
 
 
 def _summary(path, now, ip_database_dir=None, *, window_days=30, ip_scope="window", ip_page=1, page=1,
-             start_date=None, end_date=None, region="", ip="", version=""):
+             start_date=None, end_date=None, region="", ip="", version="", app=""):
     """``window_days`` is one of WINDOW_LABELS, or None for all recorded data.
 
     ``start_date``/``end_date`` (Beijing dates, inclusive) replace the rolling window.
-    ``region`` ("省份" or "省份/城市" or "其他"), ``ip`` (prefix) and ``version`` filter the run table only.
+    ``app`` (software), ``region`` ("省份" or "省份/城市" or "其他"), ``ip`` (prefix) and ``version``
+    filter the run table only; the charts always draw one line per software.
     """
     if (window_days is not None and window_days not in WINDOW_LABELS) or ip_scope not in {"window", "all"}:
         raise ValueError("Unsupported statistics window or IP scope")
     if type(ip_page) is not int or ip_page < 1 or type(page) is not int or page < 1:
         raise ValueError("Invalid IP page")
+    if app and app not in APP_IDS:
+        raise ValueError("Unsupported software")
     today = datetime.fromtimestamp(now, DISPLAY_TIMEZONE).date()
     custom = start_date is not None
     matched_preset = None
@@ -519,7 +579,7 @@ def _summary(path, now, ip_database_dir=None, *, window_days=30, ip_scope="windo
         window_end = now
     current = {"days": None if custom else ("all" if window_days is None else str(window_days)),
                "start": start_date.isoformat() if custom else None, "end": end_date.isoformat() if custom else None,
-               "region": region or None, "ip": ip or None, "version": version or None}
+               "app": app or None, "region": region or None, "ip": ip or None, "version": version or None}
     with _database(path) as connection:
         connection.execute("BEGIN")  # One consistent read snapshot across tables.
 
@@ -533,12 +593,13 @@ def _summary(path, now, ip_database_dir=None, *, window_days=30, ip_scope="windo
             "SELECT COUNT(DISTINCT install_id) FROM events WHERE occurred_at BETWEEN ? AND ?",
             (cutoff, window_end)).fetchone()[0])
         versions = rows("""WITH latest AS (
-            SELECT install_id, app_version,
+            SELECT install_id, app_version, app,
                    ROW_NUMBER() OVER (PARTITION BY install_id ORDER BY occurred_at DESC, received_at DESC, event_id DESC) AS rank
             FROM events WHERE occurred_at BETWEEN ? AND ?
-        ) SELECT app_version AS version, COUNT(*) AS installs FROM latest WHERE rank = 1
-          GROUP BY app_version ORDER BY installs DESC, app_version LIMIT 100""", (cutoff, window_end))
+        ) SELECT app, app_version AS version, COUNT(*) AS installs FROM latest WHERE rank = 1
+          GROUP BY app, app_version ORDER BY installs DESC, app, app_version LIMIT 100""", (cutoff, window_end))
         for version_row in versions:
+            version_row["app_label"] = APP_LABELS.get(version_row["app"], version_row["app"])
             version_row["share"] = version_row["installs"] / window_active if window_active else 0
         last_day = end_date if custom else today
         if custom:
@@ -548,58 +609,66 @@ def _summary(path, now, ip_database_dir=None, *, window_days=30, ip_scope="windo
             first_day = datetime.fromtimestamp(earliest, DISPLAY_TIMEZONE).date() if earliest is not None else today
         else:
             first_day = datetime.fromtimestamp(cutoff, DISPLAY_TIMEZONE).date()
-        startup_counts = {row["day"]: row["count"] for row in rows("""
-            SELECT strftime('%Y-%m-%d', occurred_at, 'unixepoch', '+8 hours') AS day, COUNT(*) AS count
-            FROM events WHERE name = 'startup' AND occurred_at BETWEEN ? AND ? GROUP BY day""", (cutoff, window_end))}
-        startups = [{"date": (first_day + timedelta(days=index)).isoformat(),
-                     "count": startup_counts.get((first_day + timedelta(days=index)).isoformat(), 0)}
-                    for index in range((last_day - first_day).days + 1)]
+        startup_counts = {(row["day"], row["app"]): row["count"] for row in rows("""
+            SELECT strftime('%Y-%m-%d', occurred_at, 'unixepoch', '+8 hours') AS day, app, COUNT(*) AS count
+            FROM events WHERE name = 'startup' AND occurred_at BETWEEN ? AND ? GROUP BY day, app""", (cutoff, window_end))}
+        startups = []
+        for index in range((last_day - first_day).days + 1):
+            day = (first_day + timedelta(days=index)).isoformat()
+            by_app = {owner: startup_counts.get((day, owner), 0) for owner in APP_IDS}
+            startups.append({"date": day, "count": sum(by_app.values()), "by_app": by_app})
         # "当天" is today, or the last day of a custom range that ends before today.
         day_start = _day_start(last_day)
         day_end = min(window_end, day_start + DAY - 1)
-        hourly_counts = {row["hour"]: row["count"] for row in rows("""
-            SELECT CAST(strftime('%H', occurred_at, 'unixepoch', '+8 hours') AS INTEGER) AS hour, COUNT(*) AS count
-            FROM events WHERE name = 'startup' AND occurred_at BETWEEN ? AND ? GROUP BY hour""", (day_start, day_end))}
+        hourly_counts = {(row["hour"], row["app"]): row["count"] for row in rows("""
+            SELECT CAST(strftime('%H', occurred_at, 'unixepoch', '+8 hours') AS INTEGER) AS hour, app, COUNT(*) AS count
+            FROM events WHERE name = 'startup' AND occurred_at BETWEEN ? AND ? GROUP BY hour, app""", (day_start, day_end))}
         last_hour = datetime.fromtimestamp(day_end, DISPLAY_TIMEZONE).hour if last_day == today else 23
-        hourly = [{"hour": hour, "count": hourly_counts.get(hour, 0)} for hour in range(last_hour + 1)]
+        hourly = []
+        for hour in range(last_hour + 1):
+            by_app = {owner: hourly_counts.get((hour, owner), 0) for owner in APP_IDS}
+            hourly.append({"hour": hour, "count": sum(by_app.values()), "by_app": by_app})
         sessions, session_pagination, filters = _sessions(
             connection, cutoff, window_end, now, page, ip_database_dir,
-            region=region, ip=ip, version=version, current=current)
-        imports = rows("""SELECT extension, COUNT(*) AS total,
+            region=region, ip=ip, version=version, app=app, current=current)
+        imports = rows("""SELECT app, extension, COUNT(*) AS total,
             SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) AS success,
             SUM(CASE WHEN status='failure' THEN 1 ELSE 0 END) AS failure,
             ROUND(AVG(duration_ms), 1) AS average_duration_ms
             FROM events WHERE name='import_file' AND occurred_at BETWEEN ? AND ?
-            GROUP BY extension ORDER BY total DESC, extension""", (cutoff, window_end))
+            GROUP BY app, extension ORDER BY app, total DESC, extension""", (cutoff, window_end))
         for item in imports:
             item["success_rate"] = item["success"] / item["total"]
+            item["app_label"] = APP_LABELS.get(item["app"], item["app"])
         import_total = sum(item["total"] for item in imports)
         import_success = sum(item["success"] for item in imports)
-        features = rows("""SELECT feature, surface, COUNT(*) AS views FROM events
+        features = rows("""SELECT app, feature, surface, COUNT(*) AS views FROM events
             WHERE name='feature_view' AND occurred_at BETWEEN ? AND ?
-            GROUP BY feature, surface ORDER BY views DESC, feature, surface""", (cutoff, window_end))
-        exports = rows("""SELECT export_format AS format, COUNT(*) AS total,
+            GROUP BY app, feature, surface ORDER BY views DESC, app, feature, surface""", (cutoff, window_end))
+        exports = rows("""SELECT app, export_format AS format, COUNT(*) AS total,
             SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) AS success,
             SUM(CASE WHEN status='failure' THEN 1 ELSE 0 END) AS failure,
             ROUND(AVG(duration_ms), 1) AS average_duration_ms
             FROM events WHERE name='export' AND occurred_at BETWEEN ? AND ?
-            GROUP BY export_format ORDER BY total DESC, export_format""", (cutoff, window_end))
-        errors = rows("""SELECT name AS event, error_code, COUNT(*) AS count FROM events
+            GROUP BY app, export_format ORDER BY total DESC, app, export_format""", (cutoff, window_end))
+        errors = rows("""SELECT app, name AS event, error_code, COUNT(*) AS count FROM events
             WHERE status='failure' AND occurred_at BETWEEN ? AND ?
-            GROUP BY name, error_code ORDER BY count DESC, name, error_code LIMIT 20""", (cutoff, window_end))
+            GROUP BY app, name, error_code ORDER BY count DESC, app, name, error_code LIMIT 20""", (cutoff, window_end))
         environments = rows("""WITH latest AS (
-            SELECT data_json, ROW_NUMBER() OVER (
+            SELECT app, data_json, ROW_NUMBER() OVER (
                 PARTITION BY install_id ORDER BY occurred_at DESC, received_at DESC, event_id DESC) AS rank
             FROM events WHERE name='startup' AND occurred_at BETWEEN ? AND ?
-        ) SELECT json_extract(data_json, '$.os') AS os,
+        ) SELECT app, json_extract(data_json, '$.os') AS os,
                  json_extract(data_json, '$.os_version') AS os_version,
                  json_extract(data_json, '$.architecture') AS architecture,
                  json_extract(data_json, '$.screen_width') AS screen_width,
                  json_extract(data_json, '$.screen_height') AS screen_height,
                  json_extract(data_json, '$.scale') AS scale, COUNT(*) AS installs
           FROM latest WHERE rank=1
-          GROUP BY os, os_version, architecture, screen_width, screen_height, scale
-          ORDER BY installs DESC, os, os_version, architecture, screen_width, screen_height, scale LIMIT 20""", (cutoff, window_end))
+          GROUP BY app, os, os_version, architecture, screen_width, screen_height, scale
+          ORDER BY installs DESC, app, os, os_version, architecture, screen_width, screen_height, scale LIMIT 20""", (cutoff, window_end))
+        for item in environments:
+            item["app_label"] = APP_LABELS.get(item["app"], item["app"])
         ip_where = "last_seen_at BETWEEN ? AND ?" if ip_scope == "window" else "last_seen_at <= ?"
         ip_parameters = (cutoff, window_end) if ip_scope == "window" else (now,)
         total_ip_groups = connection.execute(f"""SELECT COUNT(*) FROM (
@@ -626,8 +695,10 @@ def _summary(path, now, ip_database_dir=None, *, window_days=30, ip_scope="windo
     else:
         window_label = WINDOW_LABELS[window_days] if window_days is not None else ALL_WINDOW_LABEL
     range_first = first_day
-    day_points = [{"label": row["date"], "count": row["count"]} for row in startups]
-    hour_points = [{"label": f"{row['hour']:02d}:00", "count": row["count"]} for row in hourly]
+    day_series = [{"app": owner, "points": [{"label": row["date"], "count": row["by_app"][owner]} for row in startups]}
+                  for owner in APP_IDS]
+    hour_series = [{"app": owner, "points": [{"label": f"{row['hour']:02d}:00", "count": row["by_app"][owner]}
+                                             for row in hourly]} for owner in APP_IDS]
     return {
         "generated_at": _utc_text(now), "generated_at_local": _local_text(now),
         "timezone": "Asia/Shanghai", "timezone_label": "北京时间（UTC+8）", "window_days": window_days,
@@ -646,8 +717,9 @@ def _summary(path, now, ip_database_dir=None, *, window_days=30, ip_scope="windo
                               "query": _query_string({**current, "start": None, "end": None}, days="all", page=None)}],
         "sessions": sessions, "session_pagination": session_pagination,
         "hourly_startups_today": hourly,
-        "charts": {"today": _chart(hour_points, label_every=2),
-                   "period": _chart(day_points, label_every=max(1, len(day_points) // 10))},
+        "charts": {"today": _chart(hour_series, label_every=2),
+                   "period": _chart(day_series, label_every=max(1, len(startups) // 10))},
+        "apps": [{"value": owner, "label": APP_LABELS[owner], "color": APP_COLORS[owner]} for owner in APP_IDS],
         "window_active_installs": window_active,
         "retention": {"events_days": EVENT_RETENTION_DAYS, "ip_days": IP_RETENTION_DAYS},
         "database_usage": {"used_bytes": used_bytes, "max_bytes": MAX_DATABASE_BYTES,
@@ -692,7 +764,7 @@ def create_app(config=None):
         return jsonify(error="rate_limited"), 429, {"Retry-After": "60"}
 
     def summary_options():
-        names = ("days", "ip_scope", "ip_page", "page", "start", "end", "region", "ip", "version")
+        names = ("days", "ip_scope", "ip_page", "page", "start", "end", "app", "region", "ip", "version")
         for name in names:
             if len(request.args.getlist(name)) > 1:
                 raise ValueError("Duplicate statistics option")
@@ -721,6 +793,9 @@ def create_app(config=None):
         region = request.args.get("region", "").strip()
         ip = request.args.get("ip", "").strip()
         version = request.args.get("version", "").strip()
+        software = request.args.get("app", "").strip()
+        if software and software not in APP_IDS:
+            raise ValueError("Invalid software filter")
         if len(region) > 80 or any(ord(character) < 32 for character in region):
             raise ValueError("Invalid region")
         if ip and not re.fullmatch(r"[0-9A-Fa-f:.]{1,45}", ip):
@@ -729,7 +804,7 @@ def create_app(config=None):
             raise ValueError("Invalid version filter")
         return {"window_days": None if raw_days == "all" else int(raw_days), "ip_scope": scope, **pages,
                 "start_date": dates.get("start"), "end_date": dates.get("end"),
-                "region": region, "ip": ip, "version": version}
+                "region": region, "ip": ip, "version": version, "app": software}
 
     def admin_authorization():
         username, password = app.config["ADMIN_USERNAME"], app.config["ADMIN_PASSWORD"]

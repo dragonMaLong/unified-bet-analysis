@@ -1,5 +1,7 @@
 """Editable selection boundaries, matching the mercury application's controls."""
 
+from tristar_bet.i18n import tr
+
 import math
 
 from PyQt5 import QtCore, QtWidgets
@@ -212,7 +214,7 @@ class RegionEndpointControls(QtCore.QObject):
                 raise ValueError
         except ValueError:
             if self.status_callback is not None:
-                self.status_callback("边界必须是有效数字。", 4000)
+                self.status_callback(tr("边界必须是有效数字。"), 4000)
             self.editor.selectAll()
             QtCore.QTimer.singleShot(0, self._refocus_editor)
             return

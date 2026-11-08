@@ -7,6 +7,8 @@ not evaluated uptake. This module does not claim quantitative compatibility.
 """
 from __future__ import annotations
 
+from tristar_bet.i18n import tr
+
 from dataclasses import dataclass
 import hashlib
 from pathlib import Path
@@ -32,27 +34,27 @@ def decode_jwgb_project(data: bytes) -> JwgbProjectDocument:
     Unknown formats fail rather than being guessed into an isotherm.
     """
     if not data or len(data) % 2 or len(data) > MAX_PROJECT_BYTES:
-        raise ValueError("JWGBP 编码长度无效或超过 16 MiB")
+        raise ValueError(tr("JWGBP 编码长度无效或超过 16 MiB"))
     hexadecimal = bytearray(len(data))
     for index, value in enumerate(data):
         character = value + index % 48
         if character not in _HEX:
-            raise ValueError(f"JWGBP 编码在字节 {index} 处无效")
+            raise ValueError(tr('JWGBP 编码在字节 {0} 处无效', index))
         hexadecimal[index] = character
     xml = bytes.fromhex(hexadecimal.decode("ascii"))
     try:
         text = xml.decode("utf-8-sig")
         if "<!DOCTYPE" in text.upper() or "<!ENTITY" in text.upper():
-            raise ValueError("JWGBP 不支持 DTD 或实体声明")
+            raise ValueError(tr("JWGBP 不支持 DTD 或实体声明"))
         root = ET.fromstring(text)
     except (UnicodeError, ET.ParseError) as exc:
-        raise ValueError("JWGBP 解码后不是完整的 UTF-8 XML") from exc
+        raise ValueError(tr("JWGBP 解码后不是完整的 UTF-8 XML")) from exc
     if root.tag != "doc" or root.get("Ver") != "1":
-        raise ValueError("尚未验证此 JWGBP 文档版本")
+        raise ValueError(tr("尚未验证此 JWGBP 文档版本"))
     for name in ("Config", "Data"):
         section = root.find(name)
         if section is None or section.get("Ver") != "1":
-            raise ValueError(f"JWGBP 缺少或不支持 {name} 数据块")
+            raise ValueError(tr('JWGBP 缺少或不支持 {0} 数据块', name))
     return JwgbProjectDocument(xml, root, hashlib.sha256(data).hexdigest(), len(data))
 
 

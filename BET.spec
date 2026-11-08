@@ -19,6 +19,7 @@ for package in ("tristar_bet", "bet_telemetry"):
 datas = [
     ("tristar_bet/reference_data", "tristar_bet/reference_data"),
     ("tristar_bet/assets", "tristar_bet/assets"),
+    ("tristar_bet/locales", "tristar_bet/locales"),
     ("DFT-NLDFT-Models.zip", "."),
 ]
 

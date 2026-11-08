@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from tristar_bet import i18n
+from tristar_bet.i18n import tr
+
 import copy
 import os
 import math
@@ -172,12 +175,12 @@ IMPORT_FAILURE_CONTACT ="导入失败请联系软件开发者：kuailelong101@16
 
 
 def _with_import_contact(text: str) -> str:
-    return f"{text}\n\n{IMPORT_FAILURE_CONTACT}"
+    return f"{text}\n\n{tr(IMPORT_FAILURE_CONTACT)}"
 
 
 def _no_isotherm_message(result) -> str:
     reason = str((getattr(result, "method_options", None) or {}).get("no_isotherm_reason") or "").strip()
-    return f"没有解析到实际等温线（{reason}），已跳过" if reason else "没有解析到实际等温线，已跳过"
+    return tr('没有解析到实际等温线（{0}），已跳过', reason) if reason else tr("没有解析到实际等温线，已跳过")
 
 
 def _qt_enum_int(value) -> int:
@@ -348,7 +351,7 @@ class CollapsibleOptionsPane(QtWidgets.QFrame):
         self.toggle_button.setAutoRaise(True)
         self.toggle_button.setFixedSize(24, 24)
         self.toggle_button.setCursor(QtCore.Qt.PointingHandCursor)
-        self.toggle_button.setToolTip("隐藏参数栏")
+        self.toggle_button.setToolTip(tr("隐藏参数栏"))
         self.toggle_button.clicked.connect(self.toggle_collapsed)
 
         self.scroll_area = ShrinkableScrollArea()
@@ -425,7 +428,7 @@ class CollapsibleOptionsPane(QtWidgets.QFrame):
         self._collapsed = bool(collapsed)
         self.scroll_area.setVisible(not self._collapsed)
         self.toggle_button.setArrowType(QtCore.Qt.RightArrow if self._collapsed else QtCore.Qt.LeftArrow)
-        self.toggle_button.setToolTip("显示参数栏" if self._collapsed else "隐藏参数栏")
+        self.toggle_button.setToolTip(tr("显示参数栏") if self._collapsed else tr("隐藏参数栏"))
         if self._collapsed:
             self.setMinimumWidth(self.COLLAPSED_WIDTH)
             self.setMaximumWidth(self.COLLAPSED_WIDTH)
@@ -1089,6 +1092,7 @@ BET_DISPLAY_SINGLE = "single"
 BET_DISPLAY_MULTI = "multi"
 BET_DISPLAY_LABELS = {BET_DISPLAY_DEFAULT: "默认", BET_DISPLAY_SINGLE: "单点", BET_DISPLAY_MULTI: "多点"}
 DEFAULT_SINGLE_POINT_PRESSURE = 0.2
+LANGUAGE_SETTING_KEY = "ui/language"
 # New key: "results/single_point_pressure" values from versions before 1.3.3 stay ignored.
 SINGLE_POINT_PRESSURE_KEY = "results/single_point_pressure_setting"
 TEST_TIME_COLUMN = 2
@@ -1209,7 +1213,7 @@ def _default_bjh_thickness_params_by_method() -> dict[str, dict[str, object]]:
 
 
 def _t_plot_thickness_label(method: str) -> str:
-    return T_PLOT_THICKNESS_METHOD_LABELS.get(method, T_PLOT_THICKNESS_METHOD_LABELS[DEFAULT_T_PLOT_THICKNESS_METHOD])
+    return tr(T_PLOT_THICKNESS_METHOD_LABELS.get(method, T_PLOT_THICKNESS_METHOD_LABELS[DEFAULT_T_PLOT_THICKNESS_METHOD]))
 
 
 def _float_equal(left: object, right: object, *, tol: float = 1e-9) -> bool:
@@ -1288,7 +1292,7 @@ class RegularizationSlider(QtWidgets.QWidget):
         validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
         self._editor.setValidator(validator)
         self._editor.setAlignment(QtCore.Qt.AlignCenter)
-        self._editor.setToolTip("请输入 0 到 10 之间的数字")
+        self._editor.setToolTip(tr("请输入 0 到 10 之间的数字"))
         self._editor.hide()
         self._editor.editingFinished.connect(self._finish_inline_edit)
         self.setMinimumHeight(76)
@@ -1585,7 +1589,7 @@ class RegularizationSlider(QtWidgets.QWidget):
 
 class _ImportFilePickerModel(QtCore.QIdentityProxyModel):
     def headerData(self, section, orientation, role=QtCore.Qt.DisplayRole):
-        labels = ("文件名", "大小", "类型", "修改时间")
+        labels = (tr("文件名"), tr("大小"), tr("类型"), tr("修改时间"))
         if orientation == QtCore.Qt.Horizontal and role == QtCore.Qt.DisplayRole and 0 <= section < len(labels):
             return labels[section]
         return super().headerData(section, orientation, role)
@@ -1598,25 +1602,25 @@ class ImportFilePicker(QtWidgets.QFileDialog):
         super().__init__(parent)
         self.setWindowFlag(QtCore.Qt.WindowContextHelpButtonHint, False)
         self.setOption(QtWidgets.QFileDialog.DontUseNativeDialog, True)
-        self.setWindowTitle("选择数据文件夹")
+        self.setWindowTitle(tr("选择数据文件夹"))
         self.setFileMode(QtWidgets.QFileDialog.ExistingFiles)
         self.setAcceptMode(QtWidgets.QFileDialog.AcceptOpen)
         self.setViewMode(QtWidgets.QFileDialog.Detail)
         self.setProxyModel(_ImportFilePickerModel(self))
         self.setDirectory(str(initial_dir or Path.cwd()))
         patterns = " ".join(f"*{suffix}" for suffix in SUPPORTED_DATA_SUFFIXES)
-        self.setNameFilter(f"支持的数据文件 ({patterns})")
-        self.setLabelText(QtWidgets.QFileDialog.LookIn, "当前文件夹：")
-        self.setLabelText(QtWidgets.QFileDialog.FileName, "文件名：")
-        self.setLabelText(QtWidgets.QFileDialog.FileType, "文件类型：")
-        self.setLabelText(QtWidgets.QFileDialog.Accept, "添加")
-        self.setLabelText(QtWidgets.QFileDialog.Reject, "取消")
+        self.setNameFilter(tr('支持的数据文件 ({0})', patterns))
+        self.setLabelText(QtWidgets.QFileDialog.LookIn, tr("当前文件夹："))
+        self.setLabelText(QtWidgets.QFileDialog.FileName, tr("文件名："))
+        self.setLabelText(QtWidgets.QFileDialog.FileType, tr("文件类型："))
+        self.setLabelText(QtWidgets.QFileDialog.Accept, tr("添加"))
+        self.setLabelText(QtWidgets.QFileDialog.Reject, tr("取消"))
         self.chosen_directory: Path | None = None
 
         for name, tooltip in (
-            ("backButton", "后退"), ("forwardButton", "前进"),
-            ("toParentButton", "上一级文件夹"), ("newFolderButton", "新建文件夹"),
-            ("listModeButton", "列表视图"), ("detailModeButton", "详细信息视图"),
+            ("backButton", tr("后退")), ("forwardButton", tr("前进")),
+            ("toParentButton", tr("上一级文件夹")), ("newFolderButton", tr("新建文件夹")),
+            ("listModeButton", tr("列表视图")), ("detailModeButton", tr("详细信息视图")),
         ):
             self.findChild(QtWidgets.QToolButton, name).setToolTip(tooltip)
 
@@ -1630,12 +1634,12 @@ class ImportFilePicker(QtWidgets.QFileDialog):
         self.findChild(QtWidgets.QLineEdit, "fileNameEdit").textChanged.connect(self._restore_add_button_label)
         for name in ("listView", "treeView"):
             self.findChild(QtWidgets.QAbstractItemView, name).selectionModel().selectionChanged.connect(self._restore_add_button_label)
-        folder_button = button_box.addButton("选择文件夹", QtWidgets.QDialogButtonBox.ActionRole)
+        folder_button = button_box.addButton(tr("选择文件夹"), QtWidgets.QDialogButtonBox.ActionRole)
         folder_button.setAutoDefault(False)
-        folder_button.setToolTip("只选择文件夹，返回后在左侧排序、筛选文件")
+        folder_button.setToolTip(tr("只选择文件夹，返回后在左侧排序、筛选文件"))
         folder_button.clicked.connect(self._choose_directory)
 
-        hint = QtWidgets.QLabel("可用 Ctrl / Shift 多选文件后点击“添加”；也可点击“选择文件夹”，返回后再排序、筛选文件。")
+        hint = QtWidgets.QLabel(tr("可用 Ctrl / Shift 多选文件后点击“添加”；也可点击“选择文件夹”，返回后再排序、筛选文件。"))
         hint.setWordWrap(True)
         layout = self.layout()
         layout.removeWidget(button_box)
@@ -1652,7 +1656,7 @@ class ImportFilePicker(QtWidgets.QFileDialog):
         self.resize(900, 560)
 
     def _restore_add_button_label(self, *_args) -> None:
-        self._add_button.setText("添加")
+        self._add_button.setText(tr("添加"))
 
     def _choose_directory(self) -> None:
         selected = self.selectedFiles()
@@ -1660,7 +1664,7 @@ class ImportFilePicker(QtWidgets.QFileDialog):
         if len(selected) == 1 and Path(selected[0]).is_dir():
             directory = Path(selected[0])
         if not directory.is_dir():
-            QtWidgets.QMessageBox.warning(self, "文件夹不存在", str(directory))
+            QtWidgets.QMessageBox.warning(self, tr("文件夹不存在"), str(directory))
             return
         self.chosen_directory = directory
         # This action deliberately accepts a directory without requiring files.
@@ -1677,7 +1681,7 @@ class FileImportDialog(QtWidgets.QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowFlag(QtCore.Qt.WindowContextHelpButtonHint, False)
-        self.setWindowTitle("导入数据文件")
+        self.setWindowTitle(tr("导入数据文件"))
         self.resize(1060, 640)
         self.setMinimumSize(860, 520)
         self.current_directory = Path(initial_dir or Path.cwd())
@@ -1686,15 +1690,15 @@ class FileImportDialog(QtWidgets.QDialog):
         self._available_sort_column = int(available_sort[0]) if available_sort is not None else 0
         self._available_sort_order = available_sort[1] if available_sort is not None else QtCore.Qt.AscendingOrder
 
-        folder_label = QtWidgets.QLabel("文件夹")
+        folder_label = QtWidgets.QLabel(tr("文件夹"))
         self.folder_edit = QtWidgets.QLineEdit(str(self.current_directory))
         self.folder_edit.returnPressed.connect(self._set_directory_from_edit)
         browse_button = QtWidgets.QToolButton()
-        browse_button.setText("选择文件夹")
-        browse_button.setToolTip("浏览文件夹，可直接添加选中文件，也可只选择文件夹")
+        browse_button.setText(tr("选择文件夹"))
+        browse_button.setToolTip(tr("浏览文件夹，可直接添加选中文件，也可只选择文件夹"))
         browse_button.clicked.connect(self._browse_directory)
         refresh_button = QtWidgets.QToolButton()
-        refresh_button.setText("刷新")
+        refresh_button.setText(tr("刷新"))
         refresh_button.clicked.connect(self._scan_directory)
 
         folder_layout = QtWidgets.QHBoxLayout()
@@ -1704,11 +1708,11 @@ class FileImportDialog(QtWidgets.QDialog):
         folder_layout.addWidget(refresh_button)
 
         self.search_edit = QtWidgets.QLineEdit()
-        self.search_edit.setPlaceholderText("按文件名筛选")
+        self.search_edit.setPlaceholderText(tr("按文件名筛选"))
         self.search_edit.textChanged.connect(lambda _text: self._populate_tables())
 
         search_layout = QtWidgets.QHBoxLayout()
-        search_layout.addWidget(QtWidgets.QLabel("筛选"))
+        search_layout.addWidget(QtWidgets.QLabel(tr("筛选")))
         search_layout.addWidget(self.search_edit, 1)
 
         self.available_table = self._make_file_table()
@@ -1718,13 +1722,13 @@ class FileImportDialog(QtWidgets.QDialog):
         self.available_table.itemDoubleClicked.connect(lambda _item: self._move_selected_to_right())
         self.selected_table.itemDoubleClicked.connect(lambda _item: self._move_selected_to_left())
 
-        available_box = self._make_group("可导入文件", self.available_table)
-        selected_box = self._make_group("待导入文件", self.selected_table)
+        available_box = self._make_group(tr("可导入文件"), self.available_table)
+        selected_box = self._make_group(tr("待导入文件"), self.selected_table)
 
-        self.to_right_button = self._arrow_button(">", "添加选中文件")
-        self.to_left_button = self._arrow_button("<", "移回选中文件")
-        self.all_right_button = self._arrow_button(">>", "添加全部文件")
-        self.all_left_button = self._arrow_button("<<", "全部移回")
+        self.to_right_button = self._arrow_button(">", tr("添加选中文件"))
+        self.to_left_button = self._arrow_button("<", tr("移回选中文件"))
+        self.all_right_button = self._arrow_button(">>", tr("添加全部文件"))
+        self.all_left_button = self._arrow_button("<<", tr("全部移回"))
         self.to_right_button.clicked.connect(self._move_selected_to_right)
         self.to_left_button.clicked.connect(self._move_selected_to_left)
         self.all_right_button.clicked.connect(self._move_all_to_right)
@@ -1736,8 +1740,8 @@ class FileImportDialog(QtWidgets.QDialog):
             move_layout.addWidget(button)
         move_layout.addStretch(1)
 
-        self.move_up_button = self._arrow_button("↑", "上移选中文件")
-        self.move_down_button = self._arrow_button("↓", "下移选中文件")
+        self.move_up_button = self._arrow_button("↑", tr("上移选中文件"))
+        self.move_down_button = self._arrow_button("↓", tr("下移选中文件"))
         self.move_up_button.clicked.connect(lambda: self._move_selected_rows(-1))
         self.move_down_button.clicked.connect(lambda: self._move_selected_rows(1))
         order_layout = QtWidgets.QHBoxLayout()
@@ -1757,9 +1761,9 @@ class FileImportDialog(QtWidgets.QDialog):
         picker_layout.addWidget(selected_panel, 1)
 
         self.count_label = QtWidgets.QLabel("")
-        self.import_button = QtWidgets.QPushButton("开始导入")
+        self.import_button = QtWidgets.QPushButton(tr("开始导入"))
         self.import_button.clicked.connect(self.accept)
-        cancel_button = QtWidgets.QPushButton("取消")
+        cancel_button = QtWidgets.QPushButton(tr("取消"))
         cancel_button.clicked.connect(self.reject)
 
         bottom_layout = QtWidgets.QHBoxLayout()
@@ -1796,7 +1800,7 @@ class FileImportDialog(QtWidgets.QDialog):
     @staticmethod
     def _make_file_table() -> QtWidgets.QTableWidget:
         table = QtWidgets.QTableWidget(0, 4)
-        table.setHorizontalHeaderLabels(["文件名", "格式", "修改时间", "大小"])
+        table.setHorizontalHeaderLabels([tr("文件名"), tr("格式"), tr("修改时间"), tr("大小")])
         table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
@@ -1823,7 +1827,7 @@ class FileImportDialog(QtWidgets.QDialog):
             try:
                 selection = choose_import_files(int(self.winId()), self.current_directory, SUPPORTED_DATA_SUFFIXES)
             except OSError as exc:
-                QtWidgets.QMessageBox.warning(self, "无法打开文件选择窗口", str(exc))
+                QtWidgets.QMessageBox.warning(self, tr("无法打开文件选择窗口"), str(exc))
                 return
             if selection is None:
                 return
@@ -1849,9 +1853,9 @@ class FileImportDialog(QtWidgets.QDialog):
         if rejected:
             QtWidgets.QMessageBox.warning(
                 self,
-                "部分文件未添加",
+                tr("部分文件未添加"),
                 _with_import_contact(
-                    "以下文件不存在或格式不受支持，未加入待导入列表：\n" + "\n".join(str(path) for path in rejected)
+                    tr("以下文件不存在或格式不受支持，未加入待导入列表：\n") + "\n".join(str(path) for path in rejected)
                 ),
             )
         if directory is None and not paths:
@@ -1869,7 +1873,7 @@ class FileImportDialog(QtWidgets.QDialog):
     def _set_directory_from_edit(self) -> None:
         directory = Path(self.folder_edit.text().strip())
         if not directory.is_dir():
-            QtWidgets.QMessageBox.warning(self, "文件夹不存在", str(directory))
+            QtWidgets.QMessageBox.warning(self, tr("文件夹不存在"), str(directory))
             self.folder_edit.setText(str(self.current_directory))
             return
         self.current_directory = directory
@@ -1886,7 +1890,7 @@ class FileImportDialog(QtWidgets.QDialog):
                 if path.is_file() and path.suffix.lower() in SUPPORTED_DATA_SUFFIXES and self._path_key(path) not in selected
             ]
         except OSError as exc:
-            QtWidgets.QMessageBox.warning(self, "无法读取文件夹", str(exc))
+            QtWidgets.QMessageBox.warning(self, tr("无法读取文件夹"), str(exc))
             files = []
         self._available_paths = sorted(files, key=lambda path: path.name.lower())
         self._populate_tables()
@@ -2022,7 +2026,7 @@ class FileImportDialog(QtWidgets.QDialog):
             and max(self._selected_rows(self.selected_table), default=-1) < len(self._selected_paths) - 1
         )
         self.import_button.setEnabled(bool(self._selected_paths))
-        self.count_label.setText(f"可导入 {len(self._available_paths)} 个，待导入 {len(self._selected_paths)} 个")
+        self.count_label.setText(tr('可导入 {0} 个，待导入 {1} 个', len(self._available_paths), len(self._selected_paths)))
 
     @staticmethod
     def _selected_rows(table: QtWidgets.QTableWidget) -> list[int]:
@@ -2048,7 +2052,7 @@ class HorvathKawazoePropertiesDialog(QtWidgets.QDialog):
         adsorptive_properties: dict[str, object] | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Horvath-Kawazoe 物理性质")
+        self.setWindowTitle(tr("Horvath-Kawazoe 物理性质"))
         self.setMinimumWidth(520)
         self._adsorbent_edits: dict[str, QtWidgets.QLineEdit] = {}
         self._adsorptive_edits: dict[str, QtWidgets.QLineEdit] = {}
@@ -2060,12 +2064,12 @@ class HorvathKawazoePropertiesDialog(QtWidgets.QDialog):
         for key, props in HK_ADSORPTIVE_PRESETS.items():
             self.adsorptive_combo.addItem(str(props.get("label", key)), key)
 
-        adsorbent_group = self._make_properties_group("吸附剂", self.adsorbent_combo, self._adsorbent_edits)
-        adsorptive_group = self._make_properties_group("吸附物", self.adsorptive_combo, self._adsorptive_edits)
+        adsorbent_group = self._make_properties_group(tr("吸附剂"), self.adsorbent_combo, self._adsorbent_edits)
+        adsorptive_group = self._make_properties_group(tr("吸附物"), self.adsorptive_combo, self._adsorptive_edits)
 
         button_row = QtWidgets.QHBoxLayout()
         ok_button = QtWidgets.QPushButton("OK")
-        cancel_button = QtWidgets.QPushButton("结束")
+        cancel_button = QtWidgets.QPushButton(tr("结束"))
         ok_button.clicked.connect(self.accept)
         cancel_button.clicked.connect(self.reject)
         button_row.addStretch(1)
@@ -2100,7 +2104,7 @@ class HorvathKawazoePropertiesDialog(QtWidgets.QDialog):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setHorizontalSpacing(8)
         layout.setVerticalSpacing(6)
-        layout.addWidget(QtWidgets.QLabel("描述"), 0, 0)
+        layout.addWidget(QtWidgets.QLabel(tr("描述")), 0, 0)
         layout.addWidget(combo, 0, 1, 1, 2)
         validator = QtGui.QDoubleValidator(group)
         validator.setNotation(QtGui.QDoubleValidator.ScientificNotation)
@@ -2110,7 +2114,7 @@ class HorvathKawazoePropertiesDialog(QtWidgets.QDialog):
             edit.setValidator(validator)
             edit.setFixedWidth(130)
             edits[key] = edit
-            layout.addWidget(QtWidgets.QLabel(label), row, 0)
+            layout.addWidget(QtWidgets.QLabel(tr(label)), row, 0)
             layout.addWidget(edit, row, 1)
             layout.addWidget(QtWidgets.QLabel(unit), row, 2)
         layout.setColumnStretch(3, 1)
@@ -2331,6 +2335,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._available_update_info: UpdateInfo | None = None
         self._hovered_sample_row = -1
         self.settings = QtCore.QSettings("UnifiedBET", "TriStarBetAppZh")
+        # run() already applied the saved language; a window created directly
+        # (tests) reads it here so every text below is built in that language.
+        i18n.set_language(self.settings.value(LANGUAGE_SETTING_KEY, i18n.current_language()))
+        i18n.add_listener(self._on_language_changed)
         self.settings.remove("bjh_differential_mode")
         self.settings.remove("bjh_display_metrics")
         self.import_directory = self._read_directory_setting("import_directory")
@@ -2342,14 +2350,14 @@ class MainWindow(QtWidgets.QMainWindow):
             ),
         )
 
-        self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
+        self.setWindowTitle(f"{tr(APP_NAME)} v{APP_VERSION}")
         if APP_ICON_PATH.exists():
             self.setWindowIcon(QtGui.QIcon(str(APP_ICON_PATH)))
         self.resize(1280, 780)
 
-        open_button = QtWidgets.QPushButton("导入文件")
+        open_button = QtWidgets.QPushButton(tr("导入文件"))
         open_button.clicked.connect(self.open_files)
-        export_button = QtWidgets.QPushButton("导出文件")
+        export_button = QtWidgets.QPushButton(tr("导出文件"))
         export_button.clicked.connect(self.export_xlsx)
         self.settings_button = QtWidgets.QToolButton()
         self.settings_button.setIcon(make_gear_icon(28))
@@ -2357,7 +2365,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.settings_button.setFixedSize(32, 32)
         self.settings_button.setAutoRaise(True)
         self.settings_button.setCursor(QtCore.Qt.PointingHandCursor)
-        self.settings_button.setToolTip("设置")
+        self.settings_button.setToolTip(tr("设置"))
         self.settings_button.clicked.connect(self.show_app_settings)
         self.update_available_button = QtWidgets.QToolButton()
         self.update_available_button.setIcon(_make_update_available_icon(28))
@@ -2365,22 +2373,23 @@ class MainWindow(QtWidgets.QMainWindow):
         self.update_available_button.setFixedSize(32, 32)
         self.update_available_button.setAutoRaise(True)
         self.update_available_button.setCursor(QtCore.Qt.PointingHandCursor)
-        self.update_available_button.setToolTip("发现新版本，点击更新")
+        self.update_available_button.setToolTip(tr("发现新版本，点击更新"))
         self.update_available_button.clicked.connect(self._show_pending_update_dialog)
         self.update_available_button.hide()
-        self.update_button = QtWidgets.QPushButton("软件更新")
-        self.update_button.setToolTip("联网检查 Gitee/GitHub 更新源中是否有新版")
+        self.update_button = QtWidgets.QPushButton(i18n.trc("button", "软件更新"))
+        self.update_button.setToolTip(tr("联网检查 Gitee/GitHub 更新源中是否有新版"))
         self.update_button.clicked.connect(self.check_for_updates)
-        for button in (open_button, export_button, self.update_button):
+        self._toolbar_buttons = (open_button, export_button, self.update_button)
+        for button in self._toolbar_buttons:
             button.setFixedHeight(32)
             button.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
-            button.setFixedWidth(96)
+        self._fit_toolbar_buttons()
 
         self.select_all_check = SelectAllCheckBox()
         self.select_all_check.setTristate(True)
         self.select_all_check.setCheckState(QtCore.Qt.Checked)
         self.select_all_check.setCursor(QtCore.Qt.PointingHandCursor)
-        self.select_all_check.setToolTip("显示或隐藏全部样品")
+        self.select_all_check.setToolTip(tr("显示或隐藏全部样品"))
         self.select_all_check.stateChanged.connect(self.on_select_all_changed)
         self.select_all_check.setStyleSheet(
             """
@@ -2404,7 +2413,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.sample_table = SampleTableWidget(0, 7)
         self.sample_table.setHorizontalHeaderLabels(
-            ["", "文件名", "测试时间", "BET(m2/g)", "Langmuir(m2/g)", "t-Plot外比(m2/g)", "选区孔容量(cm3/g)"]
+            ["", tr("文件名"), tr("测试时间"), "BET(m2/g)", "Langmuir(m2/g)", tr("t-Plot外比(m2/g)"), tr("选区孔容量(cm3/g)")]
         )
         sample_header = self.sample_table.horizontalHeader()
         sample_header.setVisible(True)
@@ -2417,18 +2426,18 @@ class MainWindow(QtWidgets.QMainWindow):
         sample_header.sectionResized.connect(self.on_sample_header_resized)
         # The file-name column is drawn by the frozen overlay, whose header receives the click.
         self.sample_table.frozen_header().sectionClicked.connect(self.on_sample_header_clicked)
-        self.sample_table.horizontalHeaderItem(FILE_COLUMN).setToolTip("点击按文件名排序（数字按大小），再次点击反向")
-        self.sample_table.horizontalHeaderItem(TEST_TIME_COLUMN).setToolTip("点击按测试时间排序")
+        self.sample_table.horizontalHeaderItem(FILE_COLUMN).setToolTip(tr("点击按文件名排序（数字按大小），再次点击反向"))
+        self.sample_table.horizontalHeaderItem(TEST_TIME_COLUMN).setToolTip(tr("点击按测试时间排序"))
         sample_header.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         sample_header.customContextMenuRequested.connect(self.show_sample_header_context_menu)
         self._load_bet_display_settings()
         self._update_bet_header()
         self.sample_table.horizontalHeaderItem(BET_COLUMN).setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
-        self.sample_table.horizontalHeaderItem(LANGMUIR_COLUMN).setToolTip("点击按Langmuir比表面积排序")
+        self.sample_table.horizontalHeaderItem(LANGMUIR_COLUMN).setToolTip(tr("点击按Langmuir比表面积排序"))
         self.sample_table.horizontalHeaderItem(LANGMUIR_COLUMN).setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
-        self.sample_table.horizontalHeaderItem(T_PLOT_COLUMN).setToolTip("点击按t-Plot外比表面积排序")
+        self.sample_table.horizontalHeaderItem(T_PLOT_COLUMN).setToolTip(tr("点击按t-Plot外比表面积排序"))
         self.sample_table.horizontalHeaderItem(T_PLOT_COLUMN).setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
-        self.sample_table.horizontalHeaderItem(BJH_PORE_VOLUME_COLUMN).setToolTip("点击按 BJH 选区孔容量排序")
+        self.sample_table.horizontalHeaderItem(BJH_PORE_VOLUME_COLUMN).setToolTip(tr("点击按 BJH 选区孔容量排序"))
         self.sample_table.horizontalHeaderItem(BJH_PORE_VOLUME_COLUMN).setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
         self._update_pore_volume_header()
         self.sample_table.verticalHeader().setVisible(False)
@@ -2497,49 +2506,49 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sample_table.frozen_header().installEventFilter(self.select_all_check)
         self.select_all_check.show()
 
-        self.metrics_table = self._make_table(["参数", "值"])
+        self.metrics_table = self._make_table([tr("参数"), tr("值")])
         self.metrics_table.horizontalHeader().setStretchLastSection(True)
         self.metrics_table.setWordWrap(False)
         self.metrics_table.setTextElideMode(QtCore.Qt.ElideRight)
         self.metrics_table.itemDoubleClicked.connect(self._copy_summary_path)
 
-        self.isotherm_plot = make_plot("吸附/脱附等温线", "吸附量 (cm3/g STP)", "相对压力 (P/P0)")
-        self.bet_plot = make_plot("BET 拟合", "P/[V(P0-P)]", "相对压力 (P/P0)")
-        self.langmuir_plot = make_plot("Langmuir 拟合", "(P/P0) / V", "相对压力 (P/P0)")
-        self.t_plot = make_plot("t-Plot", "液体体积 (cm3/g)", "统计膜厚 t (nm)")
+        self.isotherm_plot = make_plot(tr("吸附/脱附等温线"), tr("吸附量 (cm3/g STP)"), tr("相对压力 (P/P0)"))
+        self.bet_plot = make_plot(tr("BET 拟合"), "P/[V(P0-P)]", tr("相对压力 (P/P0)"))
+        self.langmuir_plot = make_plot(tr("Langmuir 拟合"), "(P/P0) / V", tr("相对压力 (P/P0)"))
+        self.t_plot = make_plot("t-Plot", tr("液体体积 (cm3/g)"), tr("统计膜厚 t (nm)"))
         self.pore_plot = make_plot(
-            "BJH 孔径分布",
+            tr("BJH 孔径分布"),
             bjh_display_axis_label(self.bjh_display_metrics),
-            "孔径 (nm)",
+            tr("孔径 (nm)"),
             legend_position="right",
         )
 
         self.dh_plot = make_plot(
-            "Dollimore-Heal 孔径分布",
+            tr("Dollimore-Heal 孔径分布"),
             bjh_display_axis_label(self.dh_display_metrics),
-            "孔径 (nm)",
+            tr("孔径 (nm)"),
             legend_position="right",
         )
 
-        self.bet_default_button = QtWidgets.QPushButton("默认")
-        self.bet_default_button.setToolTip("按自动 BET 选点算法重新计算")
+        self.bet_default_button = QtWidgets.QPushButton(tr("默认"))
+        self.bet_default_button.setToolTip(tr("按自动 BET 选点算法重新计算"))
         self.hk_plot = make_plot(
-            "Horvath-Kawazoe 孔径分布",
+            tr("Horvath-Kawazoe 孔径分布"),
             hk_display_axis_label(self.hk_display_metric),
-            "孔宽 W (nm)",
+            tr("孔宽 W (nm)"),
             legend_position="right",
         )
 
         self.dft_plot = make_plot(
-            "DFT 孔径分布",
+            tr("DFT 孔径分布"),
             "dV/dlogW (cm3/g)",
-            "孔宽 W (nm)",
+            tr("孔宽 W (nm)"),
             legend_position="right",
         )
         self.dft_diagnostic_plot = make_plot(
-            "拟合误差 vs 正则化",
-            "RMS 拟合误差 (mmol/g)",
-            "正则化",
+            tr("拟合误差 vs 正则化"),
+            tr("RMS 拟合误差 (mmol/g)"),
+            tr("正则化"),
         )
         self.dft_diagnostic_plot.setMinimumWidth(360)
         for plot in (
@@ -2578,8 +2587,8 @@ class MainWindow(QtWidgets.QMainWindow):
         bet_tab_layout.addWidget(self.bet_plot, 1)
         bet_tab_layout.addLayout(bet_controls)
 
-        self.langmuir_default_button = QtWidgets.QPushButton("默认")
-        self.langmuir_default_button.setToolTip("按默认 Langmuir 区间 0.05-0.30 重新计算")
+        self.langmuir_default_button = QtWidgets.QPushButton(tr("默认"))
+        self.langmuir_default_button.setToolTip(tr("按默认 Langmuir 区间 0.05-0.30 重新计算"))
         self.langmuir_default_button.setMinimumWidth(76)
         self.langmuir_default_button.clicked.connect(self.reset_langmuir_fit_to_default)
         langmuir_controls = QtWidgets.QHBoxLayout()
@@ -2599,7 +2608,7 @@ class MainWindow(QtWidgets.QMainWindow):
         t_plot_plot_layout.setSpacing(0)
         t_plot_plot_layout.addWidget(self.t_plot, 1)
         self.t_plot_options_panel = self._make_t_plot_options_panel()
-        self.t_plot_options_pane = CollapsibleOptionsPane("t-Plot 参数", self.t_plot_options_panel)
+        self.t_plot_options_pane = CollapsibleOptionsPane(tr("t-Plot 参数"), self.t_plot_options_panel)
         self.t_plot_tab, self.t_plot_options_splitter = self._make_resizable_options_tab(
             self.t_plot_options_pane,
             t_plot_plot_panel,
@@ -2611,7 +2620,7 @@ class MainWindow(QtWidgets.QMainWindow):
         bjh_plot_layout.setSpacing(0)
         bjh_plot_layout.addWidget(self.pore_plot, 1)
         self.bjh_options_panel = self._make_bjh_options_panel()
-        self.bjh_options_pane = CollapsibleOptionsPane("BJH 参数", self.bjh_options_panel)
+        self.bjh_options_pane = CollapsibleOptionsPane(tr("BJH 参数"), self.bjh_options_panel)
         self.bjh_tab, self.bjh_options_splitter = self._make_resizable_options_tab(
             self.bjh_options_pane,
             bjh_plot_panel,
@@ -2623,7 +2632,7 @@ class MainWindow(QtWidgets.QMainWindow):
         dh_plot_layout.setSpacing(0)
         dh_plot_layout.addWidget(self.dh_plot, 1)
         self.dh_options_panel = self._make_dh_options_panel()
-        self.dh_options_pane = CollapsibleOptionsPane("DH 参数", self.dh_options_panel)
+        self.dh_options_pane = CollapsibleOptionsPane(tr("DH 参数"), self.dh_options_panel)
         self.dh_tab, self.dh_options_splitter = self._make_resizable_options_tab(
             self.dh_options_pane,
             dh_plot_panel,
@@ -2635,7 +2644,7 @@ class MainWindow(QtWidgets.QMainWindow):
         hk_plot_layout.setSpacing(0)
         hk_plot_layout.addWidget(self.hk_plot, 1)
         self.hk_options_panel = self._make_hk_options_panel()
-        self.hk_options_pane = CollapsibleOptionsPane("HK 参数", self.hk_options_panel)
+        self.hk_options_pane = CollapsibleOptionsPane(tr("HK 参数"), self.hk_options_panel)
         self.hk_tab, self.hk_options_splitter = self._make_resizable_options_tab(
             self.hk_options_pane,
             hk_plot_panel,
@@ -2647,7 +2656,7 @@ class MainWindow(QtWidgets.QMainWindow):
         dft_plot_layout.setSpacing(0)
         dft_plot_layout.addWidget(self.dft_plot, 1)
         self.dft_options_panel = self._make_dft_options_panel()
-        self.dft_options_pane = CollapsibleOptionsPane("DFT 参数", self.dft_options_panel)
+        self.dft_options_pane = CollapsibleOptionsPane(tr("DFT 参数"), self.dft_options_panel)
         self.dft_tab, self.dft_options_splitter = self._make_resizable_options_tab(
             self.dft_options_pane,
             dft_plot_panel,
@@ -2666,17 +2675,17 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.isotherm_table = self._make_table(
             [
-                "测试点",
-                "阶段",
+                tr("测试点"),
+                tr("阶段"),
                 "P/P0",
-                "压力(mmHg)",
-                "吸附量(cm3/g STP)",
-                "吸附量(mmol/g)",
+                tr("压力(mmHg)"),
+                tr("吸附量(cm3/g STP)"),
+                tr("吸附量(mmol/g)"),
                 "Po(mmHg)",
-                "累计测试时间(分:秒)",
+                tr("累计测试时间(分:秒)"),
             ]
         )
-        self.target_table = self._make_table(["测试点", "阶段", "起始P/P0", "终止P/P0", "步长P/P0"])
+        self.target_table = self._make_table([tr("测试点"), tr("阶段"), tr("起始P/P0"), tr("终止P/P0"), tr("步长P/P0")])
         self.isotherm_table.horizontalHeader().setStretchLastSection(True)
         configure_cell_copy(self.isotherm_table)
         configure_cell_copy(self.target_table)
@@ -2686,7 +2695,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._pore_volume_table_refresh_pending = False
         for method, columns in {**ANALYSIS_COLUMNS, "pore_volume": PORE_VOLUME_COLUMNS}.items():
             table = AnalysisResultsTable(0, len(columns))
-            table.setHorizontalHeaderLabels([label for _key, label in columns])
+            table.setHorizontalHeaderLabels([tr(label) for _key, label in columns])
             table.verticalHeader().hide()
             table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
             table.setHorizontalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
@@ -2730,13 +2739,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.detail_tabs = QtWidgets.QTabWidget()
         configure_tab_scroll_buttons(self.detail_tabs)
-        self.detail_tabs.addTab(self.metrics_table, "结果参数")
+        self.detail_tabs.addTab(self.metrics_table, tr("结果参数"))
         self.detail_tabs.addTab(self.bet_results_table, "BET")
         self.detail_tabs.addTab(self.langmuir_results_table, "Langmuir")
         self.detail_tabs.addTab(self.t_plot_results_table, "t-Plot")
-        self.detail_tabs.addTab(self.pore_volume_results_table, "选区孔容量")
-        self.detail_tabs.addTab(self.isotherm_table, "实际等温线")
-        self.detail_tabs.addTab(self.target_table, "目标压力表")
+        self.detail_tabs.addTab(self.pore_volume_results_table, tr("选区孔容量"))
+        self.detail_tabs.addTab(self.isotherm_table, tr("实际等温线"))
+        self.detail_tabs.addTab(self.target_table, tr("目标压力表"))
         self.detail_tabs.currentChanged.connect(self._on_detail_tab_changed)
         self._detail_interactions = DetailTableInteractionController(
             self, [self.detail_tabs.widget(index) for index in range(self.detail_tabs.count())])
@@ -2782,9 +2791,9 @@ class MainWindow(QtWidgets.QMainWindow):
         side_layout.addWidget(self.left_splitter, 1)
 
         self.dft_diagnostic_plot = make_plot(
-            "拟合误差 vs 正则化",
-            "RMS 拟合误差 (mmol/g)",
-            "正则化",
+            tr("拟合误差 vs 正则化"),
+            tr("RMS 拟合误差 (mmol/g)"),
+            tr("正则化"),
         )
         self.dft_diagnostic_plot.setMinimumWidth(360)
         self.dft_diagnostic_plot.hide()
@@ -2824,12 +2833,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setCentralWidget(splitter)
 
         self.statusBar().showMessage(
-            "打开或拖入 SMP、RAW、JWGBT、DAT、QPS 或官方 Excel 导出文件；导入失败请发送失败文件至kuailelong101@163.com"
+            tr("打开或拖入 SMP、RAW、JWGBT、DAT、QPS 或官方 Excel 导出文件；导入失败请发送失败文件至kuailelong101@163.com")
         )
         self.privacy_button = QtWidgets.QToolButton(self)
-        self.privacy_button.setText("隐私设置")
+        self.privacy_button.setText(tr("隐私设置"))
         self.privacy_button.setAutoRaise(True)
-        self.privacy_button.setToolTip("管理可选的使用统计")
+        self.privacy_button.setToolTip(tr("管理可选的使用统计"))
         self.privacy_button.clicked.connect(self._show_telemetry_settings)
         self.statusBar().addPermanentWidget(self.privacy_button)
         self.privacy_button.hide()  # Temporarily hide the entry; keep its settings handler.
@@ -2861,12 +2870,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self._telemetry_initialized = False
         self._initialize_telemetry()
         if self._telemetry is None:
-            QtWidgets.QMessageBox.information(self, "隐私设置", "无法访问统计设置存储，使用统计保持关闭。")
+            QtWidgets.QMessageBox.information(self, tr("隐私设置"), tr("无法访问统计设置存储，使用统计保持关闭。"))
             return
         if getattr(self._telemetry, "storage_busy", False):
             QtWidgets.QMessageBox.information(
-                self, "隐私设置", "使用统计由另一个软件窗口管理，本窗口不会记录或发送统计。\n"
-                "请关闭其他软件窗口后，再打开这里管理统计设置。",
+                self, tr("隐私设置"), tr("使用统计由另一个软件窗口管理，本窗口不会记录或发送统计。\n"
+                "请关闭其他软件窗口后，再打开这里管理统计设置。"),
             )
             return
         dialog = TelemetrySettingsDialog(self._telemetry, self)
@@ -2876,7 +2885,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _apply_telemetry_consent(self, enabled: bool) -> None:
         if not self._telemetry.set_enabled(enabled):
-            QtWidgets.QMessageBox.information(self, "隐私设置", "无法保存统计偏好。本次运行保持关闭；请在存储恢复后再次检查设置。")
+            QtWidgets.QMessageBox.information(self, tr("隐私设置"), tr("无法保存统计偏好。本次运行保持关闭；请在存储恢复后再次检查设置。"))
         if not self._telemetry.enabled:
             self._telemetry_startup_sent = False
 
@@ -2948,7 +2957,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def check_for_updates(self, _checked: bool = False, *, manual: bool = True) -> None:
         if self._checking_for_updates:
             if manual:
-                self.statusBar().showMessage("正在检查软件更新...", 3000)
+                self.statusBar().showMessage(tr("正在检查软件更新..."), 3000)
             return
 
         self._checking_for_updates = True
@@ -2956,7 +2965,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if update_button is not None:
             update_button.setEnabled(False)
         if manual:
-            self.statusBar().showMessage("正在连接更新源检查软件更新...", 3000)
+            self.statusBar().showMessage(tr("正在连接更新源检查软件更新..."), 3000)
 
         job = BackgroundNetworkJob(
             lambda _progress: check_for_update(APP_VERSION, repository=UPDATE_REPOSITORY),
@@ -2973,14 +2982,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self._finish_update_check(manual)
         if not info.update_available:
             self._set_update_available_indicator(None)
-            message = f"当前已是最新版本 v{info.current_version}"
+            message = tr('当前已是最新版本 v{0}', info.current_version)
             if manual:
-                QtWidgets.QMessageBox.information(self, "软件更新", message)
+                QtWidgets.QMessageBox.information(self, tr("软件更新"), message)
             return
 
         self._set_update_available_indicator(info)
         if not manual:
-            self.statusBar().showMessage(f"发现新版本 v{info.latest_version}，点击软件更新左侧图标即可更新。", 8000)
+            self.statusBar().showMessage(tr('发现新版本 v{0}，点击软件更新左侧图标即可更新。', info.latest_version), 8000)
             return
 
         self._show_update_available_dialog(info)
@@ -2993,25 +3002,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self._show_update_available_dialog(info)
 
     def _show_update_available_dialog(self, info: UpdateInfo) -> None:
-        title = f"发现新版本 v{info.latest_version}"
-        download_hint = f"安装包: {info.asset_name}" if info.asset_name else "安装包: 自动选择"
+        title = tr('发现新版本 v{0}', info.latest_version)
+        download_hint = tr('安装包: {0}', info.asset_name) if info.asset_name else tr("安装包: 自动选择")
         release_notes = str(info.release_notes or "").strip()
-        notes_hint = f"\n\n本次更新内容:\n{release_notes}" if release_notes else "\n\n本次更新内容:\n暂无更新说明。"
+        notes_hint = tr('\n\n本次更新内容:\n{0}', release_notes) if release_notes else tr("\n\n本次更新内容:\n暂无更新说明。")
         message = (
-            f"当前版本: v{info.current_version}\n"
-            f"最新版本: v{info.latest_version}\n\n"
-            f"来源: DragonScience\n"
-            f"{download_hint}"
-            f"{notes_hint}\n\n"
-            "是否现在下载并重启到新版本？"
+            tr('当前版本: v{0}\n最新版本: v{1}\n\n来源: DragonScience\n{2}{3}\n\n是否现在下载并重启到新版本？', info.current_version, info.latest_version, download_hint, notes_hint)
         )
         box = QtWidgets.QMessageBox(self)
         box.setIcon(QtWidgets.QMessageBox.Information)
-        box.setWindowTitle("软件更新")
+        box.setWindowTitle(tr("软件更新"))
         box.setText(title)
         box.setInformativeText(message)
-        update_button = box.addButton("更新", QtWidgets.QMessageBox.AcceptRole)
-        box.addButton("稍后", QtWidgets.QMessageBox.RejectRole)
+        update_button = box.addButton(tr("更新"), QtWidgets.QMessageBox.AcceptRole)
+        box.addButton(tr("稍后"), QtWidgets.QMessageBox.RejectRole)
         exec_func = getattr(box, "exec", box.exec_)
         exec_func()
         if box.clickedButton() == update_button:
@@ -3026,16 +3030,16 @@ class MainWindow(QtWidgets.QMainWindow):
         button.setVisible(has_update)
         button.setEnabled(bool(enabled))
         if has_update:
-            button.setToolTip(f"发现新版本 v{info.latest_version}，点击更新")
+            button.setToolTip(tr('发现新版本 v{0}，点击更新', info.latest_version))
         else:
-            button.setToolTip("发现新版本，点击更新")
+            button.setToolTip(tr("发现新版本，点击更新"))
 
     def _on_update_check_failed(self, message: str, manual: bool) -> None:
         self._finish_update_check(manual)
         if manual:
-            QtWidgets.QMessageBox.warning(self, "软件更新检查失败", message)
+            QtWidgets.QMessageBox.warning(self, tr("软件更新检查失败"), message)
         else:
-            self.statusBar().showMessage(f"自动检查软件更新失败: {message}", 5000)
+            self.statusBar().showMessage(tr('自动检查软件更新失败: {0}', message), 5000)
 
     def _finish_update_check(self, manual: bool) -> None:
         self._checking_for_updates = False
@@ -3050,7 +3054,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _download_and_install_update(self, info: UpdateInfo) -> None:
         if self._update_download_job is not None:
-            self.statusBar().showMessage("正在下载软件更新...", 3000)
+            self.statusBar().showMessage(tr("正在下载软件更新..."), 3000)
             return
         if not info.download_url:
             self._open_update_page(info)
@@ -3075,8 +3079,8 @@ class MainWindow(QtWidgets.QMainWindow):
         job.start()
 
     def _show_update_progress(self, info: UpdateInfo) -> None:
-        dialog = QtWidgets.QProgressDialog(f"正在下载 v{info.latest_version}...", None, 0, 100, self)
-        dialog.setWindowTitle("软件更新")
+        dialog = QtWidgets.QProgressDialog(tr('正在下载 v{0}...', info.latest_version), None, 0, 100, self)
+        dialog.setWindowTitle(tr("软件更新"))
         dialog.setWindowModality(QtCore.Qt.WindowModal)
         dialog.setAutoClose(False)
         dialog.setAutoReset(False)
@@ -3108,18 +3112,18 @@ class MainWindow(QtWidgets.QMainWindow):
             dialog.setRange(0, 100)
             value = max(0, min(100, int(downloaded * 100 / total)))
             dialog.setValue(value)
-            dialog.setLabelText(f"正在下载软件更新... {downloaded / 1024 / 1024:.1f} / {total / 1024 / 1024:.1f} MB")
+            dialog.setLabelText(tr('正在下载软件更新... {0:.1f} / {1:.1f} MB', downloaded / 1024 / 1024, total / 1024 / 1024))
         else:
             dialog.setRange(0, 0)
-            dialog.setLabelText(f"正在下载软件更新... {downloaded / 1024 / 1024:.1f} MB")
+            dialog.setLabelText(tr('正在下载软件更新... {0:.1f} MB', downloaded / 1024 / 1024))
 
     def _on_update_download_finished(self, info: UpdateInfo, path: str) -> None:
         dialog = self._update_progress_dialog
         if dialog is not None:
             dialog.setRange(0, 100)
             dialog.setValue(100)
-            dialog.setLabelText("下载完成，正在安装更新...")
-        self.statusBar().showMessage(f"已下载 v{info.latest_version}，正在安装更新，请稍后重新打开软件。", 3000)
+            dialog.setLabelText(tr("下载完成，正在安装更新..."))
+        self.statusBar().showMessage(tr('已下载 v{0}，正在安装更新，请稍后重新打开软件。', info.latest_version), 3000)
         QtCore.QTimer.singleShot(800, lambda: self._launch_downloaded_update(path))
 
     def _on_update_download_job_finished(self, path: str, info: UpdateInfo) -> None:
@@ -3138,7 +3142,7 @@ class MainWindow(QtWidgets.QMainWindow):
             update_button.setEnabled(True)
         if self._available_update_info is not None:
             self._set_update_available_indicator(self._available_update_info, enabled=True)
-        QtWidgets.QMessageBox.warning(self, "软件更新失败", message)
+        QtWidgets.QMessageBox.warning(self, tr("软件更新失败"), message)
 
     def _clear_update_download_worker(self) -> None:
         self._update_download_job = None
@@ -3150,7 +3154,7 @@ class MainWindow(QtWidgets.QMainWindow):
             if self._update_progress_dialog is not None:
                 self._update_progress_dialog.close()
                 self._update_progress_dialog = None
-            QtWidgets.QMessageBox.warning(self, "软件更新失败", str(exc))
+            QtWidgets.QMessageBox.warning(self, tr("软件更新失败"), str(exc))
             update_button = getattr(self, "update_button", None)
             if update_button is not None:
                 update_button.setEnabled(True)
@@ -3170,7 +3174,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _open_update_page(self, info: UpdateInfo) -> None:
         url = info.download_url or info.release_url
         if not url:
-            QtWidgets.QMessageBox.warning(self, "软件更新", "没有可打开的下载链接。")
+            QtWidgets.QMessageBox.warning(self, tr("软件更新"), tr("没有可打开的下载链接。"))
             return
         QtGui.QDesktopServices.openUrl(QtCore.QUrl(url))
 
@@ -3244,7 +3248,7 @@ class MainWindow(QtWidgets.QMainWindow):
         panel_layout.setContentsMargins(6, 6, 6, 6)
         panel_layout.setSpacing(8)
 
-        thickness_group = QtWidgets.QGroupBox("厚度曲线")
+        thickness_group = QtWidgets.QGroupBox(tr("厚度曲线"))
         thickness_layout = QtWidgets.QVBoxLayout(thickness_group)
         thickness_layout.setContentsMargins(8, 8, 8, 8)
         thickness_layout.setSpacing(4)
@@ -3256,24 +3260,24 @@ class MainWindow(QtWidgets.QMainWindow):
         self.t_plot_formula_widgets = {}
         self.t_plot_formula_expanded = {}
         thickness_methods = [
-            ("reference", "参比", True),
+            ("reference", tr("参比"), True),
             ("kjs", "Kruk-Jaroniec-Sayari", True),
             ("halsey", "Halsey", True),
             ("harkins_jura", "Harkins and Jura", True),
             ("broekhoff_de_boer", "Broekhoff-De Boer", True),
-            ("carbon_black_stsa", "碳黑STSA", True),
+            ("carbon_black_stsa", tr("碳黑STSA"), True),
         ]
         for key, label, enabled in thickness_methods:
             row = self._make_thickness_method_row(key, label, enabled, context="t_plot")
             thickness_layout.addWidget(row)
 
-        surface_group = QtWidgets.QGroupBox("表面积")
+        surface_group = QtWidgets.QGroupBox(tr("表面积"))
         surface_layout = QtWidgets.QVBoxLayout(surface_group)
         surface_layout.setContentsMargins(8, 8, 8, 8)
         surface_layout.setSpacing(6)
         self.surface_area_bet_radio = QtWidgets.QRadioButton("BET")
         self.surface_area_langmuir_radio = QtWidgets.QRadioButton("Langmuir")
-        self.surface_area_input_radio = QtWidgets.QRadioButton("输入")
+        self.surface_area_input_radio = QtWidgets.QRadioButton(tr("输入"))
         self.surface_area_bet_radio.setChecked(True)
         self.surface_area_bet_radio.toggled.connect(self._on_t_plot_surface_area_mode_changed)
         self.surface_area_langmuir_radio.toggled.connect(self._on_t_plot_surface_area_mode_changed)
@@ -3290,15 +3294,15 @@ class MainWindow(QtWidgets.QMainWindow):
         input_row.addStretch(1)
         surface_layout.addLayout(input_row)
 
-        correction_group = QtWidgets.QGroupBox("表面积校正因子")
+        correction_group = QtWidgets.QGroupBox(tr("表面积校正因子"))
         correction_layout = QtWidgets.QVBoxLayout(correction_group)
         correction_layout.setContentsMargins(8, 8, 8, 8)
         self.surface_area_correction_spin = self._make_param_spin(SURFACE_AREA_CORRECTION_FACTOR, 0.0, 1000.0, 3)
         self.surface_area_correction_spin.valueChanged.connect(self._on_t_plot_surface_area_correction_changed)
         correction_layout.addWidget(self.surface_area_correction_spin)
 
-        self.t_plot_default_button = QtWidgets.QPushButton("默认")
-        self.t_plot_default_button.setToolTip("重置当前样品的 t-Plot 厚度曲线、表面积选项和拟合区间")
+        self.t_plot_default_button = QtWidgets.QPushButton(tr("默认"))
+        self.t_plot_default_button.setToolTip(tr("重置当前样品的 t-Plot 厚度曲线、表面积选项和拟合区间"))
         self.t_plot_default_button.clicked.connect(self.reset_t_plot_fit_to_default)
         default_button_row = QtWidgets.QHBoxLayout()
         default_button_row.setContentsMargins(0, 0, 0, 0)
@@ -3320,7 +3324,7 @@ class MainWindow(QtWidgets.QMainWindow):
         panel_layout.setContentsMargins(6, 6, 6, 6)
         panel_layout.setSpacing(8)
 
-        thickness_group = QtWidgets.QGroupBox("厚度曲线")
+        thickness_group = QtWidgets.QGroupBox(tr("厚度曲线"))
         thickness_layout = QtWidgets.QVBoxLayout(thickness_group)
         thickness_layout.setContentsMargins(8, 8, 8, 8)
         thickness_layout.setSpacing(4)
@@ -3332,21 +3336,21 @@ class MainWindow(QtWidgets.QMainWindow):
         self.bjh_formula_widgets = {}
         self.bjh_formula_expanded = {}
         thickness_methods = [
-            ("reference", "参比", True),
+            ("reference", tr("参比"), True),
             ("kjs", "Kruk-Jaroniec-Sayari", True),
             ("halsey", "Halsey", True),
             ("harkins_jura", "Harkins and Jura", True),
             ("broekhoff_de_boer", "Broekhoff-De Boer", True),
-            ("carbon_black_stsa", "碳黑STSA", True),
+            ("carbon_black_stsa", tr("碳黑STSA"), True),
         ]
         for key, label, enabled in thickness_methods:
             thickness_layout.addWidget(self._make_thickness_method_row(key, label, enabled, context="bjh"))
 
-        correction_group = QtWidgets.QGroupBox("BJH 校正")
+        correction_group = QtWidgets.QGroupBox(tr("BJH 校正"))
         correction_layout = QtWidgets.QVBoxLayout(correction_group)
         correction_layout.setContentsMargins(8, 8, 8, 8)
         correction_layout.setSpacing(6)
-        self.bjh_standard_radio = QtWidgets.QRadioButton("标准的")
+        self.bjh_standard_radio = QtWidgets.QRadioButton(tr("标准的"))
         self.bjh_kjs_correction_radio = QtWidgets.QRadioButton("Kruk-Jaroniec-Sayari")
         self.bjh_faas_correction_radio = QtWidgets.QRadioButton("Faas")
         self.bjh_standard_radio.setChecked(True)
@@ -3354,45 +3358,45 @@ class MainWindow(QtWidgets.QMainWindow):
             radio.toggled.connect(self._on_bjh_option_changed)
             correction_layout.addWidget(radio)
 
-        open_fraction_label = QtWidgets.QLabel("两端开口孔的分数")
+        open_fraction_label = QtWidgets.QLabel(tr("两端开口孔的分数"))
         self.bjh_open_fraction_spin = self._make_param_spin(0.0, 0.0, 1.0, 2, width=112)
-        self.bjh_open_fraction_spin.setToolTip("暂作为 BJH 参数保留；当前标准 BJH 计算中不改变结果")
+        self.bjh_open_fraction_spin.setToolTip(tr("暂作为 BJH 参数保留；当前标准 BJH 计算中不改变结果"))
         self.bjh_open_fraction_spin.valueChanged.connect(self._on_bjh_option_changed)
         open_fraction_row = QtWidgets.QHBoxLayout()
         open_fraction_row.setContentsMargins(0, 0, 0, 0)
         open_fraction_row.addWidget(self.bjh_open_fraction_spin)
         open_fraction_row.addStretch(1)
 
-        self.bjh_smooth_checkbox = QtWidgets.QCheckBox("平滑的微分")
+        self.bjh_smooth_checkbox = QtWidgets.QCheckBox(tr("平滑的微分"))
         self.bjh_smooth_checkbox.setChecked(True)
         self.bjh_smooth_checkbox.stateChanged.connect(self._on_bjh_option_changed)
-        self.bjh_adsorption_checkbox = QtWidgets.QCheckBox("BJH 吸附")
-        self.bjh_desorption_checkbox = QtWidgets.QCheckBox("BJH 脱附")
+        self.bjh_adsorption_checkbox = QtWidgets.QCheckBox(tr("BJH 吸附"))
+        self.bjh_desorption_checkbox = QtWidgets.QCheckBox(tr("BJH 脱附"))
         self.bjh_adsorption_checkbox.setChecked(True)
         self.bjh_desorption_checkbox.setChecked(False)
         self.bjh_adsorption_checkbox.stateChanged.connect(self._on_bjh_option_changed)
         self.bjh_desorption_checkbox.stateChanged.connect(self._on_bjh_option_changed)
 
-        display_group = QtWidgets.QGroupBox("显示模式")
+        display_group = QtWidgets.QGroupBox(tr("显示模式"))
         display_layout = QtWidgets.QVBoxLayout(display_group)
         display_layout.setContentsMargins(8, 8, 8, 8)
         display_layout.setSpacing(4)
         self.bjh_display_combo = QtWidgets.QComboBox()
         for metric in BJH_DISPLAY_METRIC_ORDER:
             self.bjh_display_combo.addItem(bjh_display_metric_label(metric), metric)
-        self.bjh_display_combo.setToolTip("切换 BJH 孔径分布图的纵轴显示方式")
+        self.bjh_display_combo.setToolTip(tr("切换 BJH 孔径分布图的纵轴显示方式"))
         self._set_bjh_display_combo()
         self.bjh_display_combo.currentIndexChanged.connect(self._on_bjh_display_mode_changed)
         display_layout.addWidget(self.bjh_display_combo)
 
-        self.bjh_default_button = QtWidgets.QPushButton("默认")
-        self.bjh_default_button.setToolTip("重置 BJH 厚度曲线、校正参数和显示分支")
+        self.bjh_default_button = QtWidgets.QPushButton(tr("默认"))
+        self.bjh_default_button.setToolTip(tr("重置 BJH 厚度曲线、校正参数和显示分支"))
         self.bjh_default_button.clicked.connect(self.reset_bjh_to_default)
-        self.bjh_apply_all_button = QtWidgets.QPushButton("全部应用")
-        self.bjh_apply_all_button.setToolTip("把当前 BJH 厚度曲线、校正参数、平滑和吸/脱附设置应用到所有样品")
+        self.bjh_apply_all_button = QtWidgets.QPushButton(tr("全部应用"))
+        self.bjh_apply_all_button.setToolTip(tr("把当前 BJH 厚度曲线、校正参数、平滑和吸/脱附设置应用到所有样品"))
         self.bjh_apply_all_button.clicked.connect(self.apply_bjh_settings_to_all)
-        self.bjh_all_default_button = QtWidgets.QPushButton("全部默认")
-        self.bjh_all_default_button.setToolTip("让所有样品恢复各自文件或厂商默认的 BJH 设置")
+        self.bjh_all_default_button = QtWidgets.QPushButton(tr("全部默认"))
+        self.bjh_all_default_button.setToolTip(tr("让所有样品恢复各自文件或厂商默认的 BJH 设置"))
         self.bjh_all_default_button.clicked.connect(self.reset_all_bjh_to_default)
         default_button_row = QtWidgets.QHBoxLayout()
         default_button_row.setContentsMargins(0, 0, 0, 0)
@@ -3421,7 +3425,7 @@ class MainWindow(QtWidgets.QMainWindow):
         panel_layout.setContentsMargins(6, 6, 6, 6)
         panel_layout.setSpacing(8)
 
-        thickness_group = QtWidgets.QGroupBox("厚度曲线")
+        thickness_group = QtWidgets.QGroupBox(tr("厚度曲线"))
         thickness_layout = QtWidgets.QVBoxLayout(thickness_group)
         thickness_layout.setContentsMargins(8, 8, 8, 8)
         thickness_layout.setSpacing(4)
@@ -3433,47 +3437,47 @@ class MainWindow(QtWidgets.QMainWindow):
         self.dh_formula_widgets = {}
         self.dh_formula_expanded = {}
         thickness_methods = [
-            ("reference", "参比", True),
+            ("reference", tr("参比"), True),
             ("kjs", "Kruk-Jaroniec-Sayari", True),
             ("halsey", "Halsey", True),
             ("harkins_jura", "Harkins and Jura", True),
             ("broekhoff_de_boer", "Broekhoff-De Boer", True),
-            ("carbon_black_stsa", "碳黑STSA", True),
+            ("carbon_black_stsa", tr("碳黑STSA"), True),
         ]
         for key, label, enabled in thickness_methods:
             thickness_layout.addWidget(self._make_thickness_method_row(key, label, enabled, context="dh"))
 
-        self.dh_adsorption_checkbox = QtWidgets.QCheckBox("DH 吸附")
-        self.dh_desorption_checkbox = QtWidgets.QCheckBox("DH 脱附")
+        self.dh_adsorption_checkbox = QtWidgets.QCheckBox(tr("DH 吸附"))
+        self.dh_desorption_checkbox = QtWidgets.QCheckBox(tr("DH 脱附"))
         self.dh_adsorption_checkbox.setChecked(DEFAULT_DH_SHOW_ADSORPTION)
         self.dh_desorption_checkbox.setChecked(DEFAULT_DH_SHOW_DESORPTION)
         self.dh_adsorption_checkbox.stateChanged.connect(self._on_dh_option_changed)
         self.dh_desorption_checkbox.stateChanged.connect(self._on_dh_option_changed)
 
-        self.dh_smooth_checkbox = QtWidgets.QCheckBox("平滑的微分")
+        self.dh_smooth_checkbox = QtWidgets.QCheckBox(tr("平滑的微分"))
         self.dh_smooth_checkbox.setChecked(DEFAULT_DH_SMOOTH_DERIVATIVE)
         self.dh_smooth_checkbox.stateChanged.connect(self._on_dh_option_changed)
 
-        display_group = QtWidgets.QGroupBox("显示模式")
+        display_group = QtWidgets.QGroupBox(tr("显示模式"))
         display_layout = QtWidgets.QVBoxLayout(display_group)
         display_layout.setContentsMargins(8, 8, 8, 8)
         display_layout.setSpacing(4)
         self.dh_display_combo = QtWidgets.QComboBox()
         for metric in BJH_DISPLAY_METRIC_ORDER:
             self.dh_display_combo.addItem(bjh_display_metric_label(metric), metric)
-        self.dh_display_combo.setToolTip("切换 DH 孔径分布图的纵轴显示方式")
+        self.dh_display_combo.setToolTip(tr("切换 DH 孔径分布图的纵轴显示方式"))
         self._set_dh_display_combo()
         self.dh_display_combo.currentIndexChanged.connect(self._on_dh_display_mode_changed)
         display_layout.addWidget(self.dh_display_combo)
 
-        self.dh_default_button = QtWidgets.QPushButton("默认")
-        self.dh_default_button.setToolTip("重置 DH 显示分支、平滑和显示模式")
+        self.dh_default_button = QtWidgets.QPushButton(tr("默认"))
+        self.dh_default_button.setToolTip(tr("重置 DH 显示分支、平滑和显示模式"))
         self.dh_default_button.clicked.connect(self.reset_dh_to_default)
-        self.dh_apply_all_button = QtWidgets.QPushButton("全部应用")
-        self.dh_apply_all_button.setToolTip("把当前 DH 厚度曲线、平滑和吸/脱附设置应用到所有样品")
+        self.dh_apply_all_button = QtWidgets.QPushButton(tr("全部应用"))
+        self.dh_apply_all_button.setToolTip(tr("把当前 DH 厚度曲线、平滑和吸/脱附设置应用到所有样品"))
         self.dh_apply_all_button.clicked.connect(self.apply_dh_settings_to_all)
-        self.dh_all_default_button = QtWidgets.QPushButton("全部默认")
-        self.dh_all_default_button.setToolTip("让所有样品恢复各自文件或厂商默认的 DH 设置")
+        self.dh_all_default_button = QtWidgets.QPushButton(tr("全部默认"))
+        self.dh_all_default_button.setToolTip(tr("让所有样品恢复各自文件或厂商默认的 DH 设置"))
         self.dh_all_default_button.clicked.connect(self.reset_all_dh_to_default)
         default_button_row = QtWidgets.QHBoxLayout()
         default_button_row.setContentsMargins(0, 0, 0, 0)
@@ -3498,7 +3502,7 @@ class MainWindow(QtWidgets.QMainWindow):
         panel_layout.setContentsMargins(6, 6, 6, 6)
         panel_layout.setSpacing(8)
 
-        geometry_group = QtWidgets.QGroupBox("孔型")
+        geometry_group = QtWidgets.QGroupBox(tr("孔型"))
         geometry_layout = QtWidgets.QVBoxLayout(geometry_group)
         geometry_layout.setContentsMargins(8, 8, 8, 8)
         geometry_layout.setSpacing(4)
@@ -3506,26 +3510,26 @@ class MainWindow(QtWidgets.QMainWindow):
         self.hk_geometry_group.setExclusive(True)
         self.hk_geometry_radios = {}
         for key, label, enabled in (
-            ("slit", "狭缝(原始H-K)", True),
-            ("cylinder", "圆柱(Satio-Foley)", True),
-            ("sphere", "球形", False),
+            ("slit", tr("狭缝(原始H-K)"), True),
+            ("cylinder", tr("圆柱(Satio-Foley)"), True),
+            ("sphere", tr("球形"), False),
         ):
             radio = QtWidgets.QRadioButton(label)
             radio.setEnabled(enabled)
             if not enabled:
-                radio.setToolTip("球形 Cheng-Yang 公式的单位尺度还需要官方导出数据校验，暂不开放")
+                radio.setToolTip(tr("球形 Cheng-Yang 公式的单位尺度还需要官方导出数据校验，暂不开放"))
             radio.setChecked(key == self.hk_geometry)
             radio.toggled.connect(self._on_hk_option_changed)
             self.hk_geometry_group.addButton(radio)
             self.hk_geometry_radios[key] = radio
             geometry_layout.addWidget(radio)
 
-        interaction_group = QtWidgets.QGroupBox("作用参数")
+        interaction_group = QtWidgets.QGroupBox(tr("作用参数"))
         interaction_layout = QtWidgets.QVBoxLayout(interaction_group)
         interaction_layout.setContentsMargins(8, 8, 8, 8)
         interaction_layout.setSpacing(6)
-        self.hk_calculated_radio = QtWidgets.QRadioButton("计算的")
-        self.hk_input_radio = QtWidgets.QRadioButton("输入的")
+        self.hk_calculated_radio = QtWidgets.QRadioButton(tr("计算的"))
+        self.hk_input_radio = QtWidgets.QRadioButton(tr("输入的"))
         self.hk_input_radio.setChecked(True)
         self.hk_calculated_radio.toggled.connect(self._on_hk_option_changed)
         self.hk_input_radio.toggled.connect(self._on_hk_option_changed)
@@ -3547,21 +3551,21 @@ class MainWindow(QtWidgets.QMainWindow):
         input_row.addWidget(QtWidgets.QLabel("erg·cm^4"))
         input_row.addStretch(1)
         interaction_layout.addLayout(input_row)
-        self.hk_properties_button = QtWidgets.QPushButton("性质")
+        self.hk_properties_button = QtWidgets.QPushButton(tr("性质"))
         self.hk_properties_button.clicked.connect(self._open_hk_properties_dialog)
         property_row = QtWidgets.QHBoxLayout()
         property_row.addWidget(self.hk_properties_button)
         property_row.addStretch(1)
         interaction_layout.addLayout(property_row)
 
-        self.hk_cheng_yang_checkbox = QtWidgets.QCheckBox("使用Cheng-Yang校正")
+        self.hk_cheng_yang_checkbox = QtWidgets.QCheckBox(tr("使用Cheng-Yang校正"))
         self.hk_cheng_yang_checkbox.setChecked(DEFAULT_HK_CHENG_YANG_CORRECTION)
         self.hk_cheng_yang_checkbox.stateChanged.connect(self._on_hk_option_changed)
-        self.hk_smooth_checkbox = QtWidgets.QCheckBox("平滑微分")
+        self.hk_smooth_checkbox = QtWidgets.QCheckBox(tr("平滑微分"))
         self.hk_smooth_checkbox.setChecked(DEFAULT_HK_SMOOTH_DERIVATIVE)
         self.hk_smooth_checkbox.stateChanged.connect(self._on_hk_option_changed)
 
-        display_group = QtWidgets.QGroupBox("显示模式")
+        display_group = QtWidgets.QGroupBox(tr("显示模式"))
         display_layout = QtWidgets.QVBoxLayout(display_group)
         display_layout.setContentsMargins(8, 8, 8, 8)
         display_layout.setSpacing(4)
@@ -3572,14 +3576,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.hk_display_combo.currentIndexChanged.connect(self._on_hk_display_mode_changed)
         display_layout.addWidget(self.hk_display_combo)
 
-        self.hk_default_button = QtWidgets.QPushButton("默认")
-        self.hk_default_button.setToolTip("重置 HK 孔型、物性、作用参数和平滑选项")
+        self.hk_default_button = QtWidgets.QPushButton(tr("默认"))
+        self.hk_default_button.setToolTip(tr("重置 HK 孔型、物性、作用参数和平滑选项"))
         self.hk_default_button.clicked.connect(self.reset_hk_to_default)
-        self.hk_apply_all_button = QtWidgets.QPushButton("全部应用")
-        self.hk_apply_all_button.setToolTip("把当前 HK 孔型、物性、作用参数和平滑选项应用到所有样品")
+        self.hk_apply_all_button = QtWidgets.QPushButton(tr("全部应用"))
+        self.hk_apply_all_button.setToolTip(tr("把当前 HK 孔型、物性、作用参数和平滑选项应用到所有样品"))
         self.hk_apply_all_button.clicked.connect(self.apply_hk_settings_to_all)
-        self.hk_all_default_button = QtWidgets.QPushButton("全部默认")
-        self.hk_all_default_button.setToolTip("让所有样品恢复默认 HK 设置")
+        self.hk_all_default_button = QtWidgets.QPushButton(tr("全部默认"))
+        self.hk_all_default_button.setToolTip(tr("让所有样品恢复默认 HK 设置"))
         self.hk_all_default_button.clicked.connect(self.reset_all_hk_to_default)
         default_button_row = QtWidgets.QHBoxLayout()
         default_button_row.setContentsMargins(0, 0, 0, 0)
@@ -3605,26 +3609,26 @@ class MainWindow(QtWidgets.QMainWindow):
         panel_layout.setContentsMargins(6, 6, 6, 6)
         panel_layout.setSpacing(8)
 
-        method_group = QtWidgets.QGroupBox("模型设置")
+        method_group = QtWidgets.QGroupBox(tr("模型设置"))
         method_layout = QtWidgets.QFormLayout(method_group)
         method_layout.setContentsMargins(8, 8, 8, 8)
         method_layout.setHorizontalSpacing(8)
         method_layout.setVerticalSpacing(6)
 
         self.dft_type_combo = QtWidgets.QComboBox()
-        self.dft_type_combo.addItem("DFT 孔径", "dft_pore")
-        self.dft_type_combo.addItem("经典法（Classical）", "typical")
-        self.dft_type_combo.addItem("全部", "all")
+        self.dft_type_combo.addItem(tr("DFT 孔径"), "dft_pore")
+        self.dft_type_combo.addItem(tr("经典法（Classical）"), "typical")
+        self.dft_type_combo.addItem(tr("全部"), "all")
         self.dft_type_combo.currentIndexChanged.connect(self._on_dft_filter_changed)
-        method_layout.addRow("类型", self.dft_type_combo)
+        method_layout.addRow(tr("类型"), self.dft_type_combo)
 
         self.dft_geometry_combo = QtWidgets.QComboBox()
-        self.dft_geometry_combo.addItem("狭缝", "slit")
-        self.dft_geometry_combo.addItem("圆柱", "cylinder")
-        self.dft_geometry_combo.addItem("混合孔型", "mixed")
-        self.dft_geometry_combo.addItem("全部", "all")
+        self.dft_geometry_combo.addItem(tr("狭缝"), "slit")
+        self.dft_geometry_combo.addItem(tr("圆柱"), "cylinder")
+        self.dft_geometry_combo.addItem(tr("混合孔型"), "mixed")
+        self.dft_geometry_combo.addItem(tr("全部"), "all")
         self.dft_geometry_combo.currentIndexChanged.connect(self._on_dft_filter_changed)
-        method_layout.addRow("结构", self.dft_geometry_combo)
+        method_layout.addRow(tr("结构"), self.dft_geometry_combo)
 
         self.dft_adsorptive_combo = QtWidgets.QComboBox()
         for label, key in (
@@ -3633,34 +3637,34 @@ class MainWindow(QtWidgets.QMainWindow):
             ("CO2", "co2"),
             ("O2", "o2"),
             ("H2", "h2"),
-            ("全部", "all"),
+            (tr("全部"), "all"),
         ):
             self.dft_adsorptive_combo.addItem(label, key)
         self.dft_adsorptive_combo.currentIndexChanged.connect(self._on_dft_filter_changed)
-        method_layout.addRow("气体", self.dft_adsorptive_combo)
+        method_layout.addRow(tr("气体"), self.dft_adsorptive_combo)
 
         self.dft_model_combo = QtWidgets.QComboBox()
         self._populate_dft_model_combo(DEFAULT_DFT_MODEL)
         self.dft_model_combo.setMaxVisibleItems(24)
         self.dft_model_combo.view().setMinimumWidth(620)
         self.dft_model_combo.currentIndexChanged.connect(self._on_dft_model_changed)
-        method_layout.addRow("模型", self.dft_model_combo)
+        method_layout.addRow(tr("模型"), self.dft_model_combo)
 
-        regularization_group = QtWidgets.QGroupBox("正则化")
+        regularization_group = QtWidgets.QGroupBox(tr("正则化"))
         regularization_layout = QtWidgets.QVBoxLayout(regularization_group)
         regularization_layout.setContentsMargins(8, 8, 8, 8)
         regularization_layout.setSpacing(4)
         regularization_options = QtWidgets.QHBoxLayout()
         regularization_options.setSpacing(16)
-        self.dft_auto_regularization_checkbox = QtWidgets.QCheckBox("自动选择正则化")
+        self.dft_auto_regularization_checkbox = QtWidgets.QCheckBox(tr("自动选择正则化"))
         self.dft_auto_regularization_checkbox.setEnabled(False)
         self.dft_auto_regularization_checkbox.setToolTip(
-            "支持已完成求解器对照的 26 个模型；拖动滑块转为手动，约束阶数保持不变。")
+            tr("支持已完成求解器对照的 26 个模型；拖动滑块转为手动，约束阶数保持不变。"))
         self.dft_auto_regularization_checkbox.toggled.connect(self._on_dft_auto_regularization_changed)
         regularization_options.addWidget(self.dft_auto_regularization_checkbox)
-        self.dft_regularization_apply_all_checkbox = QtWidgets.QCheckBox("应用全部")
+        self.dft_regularization_apply_all_checkbox = QtWidgets.QCheckBox(tr("应用全部"))
         self.dft_regularization_apply_all_checkbox.setToolTip(
-            "勾选后，手动调整系数会同步到所有样品；各样品的模型及约束阶数保持不变。")
+            tr("勾选后，手动调整系数会同步到所有样品；各样品的模型及约束阶数保持不变。"))
         self.dft_regularization_apply_all_checkbox.toggled.connect(self._on_dft_regularization_apply_all_toggled)
         regularization_options.addWidget(self.dft_regularization_apply_all_checkbox)
         regularization_options.addStretch(1)
@@ -3674,14 +3678,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.dft_regularization_slider.valueChangeFinished.connect(self._finish_deferred_dft_regularization_refresh)
         regularization_layout.addWidget(self.dft_regularization_slider)
 
-        self.dft_default_button = QtWidgets.QPushButton("默认")
-        self.dft_default_button.setToolTip("恢复当前样品的 DFT 默认设置")
+        self.dft_default_button = QtWidgets.QPushButton(tr("默认"))
+        self.dft_default_button.setToolTip(tr("恢复当前样品的 DFT 默认设置"))
         self.dft_default_button.clicked.connect(self.reset_dft_to_default)
-        self.dft_apply_all_button = QtWidgets.QPushButton("全部应用")
-        self.dft_apply_all_button.setToolTip("把当前 DFT 设置应用到所有样品")
+        self.dft_apply_all_button = QtWidgets.QPushButton(tr("全部应用"))
+        self.dft_apply_all_button.setToolTip(tr("把当前 DFT 设置应用到所有样品"))
         self.dft_apply_all_button.clicked.connect(self.apply_dft_settings_to_all)
-        self.dft_all_default_button = QtWidgets.QPushButton("全部默认")
-        self.dft_all_default_button.setToolTip("让所有样品恢复各自默认 DFT 设置")
+        self.dft_all_default_button = QtWidgets.QPushButton(tr("全部默认"))
+        self.dft_all_default_button.setToolTip(tr("让所有样品恢复各自默认 DFT 设置"))
         self.dft_all_default_button.clicked.connect(self.reset_all_dft_to_default)
         button_row = QtWidgets.QHBoxLayout()
         button_row.setContentsMargins(0, 0, 0, 0)
@@ -3691,9 +3695,9 @@ class MainWindow(QtWidgets.QMainWindow):
         button_row.addStretch(1)
 
         self.dft_diagnostic_plot = make_plot(
-            "拟合误差 vs 正则化",
-            "RMS 拟合误差 (mmol/g)",
-            "正则化",
+            tr("拟合误差 vs 正则化"),
+            tr("RMS 拟合误差 (mmol/g)"),
+            tr("正则化"),
         )
         self.dft_diagnostic_plot.setMinimumHeight(190)
         self.dft_diagnostic_plot.setMaximumHeight(260)
@@ -3780,7 +3784,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         name_row = QtWidgets.QHBoxLayout()
         name_row.setContentsMargins(0, 0, 0, 0)
-        name_row.addWidget(QtWidgets.QLabel("名称"))
+        name_row.addWidget(QtWidgets.QLabel(tr("名称")))
         name_edit = QtWidgets.QLineEdit()
         name_edit.setMinimumWidth(220)
         name_edit.editingFinished.connect(lambda ctx=context: self._on_reference_name_changed(ctx))
@@ -3792,7 +3796,7 @@ class MainWindow(QtWidgets.QMainWindow):
         body_layout.setSpacing(10)
 
         table = QtWidgets.QTableWidget(0, 2)
-        table.setHorizontalHeaderLabels(["相对\n压力\n(p/p°)", "厚度\n(nm)"])
+        table.setHorizontalHeaderLabels([tr("相对\n压力\n(p/p°)"), tr("厚度\n(nm)")])
         table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
         table.verticalHeader().setDefaultSectionSize(25)
         table.verticalHeader().setMinimumWidth(42)
@@ -3811,17 +3815,17 @@ class MainWindow(QtWidgets.QMainWindow):
         button_layout.setContentsMargins(0, 0, 0, 0)
         button_layout.setSpacing(8)
         for text, handler in (
-            ("插入", self._insert_reference_row),
-            ("删除", self._delete_reference_row),
-            ("清除", self._clear_reference_table),
-            ("附加", self._append_reference_row),
+            (tr("插入"), self._insert_reference_row),
+            (tr("删除"), self._delete_reference_row),
+            (tr("清除"), self._clear_reference_table),
+            (tr("附加"), self._append_reference_row),
         ):
             button = QtWidgets.QPushButton(text)
             button.setFixedWidth(110)
             button.clicked.connect(lambda _checked=False, ctx=context, fn=handler: fn(ctx))
             button_layout.addWidget(button)
         button_layout.addStretch(1)
-        for text, handler in (("打开...", self._open_reference_file), ("另存为...", self._save_reference_file_as)):
+        for text, handler in ((tr("打开..."), self._open_reference_file), (tr("另存为..."), self._save_reference_file_as)):
             button = QtWidgets.QPushButton(text)
             button.setFixedWidth(110)
             button.clicked.connect(lambda _checked=False, ctx=context, fn=handler: fn(ctx))
@@ -3985,8 +3989,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def _clear_reference_table(self, context: str) -> None:
         reply = QtWidgets.QMessageBox.question(
             self,
-            "清除",
-            "清除整个表？",
+            tr("清除"),
+            tr("清除整个表？"),
             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
             QtWidgets.QMessageBox.No,
         )
@@ -4009,7 +4013,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _open_reference_file(self, context: str) -> None:
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self,
-            "打开厚度参比表",
+            tr("打开厚度参比表"),
             str(DEFAULT_REFERENCE_DIR),
             "Thickness files (*.thk *.als);;All files (*.*)",
         )
@@ -4018,7 +4022,7 @@ class MainWindow(QtWidgets.QMainWindow):
         try:
             points = read_reference_points(path)
         except OSError as exc:
-            QtWidgets.QMessageBox.warning(self, "打开失败", str(exc))
+            QtWidgets.QMessageBox.warning(self, tr("打开失败"), str(exc))
             return
         params = self._reference_params_for_context(context)
         params["reference_name"] = Path(path).name
@@ -4033,7 +4037,7 @@ class MainWindow(QtWidgets.QMainWindow):
         points = self._reference_points_from_table(context)
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
             self,
-            "另存为厚度参比表",
+            tr("另存为厚度参比表"),
             str(DEFAULT_REFERENCE_DIR / "reference.thk"),
             "Thickness files (*.thk);;ALS files (*.als);;All files (*.*)",
         )
@@ -4044,7 +4048,7 @@ class MainWindow(QtWidgets.QMainWindow):
         try:
             write_reference_points(path, points)
         except OSError as exc:
-            QtWidgets.QMessageBox.warning(self, "保存失败", str(exc))
+            QtWidgets.QMessageBox.warning(self, tr("保存失败"), str(exc))
             return
         params = self._reference_params_for_context(context)
         params["reference_name"] = Path(path).name
@@ -4303,7 +4307,7 @@ class MainWindow(QtWidgets.QMainWindow):
         frame.setFrameShape(QtWidgets.QFrame.StyledPanel)
         layout = QtWidgets.QVBoxLayout(frame)
         layout.setContentsMargins(8, 6, 8, 6)
-        label = QtWidgets.QLabel("公式参数待补充")
+        label = QtWidgets.QLabel(tr("公式参数待补充"))
         label.setStyleSheet("color: #6b7280;")
         layout.addWidget(label)
         return frame
@@ -4618,13 +4622,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self._bjh_distribution_cache.clear()
         self.refresh_bjh_plot()
         self._refresh_all_sample_bjh_pore_cells()
-        self.statusBar().showMessage("已将当前 BJH 设置应用到所有样品", 3000)
+        self.statusBar().showMessage(tr("已将当前 BJH 设置应用到所有样品"), 3000)
 
     def reset_all_bjh_to_default(self) -> None:
         self.custom_bjh_settings.clear()
         self._bjh_distribution_cache.clear()
         self.reset_bjh_to_default(reset_region=True)
-        self.statusBar().showMessage("所有样品已恢复各自默认 BJH 设置", 3000)
+        self.statusBar().showMessage(tr("所有样品已恢复各自默认 BJH 设置"), 3000)
 
     def reset_bjh_to_default(self, *, reset_region: bool = False) -> None:
         active = self.active_result()
@@ -4724,13 +4728,13 @@ class MainWindow(QtWidgets.QMainWindow):
             self._refresh_all_sample_bjh_pore_cells()
         else:
             self._refresh_sample_bjh_pore_cell(self.active_index)
-        self.statusBar().showMessage("已将当前 DH 设置应用到所有样品", 3000)
+        self.statusBar().showMessage(tr("已将当前 DH 设置应用到所有样品"), 3000)
 
     def reset_all_dh_to_default(self) -> None:
         self.custom_dh_settings.clear()
         self._dh_distribution_cache.clear()
         self.reset_dh_to_default(reset_region=True)
-        self.statusBar().showMessage("所有样品已恢复各自默认 DH 设置", 3000)
+        self.statusBar().showMessage(tr("所有样品已恢复各自默认 DH 设置"), 3000)
 
     def reset_dh_to_default(self, *, reset_region: bool = False) -> None:
         active = self.active_result()
@@ -4856,12 +4860,12 @@ class MainWindow(QtWidgets.QMainWindow):
         for result in self.results:
             self.custom_hk_settings[id(result)] = copy.deepcopy(settings)
         self.refresh_hk_plot()
-        self.statusBar().showMessage("已将当前 HK 设置应用到所有样品", 3000)
+        self.statusBar().showMessage(tr("已将当前 HK 设置应用到所有样品"), 3000)
 
     def reset_all_hk_to_default(self) -> None:
         self.custom_hk_settings.clear()
         self.reset_hk_to_default(reset_region=True)
-        self.statusBar().showMessage("所有样品已恢复默认 HK 设置", 3000)
+        self.statusBar().showMessage(tr("所有样品已恢复默认 HK 设置"), 3000)
 
     def _open_hk_properties_dialog(self) -> None:
         dialog = HorvathKawazoePropertiesDialog(
@@ -5516,7 +5520,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 combo.addItem(label, key)
                 combo.setItemData(combo.count() - 1, label, QtCore.Qt.ToolTipRole)
             if not options:
-                combo.addItem("没有匹配模型", "__no_matching_model__")
+                combo.addItem(tr("没有匹配模型"), "__no_matching_model__")
                 combo.setEnabled(False)
                 self.dft_model = "__no_matching_model__"
                 return
@@ -5752,7 +5756,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.refresh_isotherm_plot()
         if self._active_pore_volume_method() == PORE_VOLUME_METHOD_DFT:
             self._refresh_all_sample_bjh_pore_cells()
-        self.statusBar().showMessage("已将当前 DFT 设置应用到所有样品", 3000)
+        self.statusBar().showMessage(tr("已将当前 DFT 设置应用到所有样品"), 3000)
 
     def _prefetch_dft_batch(self) -> None:
         """Populate GUI-owned cache in parallel before synchronous rendering."""
@@ -5787,6 +5791,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._store_dft_result_cache(key, distribution)
 
     def closeEvent(self, event) -> None:
+        i18n.remove_listener(self._on_language_changed)
         usage_timer = getattr(self, "_usage_timer", None)
         if not getattr(self, "_telemetry_closed", False) and usage_timer is not None:
             # Open time and active time of this run; recorded (queued on disk)
@@ -5804,7 +5809,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.custom_dft_settings.clear()
         self._dft_result_cache.clear()
         self.reset_dft_to_default(reset_region=True)
-        self.statusBar().showMessage("所有样品已恢复默认 DFT 设置", 3000)
+        self.statusBar().showMessage(tr("所有样品已恢复默认 DFT 设置"), 3000)
 
     def reset_dft_to_default(self, *, reset_region: bool = False) -> None:
         active = self.active_result()
@@ -5903,7 +5908,7 @@ class MainWindow(QtWidgets.QMainWindow):
             imported_new = True
 
         if errors:
-            QtWidgets.QMessageBox.warning(self, "部分文件未加载", _with_import_contact("\n".join(errors)))
+            QtWidgets.QMessageBox.warning(self, tr("部分文件未加载"), _with_import_contact("\n".join(errors)))
         if not new_results:
             return
 
@@ -5959,7 +5964,7 @@ class MainWindow(QtWidgets.QMainWindow):
             parsed.append(result)
 
         if errors:
-            QtWidgets.QMessageBox.warning(self, "部分文件未加载", _with_import_contact("\n".join(errors)))
+            QtWidgets.QMessageBox.warning(self, tr("部分文件未加载"), _with_import_contact("\n".join(errors)))
         if not parsed:
             return
 
@@ -6014,10 +6019,58 @@ class MainWindow(QtWidgets.QMainWindow):
             samples_as_columns=bool(self._analysis_tables_transposed),
             single_point_pressure=float(self.single_point_default_pressure),
         )
-        dialog = AppSettingsDialog(self, current, BET_DISPLAY_LABELS, APP_VERSION, self.import_directory)
+        dialog = AppSettingsDialog(self, current, {key: tr(label) for key, label in BET_DISPLAY_LABELS.items()}, APP_VERSION,
+                                   self.import_directory, language_changed=self.set_interface_language)
         if dialog.exec_() != QtWidgets.QDialog.Accepted:
             return
         self._apply_app_settings(dialog.values())
+
+    def set_interface_language(self, language: str) -> None:
+        """Switch the interface language now and keep it for the next start."""
+        language = i18n.normalize_language(language)
+        self.settings.setValue(LANGUAGE_SETTING_KEY, language)
+        i18n.set_language(language)
+
+    def _fit_toolbar_buttons(self) -> None:
+        # 96 px fits the Chinese labels; longer translations widen the button instead of clipping.
+        for button in self._toolbar_buttons:
+            button.setFixedWidth(max(96, button.fontMetrics().horizontalAdvance(button.text()) + 24))
+
+    def _on_language_changed(self, old: str, new: str) -> None:
+        from tristar_bet.i18n import retranslate_text
+        from tristar_bet.ui.retranslate import retranslate_application
+
+        message = self.statusBar().currentMessage()
+        retranslate_application(old, new)
+        # The same Chinese text is the update dialogs' title; set the button's own wording.
+        self.update_button.setText(i18n.trc("button", "软件更新"))
+        self._fit_toolbar_buttons()
+        # Texts built from data (headers with ranges, result tables, plot
+        # legends and messages) are rebuilt in the new language.
+        self.setWindowTitle(f"{tr(APP_NAME)} v{APP_VERSION}")
+        self._update_bet_header()
+        self._update_pore_volume_header()
+        if self.results:
+            # These caches contain translated display values, not just numbers.
+            # Rebuild every data row as well: generic retranslation can match a
+            # sample name such as "Default", which must stay in its source form.
+            self._analysis_detail_cache.clear()
+            for table in self.analysis_result_tables.values():
+                table._row_signatures = []
+            self.pore_volume_results_table._row_signatures = []
+            self.refresh_all()
+            self.refresh_analysis_result_tables()
+            self.refresh_pore_volume_table()
+        if message:
+            active = self.active_result()
+            sample_message = "已切换到样品：{0}"
+            if active is not None and message == i18n.tr_in(old, sample_message, _display_file_name(active)):
+                message = tr(sample_message, _display_file_name(active))
+            else:
+                message = retranslate_text(message, old, new)
+            self.statusBar().showMessage(message)
+        else:
+            self.statusBar().clearMessage()
 
     def _apply_app_settings(self, values: AppSettings) -> None:
         if values.export_format in EXPORT_FORMATS:
@@ -6036,24 +6089,24 @@ class MainWindow(QtWidgets.QMainWindow):
             self._update_bet_header()
             if self.results:
                 self.refresh_all()
-        self.statusBar().showMessage("设置已保存", 3000)
+        self.statusBar().showMessage(tr("设置已保存"), 3000)
 
     def export_xlsx(self) -> None:
         """Toolbar export of checked samples; the file type is chosen in the dialog."""
         selected = [result for result, visible in zip(self.results, self.visible_results) if visible]
         if not selected:
-            QtWidgets.QMessageBox.information(self, "导出文件", "没有勾选可导出的样品。")
+            QtWidgets.QMessageBox.information(self, tr("导出文件"), tr("没有勾选可导出的样品。"))
             return
         self._export_results(selected)
 
     def _export_results(self, selected, file_format: str | None = None) -> None:
-        filters = {"xlsx": "Excel 工作簿 (*.xlsx)", "pdf": "PDF 报告 (*.pdf)"}
+        filters = {"xlsx": tr("Excel 工作簿 (*.xlsx)"), "pdf": tr("PDF 报告 (*.pdf)")}
         default_format = self._default_export_format() if hasattr(self, "_default_export_format") else "xlsx"
         offered = [file_format] if file_format in filters else [default_format] + [key for key in filters if key != default_format]
         stem = (f"{_display_file_name(selected[0])}" if len(selected) == 1
-                else f"BET解析导出_{len(selected)}个样品")
+                else tr('BET解析导出_{0}个样品', len(selected)))
         path, chosen_filter = QtWidgets.QFileDialog.getSaveFileName(
-            self, "导出文件", str(self.export_directory / f"{stem}.{offered[0]}"),
+            self, tr("导出文件"), str(self.export_directory / f"{stem}.{offered[0]}"),
             ";;".join(filters[key] for key in offered), filters[offered[0]])
         if not path:
             return
@@ -6075,16 +6128,16 @@ class MainWindow(QtWidgets.QMainWindow):
             write_pdf(self._pdf_report_for(selected), path)
         except Exception as exc:
             QtWidgets.QApplication.restoreOverrideCursor()
-            QtWidgets.QMessageBox.critical(self, "导出失败", str(exc))
+            QtWidgets.QMessageBox.critical(self, tr("导出失败"), str(exc))
             return
         QtWidgets.QApplication.restoreOverrideCursor()
         # Telemetry schema only defines xlsx exports, so PDF exports are not reported.
-        self.statusBar().showMessage(f"已导出: {path}", 6000)
+        self.statusBar().showMessage(tr('已导出: {0}', path), 6000)
 
     def _write_xlsx_export(self, selected, path: str) -> None:
         pore_range = self._selected_pore_volume_range()
         d_min, d_max = sorted((float(pore_range[0]), float(pore_range[1])))
-        pore_volume_header = f"{self._pore_volume_method_label()} {_fmt_nm(d_min)}nm-{_fmt_nm(d_max)}nm孔容量(cm3/g)"
+        pore_volume_header = tr('{0} {1}nm-{2}nm孔容量(cm3/g)', self._pore_volume_method_label(), _fmt_nm(d_min), _fmt_nm(d_max))
         pore_volumes = [self._selected_pore_volume_for_result(result) for result in selected]
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
         try:
@@ -6106,13 +6159,13 @@ class MainWindow(QtWidgets.QMainWindow):
                 "export", format="xlsx", status="failure", error_code="write_error",
                 duration_ms=min(86400000, max(0, int((time.monotonic() - started) * 1000))),
             )
-            QtWidgets.QMessageBox.critical(self, "导出失败", str(exc))
+            QtWidgets.QMessageBox.critical(self, tr("导出失败"), str(exc))
             return
         self._record_telemetry(
             "export", format="xlsx", status="success", error_code="none",
             duration_ms=min(86400000, max(0, int((time.monotonic() - started) * 1000))),
         )
-        self.statusBar().showMessage(f"已导出: {path}", 6000)
+        self.statusBar().showMessage(tr('已导出: {0}', path), 6000)
 
     def on_sample_item_changed(self, item: QtWidgets.QTableWidgetItem) -> None:
         if self._updating_table or self._updating_sample_checks or item.column() != VISIBLE_COLUMN:
@@ -6154,7 +6207,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.sample_table.scrollToItem(self.sample_table.item(int(row), FILE_COLUMN), QtWidgets.QAbstractItemView.PositionAtCenter)
         except Exception:
             pass
-        self.statusBar().showMessage(f"已切换到样品：{_display_file_name(self.results[int(row)])}", 2200)
+        self.statusBar().showMessage(tr('已切换到样品：{0}', _display_file_name(self.results[int(row)])), 2200)
 
     def _sample_hover_plots(self) -> tuple[object, ...]:
         return (
@@ -6267,11 +6320,9 @@ class MainWindow(QtWidgets.QMainWindow):
         item = self.sample_table.horizontalHeaderItem(BET_COLUMN)
         if item is None:
             return
-        item.setText({BET_DISPLAY_SINGLE: "单点BET(m2/g)", BET_DISPLAY_MULTI: "多点BET(m2/g)"}.get(self.bet_display_mode, "BET(m2/g)"))
+        item.setText({BET_DISPLAY_SINGLE: tr("单点BET(m2/g)"), BET_DISPLAY_MULTI: tr("多点BET(m2/g)")}.get(self.bet_display_mode, "BET(m2/g)"))
         item.setToolTip(
-            f"当前显示：{BET_DISPLAY_LABELS[self.bet_display_mode]}。右键切换 默认 / 单点 / 多点；点击排序。\n"
-            "默认：优先有效多点 BET，JWGB 多点无效时显示并标注单点。\n"
-            f"单点：文件有单点压力设置时用文件设置，否则按 P/P0={self.single_point_default_pressure:g} 计算（可在设置中修改）。"
+            tr('当前显示：{0}。右键切换 默认 / 单点 / 多点；点击排序。\n默认：优先有效多点 BET，JWGB 多点无效时显示并标注单点。\n单点：文件有单点压力设置时用文件设置，否则按 P/P0={1:g} 计算（可在设置中修改）。', tr(BET_DISPLAY_LABELS[self.bet_display_mode]), self.single_point_default_pressure)
         )
 
     def show_sample_header_context_menu(self, position: QtCore.QPoint) -> None:
@@ -6283,7 +6334,7 @@ class MainWindow(QtWidgets.QMainWindow):
         group.setExclusive(True)
         actions = {}
         for mode in (BET_DISPLAY_DEFAULT, BET_DISPLAY_SINGLE, BET_DISPLAY_MULTI):
-            action = menu.addAction(BET_DISPLAY_LABELS[mode])
+            action = menu.addAction(tr(BET_DISPLAY_LABELS[mode]))
             action.setCheckable(True)
             action.setChecked(mode == self.bet_display_mode)
             group.addAction(action)
@@ -6330,8 +6381,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 QMenu::item:disabled { color: palette(mid); }
                 QMenu::indicator { width: 0; height: 0; }
             """)
-            clear_action = menu.addAction("清空列表")
-            copy_action = menu.addAction("复制列表")
+            clear_action = menu.addAction(tr("清空列表"))
+            copy_action = menu.addAction(tr("复制列表"))
             clear_action.setEnabled(bool(self.results))
             copy_action.setEnabled(bool(self.results))
             exec_menu = getattr(menu, "exec_", None) or getattr(menu, "exec")
@@ -6347,11 +6398,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self.sample_table.selectRow(row)
             selected_rows = [row]
         menu = QtWidgets.QMenu(self.sample_table)
-        count = f"选中的 {len(selected_rows)} 个样品" if len(selected_rows) > 1 else ""
-        delete_action = menu.addAction(f"删除{count}")
+        count = tr('选中的 {0} 个样品', len(selected_rows)) if len(selected_rows) > 1 else ""
+        delete_action = menu.addAction(tr('删除{0}', count))
         menu.addSeparator()
-        excel_action = menu.addAction(f"导出{count} Excel…")
-        pdf_action = menu.addAction(f"导出{count} PDF…")
+        excel_action = menu.addAction(tr('导出{0} Excel…', count))
+        pdf_action = menu.addAction(tr('导出{0} PDF…', count))
         global_pos = self.sample_table.viewport().mapToGlobal(position)
         exec_menu = getattr(menu, "exec_", None) or getattr(menu, "exec")
         chosen = exec_menu(global_pos)
@@ -6377,7 +6428,7 @@ class MainWindow(QtWidgets.QMainWindow):
             for column in columns
         ] for row in range(table.rowCount()))
         QtWidgets.QApplication.clipboard().setMimeData(table_grid_mime_data(grid))
-        self.statusBar().showMessage(f"已复制 {table.rowCount()} 个样品（含表头）", 3000)
+        self.statusBar().showMessage(tr('已复制 {0} 个样品（含表头）', table.rowCount()), 3000)
 
     def _selected_sample_rows(self) -> list[int]:
         selection_model = self.sample_table.selectionModel()
@@ -6413,7 +6464,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._reset_all_fit_regions()
             self._clear_isotherm_region_states()
             self.refresh_all()
-            self.statusBar().showMessage(f"已删除 {len(rows)} 个样品", 3000)
+            self.statusBar().showMessage(tr('已删除 {0} 个样品', len(rows)), 3000)
             return
 
         retained_active_index = -1
@@ -6427,7 +6478,7 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             self.active_index = min(first_removed_row, len(self.results) - 1)
         self.refresh_all()
-        self.statusBar().showMessage(f"已删除 {len(rows)} 个样品", 3000)
+        self.statusBar().showMessage(tr('已删除 {0} 个样品', len(rows)), 3000)
 
     def sort_samples_by_file_name(self, ascending: bool) -> None:
         self._sort_samples(lambda result: _natural_sort_key(_display_file_name(result)), ascending, self.sample_table, FILE_COLUMN)
@@ -6606,13 +6657,13 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.sample_table.setItem(row, FILE_COLUMN, file_item)
 
                 test_time_item = self._table_item(result.test_started_time)
-                test_time_item.setToolTip("SMP 优先来自日志 Started 时间；DAT/QPS 来自测量日期")
+                test_time_item.setToolTip(tr("SMP 优先来自日志 Started 时间；DAT/QPS 来自测量日期"))
                 self.sample_table.setItem(row, TEST_TIME_COLUMN, test_time_item)
 
                 bet_value, bet_kind, bet_tooltip = self._sample_bet_display(result, bet)
                 bet_text = _fmt(bet_value)
                 if bet_kind == "single_point" and self.bet_display_mode == BET_DISPLAY_DEFAULT:
-                    bet_text = f"{bet_text}（单点）"
+                    bet_text = tr('{0}（单点）', bet_text)
                 bet_item = self._table_item(
                     bet_text,
                     tooltip=bet_tooltip,
@@ -6660,7 +6711,7 @@ class MainWindow(QtWidgets.QMainWindow):
         bet_value, bet_kind, bet_tooltip = self._sample_bet_display(result, bet)
         bet_text = _fmt(bet_value)
         if bet_kind == "single_point" and self.bet_display_mode == BET_DISPLAY_DEFAULT:
-            bet_text = f"{bet_text}（单点）"
+            bet_text = tr('{0}（单点）', bet_text)
         bet_item = self._table_item(
             bet_text,
             tooltip=bet_tooltip,
@@ -6674,24 +6725,24 @@ class MainWindow(QtWidgets.QMainWindow):
         mode = getattr(self, "bet_display_mode", BET_DISPLAY_DEFAULT)
         if mode == BET_DISPLAY_MULTI:
             if bet.surface_area_m2_g is None:
-                return None, "unavailable", f"多点 BET 不可用：{status_text(bet.status)}"
+                return None, "unavailable", tr('多点 BET 不可用：{0}', status_text(bet.status))
             kind = "manual_multipoint" if self._is_custom_bet_fit(result) else "multipoint"
-            return float(bet.surface_area_m2_g), kind, f"{'手动多点' if kind == 'manual_multipoint' else '多点'} BET；{status_text(bet.status)}"
+            return float(bet.surface_area_m2_g), kind, tr('{0} BET；{1}', tr('手动多点') if kind == 'manual_multipoint' else tr('多点'), status_text(bet.status))
         if mode == BET_DISPLAY_SINGLE:
             single_point, source = self._single_point_for_result(result)
             pressure = _fmt(single_point.pressure_min, 6) if single_point.pressure_min is not None else ""
             if single_point.status != "ok" or single_point.surface_area_m2_g is None:
-                return None, "unavailable", f"单点 BET 不可用（P/P0={pressure}，{source}）：{status_text(single_point.status)}"
+                return None, "unavailable", tr('单点 BET 不可用（P/P0={0}，{1}）：{2}', pressure, source, status_text(single_point.status))
             target = (single_point.rows or [{}])[0].get("target_relative_pressure")
             if target is not None:
-                detail = f"目标 P/P0={_fmt(target, 4)}（{source}），按仪器规则取最近实测点 P/P0={pressure}"
+                detail = tr('目标 P/P0={0}（{1}），按仪器规则取最近实测点 P/P0={2}', (_fmt(target, 4)), source, pressure)
             else:
-                detail = f"P/P0={pressure}（{source}），相邻实测点插值"
-            return float(single_point.surface_area_m2_g), "single_point", f"单点 BET，{detail}；V·(1−P/P0) 换算"
+                detail = tr('P/P0={0}（{1}），相邻实测点插值', pressure, source)
+            return float(single_point.surface_area_m2_g), "single_point", tr('单点 BET，{0}；V·(1−P/P0) 换算', detail)
         if bet.surface_area_m2_g is not None:
             kind = "manual_multipoint" if self._is_custom_bet_fit(result) else "multipoint"
-            label = "手动多点 BET" if kind == "manual_multipoint" else "多点 BET"
-            tooltip = "区间计算完成" if result.method_options.get('jwgb_reconstructed') else f"{label}；{status_text(bet.status)}"
+            label = tr("手动多点 BET") if kind == "manual_multipoint" else tr("多点 BET")
+            tooltip = tr("区间计算完成") if result.method_options.get('jwgb_reconstructed') else tr('{0}；{1}', label, status_text(bet.status))
             return float(bet.surface_area_m2_g), kind, tooltip
 
         point_ids = result.method_options.get("jwgb_raw_bet_fit_point_ids")
@@ -6706,9 +6757,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 return (
                     float(single_point.surface_area_m2_g),
                     "single_point",
-                    (f"JWGB 单点 BET，P/P0={pressure}；多点 BET：{status_text(bet.status)}"
+                    (tr('JWGB 单点 BET，P/P0={0}；多点 BET：{1}', pressure, status_text(bet.status))
                      if native_single else
-                     f"JWGB 单点 BET，P/P0={pressure}；原厂 MAP 仅 1 点，多点 BET 无效"),
+                     tr('JWGB 单点 BET，P/P0={0}；原厂 MAP 仅 1 点，多点 BET 无效', pressure)),
                 )
         return None, "unavailable", status_text(bet.status)
 
@@ -6758,44 +6809,44 @@ class MainWindow(QtWidgets.QMainWindow):
             if isinstance(point_ids, (list, tuple)) and len(point_ids) < 3:
                 item.setForeground(QtGui.QBrush(QtGui.QColor("#b45309")))
                 if not item.toolTip():
-                    item.setToolTip("JWGB RAW 原厂 MAP 选点不足 3 个；无有效多点 BET 结果")
+                    item.setToolTip(tr("JWGB RAW 原厂 MAP 选点不足 3 个；无有效多点 BET 结果"))
                 return
         if not self._is_custom_bet_fit(result):
             return
         item.setForeground(QtGui.QBrush(QtGui.QColor(CUSTOM_BET_COLOR)))
-        item.setToolTip("BET 拟合区间已人工调整")
+        item.setToolTip(tr("BET 拟合区间已人工调整"))
 
     def _style_sample_langmuir_item(self, item: QtWidgets.QTableWidgetItem, result) -> None:
         if not self._is_custom_langmuir_fit(result):
             return
         item.setForeground(QtGui.QBrush(QtGui.QColor(CUSTOM_BET_COLOR)))
-        item.setToolTip("Langmuir 拟合区间已人工调整")
+        item.setToolTip(tr("Langmuir 拟合区间已人工调整"))
 
     def _style_sample_t_plot_item(self, item: QtWidgets.QTableWidgetItem, result) -> None:
         if not self._is_custom_t_plot_fit(result):
             return
         item.setForeground(QtGui.QBrush(QtGui.QColor(CUSTOM_BET_COLOR)))
-        item.setToolTip("t-Plot 厚度曲线、表面积参数或拟合厚度区间已人工调整")
+        item.setToolTip(tr("t-Plot 厚度曲线、表面积参数或拟合厚度区间已人工调整"))
 
     def _style_sample_bjh_pore_item(self, item: QtWidgets.QTableWidgetItem, result) -> None:
         label = self._pore_volume_method_label()
         if self._active_pore_volume_method() == PORE_VOLUME_METHOD_DFT and self._has_custom_dft_settings(result):
             item.setForeground(QtGui.QBrush(QtGui.QColor(CUSTOM_BET_COLOR)))
-            item.setToolTip("DFT 模型、结构或正则化参数已人工调整")
+            item.setToolTip(tr("DFT 模型、结构或正则化参数已人工调整"))
             return
         if self._is_hk_tab_active() and self._has_custom_hk_settings(result):
             item.setForeground(QtGui.QBrush(QtGui.QColor(CUSTOM_BET_COLOR)))
-            item.setToolTip("HK 孔型、物性、作用参数或平滑选项已人工调整")
+            item.setToolTip(tr("HK 孔型、物性、作用参数或平滑选项已人工调整"))
             return
         if self._active_pore_volume_method() == PORE_VOLUME_METHOD_DH and self._has_custom_dh_settings(result):
             item.setForeground(QtGui.QBrush(QtGui.QColor(CUSTOM_BET_COLOR)))
-            item.setToolTip("DH 厚度曲线、公式参数、平滑或显示分支已人工调整")
+            item.setToolTip(tr("DH 厚度曲线、公式参数、平滑或显示分支已人工调整"))
             return
         if self._active_pore_volume_method() == PORE_VOLUME_METHOD_BJH and self._has_custom_bjh_settings(result):
             item.setForeground(QtGui.QBrush(QtGui.QColor(CUSTOM_BET_COLOR)))
-            item.setToolTip("BJH 厚度曲线、公式参数、校正或显示分支已人工调整")
+            item.setToolTip(tr("BJH 厚度曲线、公式参数、校正或显示分支已人工调整"))
         else:
-            item.setToolTip(f"{label} 当前绿色选区孔容量")
+            item.setToolTip(tr('{0} 当前绿色选区孔容量', label))
 
     def refresh_active_views(self) -> None:
         self.refresh_metrics()
@@ -7071,7 +7122,7 @@ class MainWindow(QtWidgets.QMainWindow):
             plot,
             list(getattr(dft_result, "diagnostic_rows", [])),
             float(dft_result.regularization),
-            penalty_label=(f"{dft_result.regularization_order} 阶约束范数"
+            penalty_label=(tr('{0} 阶约束范数', dft_result.regularization_order)
                            if dft_result.solver_profile == "gai_native" else None),
         )
         if dft_result.ok and dft_result.automatic_regularization:
@@ -7221,7 +7272,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 line_x_min=x_min,
                 line_x_max=x_max,
                 color=self._analysis_sample_color(index),
-                name="线性拟合" if is_active else None,
+                name=tr("线性拟合") if is_active else None,
                 width=ACTIVE_LINE_WIDTH if is_active else 1,
                 analysis_provider=self._cached_bet_analysis,
             )
@@ -7301,7 +7352,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 line_x_min=x_min,
                 line_x_max=x_max,
                 color=self._analysis_sample_color(index),
-                name="线性拟合" if is_active else None,
+                name=tr("线性拟合") if is_active else None,
                 width=ACTIVE_LINE_WIDTH if is_active else 1,
                 analysis_provider=self._cached_langmuir_analysis,
             )
@@ -7397,7 +7448,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 thickness_params=thickness_params,
                 thickness_method=thickness_method,
                 color=self._analysis_sample_color(index),
-                name="线性拟合" if is_active else None,
+                name=tr("线性拟合") if is_active else None,
                 width=ACTIVE_LINE_WIDTH if is_active else 1,
                 analysis_provider=self._cached_t_plot_thickness_analysis,
             )
@@ -8693,9 +8744,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if item.column() != 1:
             return
         label = self.metrics_table.item(item.row(), 0)
-        if label is not None and label.text() == "文件路径":
+        if label is not None and label.text() == tr("文件路径"):
             QtWidgets.QApplication.clipboard().setText(item.text())
-            self.statusBar().showMessage("已复制完整文件路径", 2200)
+            self.statusBar().showMessage(tr("已复制完整文件路径"), 2200)
 
     def _attach_region_endpoints(self, plot, region, *, green=False) -> None:
         controls = getattr(plot, "_region_endpoint_controls", None)
@@ -8773,23 +8824,23 @@ class MainWindow(QtWidgets.QMainWindow):
         for method, bounds, calculate in methods:
             value = calculate(result, bounds)
             value = float(value) if value is not None and math.isfinite(float(value)) else None
-            dimension = "孔径" if method in {"BJH", "DH"} else "孔宽"
+            dimension = tr("孔径") if method in {"BJH", "DH"} else tr("孔宽")
             lo, hi = sorted(bounds)
-            tooltip = f"{method} 绿色选区：{dimension} {_fmt(lo, 8)}–{_fmt(hi, 8)} nm\n孔容量单位：cm³/g"
+            tooltip = tr('{0} 绿色选区：{1} {2}–{3} nm\n孔容量单位：cm³/g', method, dimension, (_fmt(lo, 8)), (_fmt(hi, 8)))
             if method in {"BJH", "DH"}:
                 settings = (self._bjh_settings_for_result(result) if method == "BJH"
                             else self._dh_settings_for_result(result))
                 phase = (self._bjh_pore_volume_phase(settings) if method == "BJH"
                          else self._dh_pore_volume_phase(settings))
-                tooltip += "\n分支：" + {"adsorption": "吸附", "desorption": "脱附", None: "未开启"}[phase]
+                tooltip += tr("\n分支：") + {"adsorption": tr("吸附"), "desorption": tr("脱附"), None: tr("未开启")}[phase]
                 if settings["show_adsorption"] and settings["show_desorption"]:
-                    tooltip += "（吸附/脱附均开启时，沿用样品栏规则优先取吸附）"
+                    tooltip += tr("（吸附/脱附均开启时，沿用样品栏规则优先取吸附）")
             elif method == "HK":
                 pressure = self._hk_pressure_range()
                 if pressure is not None:
-                    tooltip += f"\nHK 相对压力范围：{_fmt(pressure[0], 8)}–{_fmt(pressure[1], 8)}"
+                    tooltip += tr('\nHK 相对压力范围：{0}–{1}', (_fmt(pressure[0], 8)), (_fmt(pressure[1], 8)))
             if value is None:
-                tooltip += "\n无可用分支或有效分布数据"
+                tooltip += tr("\n无可用分支或有效分布数据")
             cells.append(("—" if value is None else _fmt(value), value, tooltip))
         return cells
 
@@ -8902,7 +8953,7 @@ class MainWindow(QtWidgets.QMainWindow):
         params = []
         for name, value in dict(settings["thickness_params"]).items():
             if isinstance(value, (list, tuple)):
-                value = f"{len(value)}项"
+                value = tr('{0}项', len(value))
             elif isinstance(value, (int, float)):
                 value = _fmt(value, 8)
             params.append(f"{name}={value}")
@@ -8940,8 +8991,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 transposed = table._transposed
                 layout_keys = (["parameter"] + [f"sample:{id(result)}" for result in self.results]
                                if transposed else keys)
-                labels = (["参数"] + [_display_file_name(result) for result in self.results]
-                          if transposed else [label for _key, label in columns])
+                labels = ([tr("参数")] + [_display_file_name(result) for result in self.results]
+                          if transposed else [tr(label) for _key, label in columns])
                 row_count = len(columns) - 1 if transposed else len(self.results)
                 previous_blocked = table.blockSignals(True)
                 scroll = table.horizontalScrollBar().value()
@@ -8964,6 +9015,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     table.setRowCount(row_count)
                     if transposed:
                         for parameter, (_key, label) in enumerate(columns[1:]):
+                            label = tr(label)
                             existing = table.item(parameter, 0)
                             if existing is None or existing.text() != label:
                                 table.setItem(parameter, 0, self._table_item(label,
@@ -9000,10 +9052,10 @@ class MainWindow(QtWidgets.QMainWindow):
                                     item.setData(RESULT_WARNING_ROLE, status_label)
                                 tooltip = result.header.file_path + "\n" + status_label
                                 if single_status:
-                                    tooltip += "\n单点BET：" + single_status
+                                    tooltip += tr("\n单点BET：") + single_status
                                 item.setToolTip(tooltip)
                             elif keys[column].startswith("single_"):
-                                item.setToolTip(display + "\n单点BET：" + single_status)
+                                item.setToolTip(display + tr("\n单点BET：") + single_status)
                             elif method == "t_plot":
                                 note = _t_plot_value_note(keys[column], value, result)
                                 if note:
@@ -9045,7 +9097,7 @@ class MainWindow(QtWidgets.QMainWindow):
         for row, point in enumerate(active.isotherm):
             values = [
                 point.index,
-                "吸附" if point.phase == "adsorption" else "脱附",
+                tr("吸附") if point.phase == "adsorption" else tr("脱附"),
                 _fmt(point.relative_pressure, 9),
                 _fmt(point.absolute_pressure_mmHg, 6),
                 _fmt(point.quantity_adsorbed_cm3_g_stp, 6),
@@ -9067,7 +9119,7 @@ class MainWindow(QtWidgets.QMainWindow):
         for row, item in enumerate(active.target_pressure_table):
             values = [
                 item.row,
-                "吸附" if item.branch == "adsorption" else "脱附",
+                tr("吸附") if item.branch == "adsorption" else tr("脱附"),
                 _fmt(item.starting_pressure_p_po, 9),
                 _fmt(item.ending_pressure_p_po, 9),
                 _fmt(item.pressure_increment_p_po, 9),
@@ -9134,11 +9186,9 @@ class MainWindow(QtWidgets.QMainWindow):
         item = self.sample_table.horizontalHeaderItem(BJH_PORE_VOLUME_COLUMN)
         label = self._pore_volume_method_label()
         if item is not None:
-            item.setText("选区孔容量(cm3/g)")
+            item.setText(tr("选区孔容量(cm3/g)"))
             item.setToolTip(
-                f"当前按 {label} 标签页绿色选区计算孔容量；切换 BJH/DH/HK/DFT 自动切换算法。\n"
-                "按选框与孔径区间的对数宽度交集比例计入增量孔容，不对绘图样条积分。\n"
-                "零起点区间按线性宽度分配；仅有累计数据时按相邻孔径推定区间。"
+                tr('当前按 {0} 标签页绿色选区计算孔容量；切换 BJH/DH/HK/DFT 自动切换算法。\n按选框与孔径区间的对数宽度交集比例计入增量孔容，不对绘图样条积分。\n零起点区间按线性宽度分配；仅有累计数据时按相邻孔径推定区间。', label)
             )
             item.setTextAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
         self._position_header_controls()
@@ -9894,8 +9944,8 @@ class MainWindow(QtWidgets.QMainWindow):
         colors = [self._analysis_sample_color(self.results.index(r)) if r in self.results else DEFAULT_COLORS[i % len(DEFAULT_COLORS)]
                   for i, r in enumerate(selected)]
 
-        info_keys = ["文件名", "样品名称", "设备厂家", "设备型号", "测试时间", "测试结束时间", "测试耗时",
-                     "样品质量", "吸附质名称", "浴温", "饱和参考压力P₀", "数据点数"]
+        info_keys = [tr("文件名"), tr("样品名称"), tr("设备厂家"), tr("设备型号"), tr("测试时间"), tr("测试结束时间"), tr("测试耗时"),
+                     tr("样品质量"), tr("吸附质名称"), tr("浴温"), tr("饱和参考压力P₀"), tr("数据点数")]
         info_columns = []
         for name, result in zip(names, selected):
             rows = dict(summary_rows(result))
@@ -9918,7 +9968,7 @@ class MainWindow(QtWidgets.QMainWindow):
         for method, bounds in (("BJH", self.bjh_pore_volume_range), ("DH", self.dh_pore_volume_range),
                                ("HK", self.hk_pore_volume_range), ("DFT", self.dft_pore_volume_range)):
             lo, hi = sorted(float(v) for v in bounds)
-            pore_keys.append(f"{method} {'孔径' if method in ('BJH', 'DH') else '孔宽'} {_fmt_nm(lo)}–{_fmt_nm(hi)} nm (cm3/g)")
+            pore_keys.append(f"{method} {tr('孔径') if method in ('BJH', 'DH') else tr('孔宽')} {_fmt_nm(lo)}–{_fmt_nm(hi)} nm (cm3/g)")
         calculators = (self._bjh_pore_volume_for_result, self._dh_pore_volume_for_result,
                        self._hk_pore_volume_for_result, self._dft_pore_volume_for_result)
         for index, result in enumerate(selected):
@@ -9930,10 +9980,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 except Exception:
                     value = None
                 pore_columns[index].append(val(value))
-        result_keys = ["BET 状态", "BET 比表面积 (m2/g)", "BET C", "BET Vm (cm3/g STP)", "BET R²", "BET 选点 P/P0", "BET 点数",
-                       "单点 BET P/P0", "单点 BET 比表面积 (m2/g)", "单点压力来源",
-                       "Langmuir 状态", "Langmuir 比表面积 (m2/g)", "Langmuir Vm (cm3/g STP)", "Langmuir R²", "Langmuir 选点 P/P0",
-                       "t-Plot 状态", "t-Plot 外比表面积 (m2/g)", "t-Plot 微孔体积 (cm3/g)", "t-Plot R²", "t-Plot 选点 P/P0"]
+        result_keys = [tr("BET 状态"), tr("BET 比表面积 (m2/g)"), "BET C", "BET Vm (cm3/g STP)", "BET R²", tr("BET 选点 P/P0"), tr("BET 点数"),
+                       tr("单点 BET P/P0"), tr("单点 BET 比表面积 (m2/g)"), tr("单点压力来源"),
+                       tr("Langmuir 状态"), tr("Langmuir 比表面积 (m2/g)"), "Langmuir Vm (cm3/g STP)", "Langmuir R²", tr("Langmuir 选点 P/P0"),
+                       tr("t-Plot 状态"), tr("t-Plot 外比表面积 (m2/g)"), tr("t-Plot 微孔体积 (cm3/g)"), "t-Plot R²", tr("t-Plot 选点 P/P0")]
         result_columns = []
         for name, result, (bet, single, source, langmuir, t_plot) in zip(names, selected, fits):
             ok_single = single.status == "ok"
@@ -9952,7 +10002,7 @@ class MainWindow(QtWidgets.QMainWindow):
         def iso_series():
             out = []
             for name, color, result in zip(names, colors, selected):
-                for phase, style, suffix in (("adsorption", "line", ""), ("desorption", "dash", "（脱附）")):
+                for phase, style, suffix in (("adsorption", "line", ""), ("desorption", "dash", tr("（脱附）"))):
                     points = [p for p in result.isotherm if p.phase == phase and p.quantity_adsorbed_cm3_g_stp is not None]
                     if points:
                         out.append(Series(name + suffix, color, [p.relative_pressure for p in points],
@@ -9982,7 +10032,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     rows = [row for row in section["rows"] if isinstance(row, dict)]
                     if not rows:
                         continue
-                    label = name if method in ("HK", "DFT") else f"{name}（{section['branch']}）"
+                    label = name if method in ("HK", "DFT") else tr('{0}（{1}）', name, section['branch'])
                     style = "dash" if section["branch"] == "脱附支" else "line"
                     out.append(Series(label, color, [row.get(x_key) for row in rows],
                                       [row.get("differential_pore_volume_cm3_g") for row in rows], style))
@@ -10007,104 +10057,104 @@ class MainWindow(QtWidgets.QMainWindow):
             label = _t_plot_thickness_label(method)
             if method == "reference":
                 reference = dict(settings.get("thickness_params") or {}).get("reference_name")
-                label = f"{label}：{reference}" if reference else label
+                label = tr('{0}：{1}', label, reference) if reference else label
             return label
 
         def branches(settings):
-            on = [name for key, name in (("show_adsorption", "吸附"), ("show_desorption", "脱附")) if settings.get(key)]
-            return "、".join(on) or "未开启"
+            on = [name for key, name in (("show_adsorption", tr("吸附")), ("show_desorption", tr("脱附"))) if settings.get(key)]
+            return tr("、").join(on) or tr("未开启")
 
         def yes(flag):
-            return "是" if flag else "否"
+            return tr("是") if flag else tr("否")
 
         def cross_section(result):
             props = result.adsorptive_properties
             return getattr(props, "molecular_cross_sectional_area_nm2", None) if props is not None else None
 
         lo_hi = lambda bounds: "{}–{} nm".format(*(_fmt_nm(v) for v in sorted(float(b) for b in bounds)))
-        hk_geometry = {"slit": "狭缝（原始 H-K）", "cylinder": "圆柱（Saito-Foley）"}
-        dft_geometry = {"slit": "狭缝", "cylinder": "圆柱", "sphere": "球形", "mixed": "混合", "all": "全部"}
+        hk_geometry = {"slit": tr("狭缝（原始 H-K）"), "cylinder": tr("圆柱（Saito-Foley）")}
+        dft_geometry = {"slit": tr("狭缝"), "cylinder": tr("圆柱"), "sphere": tr("球形"), "mixed": tr("混合"), "all": tr("全部")}
         try:
             from tristar_bet.dft_models import dft_model_label
         except Exception:  # pragma: no cover
             dft_model_label = str
-        iso_params = params("等温线参数", [
-            ("吸附质", lambda r, f: r.run_conditions.adsorptive_name or r.run_conditions.adsorptive_short or "—"),
-            ("浴温 (K)", lambda r, f: r.run_conditions.bath_temperature_K),
-            ("吸附点数", lambda r, f: str(sum(p.phase == "adsorption" for p in r.isotherm))),
-            ("脱附点数", lambda r, f: str(sum(p.phase == "desorption" for p in r.isotherm))),
+        iso_params = params(tr("等温线参数"), [
+            (tr("吸附质"), lambda r, f: r.run_conditions.adsorptive_name or r.run_conditions.adsorptive_short or "—"),
+            (tr("浴温 (K)"), lambda r, f: r.run_conditions.bath_temperature_K),
+            (tr("吸附点数"), lambda r, f: str(sum(p.phase == "adsorption" for p in r.isotherm))),
+            (tr("脱附点数"), lambda r, f: str(sum(p.phase == "desorption" for p in r.isotherm))),
         ])
-        bet_params = params("BET 参数", [
-            ("选点 P/P0", lambda r, f: rng(f[0])), ("点数", lambda r, f: str(f[0].point_count or "—")),
-            ("斜率", lambda r, f: f[0].slope), ("截距", lambda r, f: f[0].intercept), ("C", lambda r, f: f[0].c_constant),
+        bet_params = params(tr("BET 参数"), [
+            (tr("选点 P/P0"), lambda r, f: rng(f[0])), (tr("点数"), lambda r, f: str(f[0].point_count or "—")),
+            (tr("斜率"), lambda r, f: f[0].slope), (tr("截距"), lambda r, f: f[0].intercept), ("C", lambda r, f: f[0].c_constant),
             ("Vm (cm3/g STP)", lambda r, f: f[0].monolayer_capacity_cm3_g_stp), ("R²", lambda r, f: f[0].r_squared),
-            ("分子截面积 (nm2)", lambda r, f: cross_section(r)),
+            (tr("分子截面积 (nm2)"), lambda r, f: cross_section(r)),
         ])
-        langmuir_params = params("Langmuir 参数", [
-            ("选点 P/P0", lambda r, f: rng(f[3])), ("点数", lambda r, f: str(f[3].point_count or "—")),
-            ("斜率", lambda r, f: f[3].slope), ("截距", lambda r, f: f[3].intercept),
+        langmuir_params = params(tr("Langmuir 参数"), [
+            (tr("选点 P/P0"), lambda r, f: rng(f[3])), (tr("点数"), lambda r, f: str(f[3].point_count or "—")),
+            (tr("斜率"), lambda r, f: f[3].slope), (tr("截距"), lambda r, f: f[3].intercept),
             ("Vm (cm3/g STP)", lambda r, f: f[3].monolayer_capacity_cm3_g_stp), ("b", lambda r, f: f[3].langmuir_b),
             ("R²", lambda r, f: f[3].r_squared),
         ])
-        t_plot_params = params("t-Plot 参数", [
-            ("厚度方程", lambda r, f: thickness(self._t_plot_settings_for_result(r))),
-            ("选点 P/P0", lambda r, f: rng(f[4])), ("点数", lambda r, f: str(f[4].point_count or "—")),
-            ("斜率", lambda r, f: f[4].slope), ("截距", lambda r, f: f[4].intercept), ("R²", lambda r, f: f[4].r_squared),
+        t_plot_params = params(tr("t-Plot 参数"), [
+            (tr("厚度方程"), lambda r, f: thickness(self._t_plot_settings_for_result(r))),
+            (tr("选点 P/P0"), lambda r, f: rng(f[4])), (tr("点数"), lambda r, f: str(f[4].point_count or "—")),
+            (tr("斜率"), lambda r, f: f[4].slope), (tr("截距"), lambda r, f: f[4].intercept), ("R²", lambda r, f: f[4].r_squared),
         ])
-        bjh_params = params("BJH 参数", [
-            ("分支", lambda r, f: branches(self._bjh_settings_for_result(r))),
-            ("厚度方程", lambda r, f: thickness(self._bjh_settings_for_result(r))),
-            ("校正方法", lambda r, f: str(self._bjh_settings_for_result(r)["correction"])),
-            ("两端开口孔比例", lambda r, f: self._bjh_settings_for_result(r)["open_pore_fraction"]),
-            ("导数平滑", lambda r, f: yes(self._bjh_settings_for_result(r)["smooth_derivative"])),
-            ("孔容选区", lambda r, f: lo_hi(self.bjh_pore_volume_range)),
+        bjh_params = params(tr("BJH 参数"), [
+            (tr("分支"), lambda r, f: branches(self._bjh_settings_for_result(r))),
+            (tr("厚度方程"), lambda r, f: thickness(self._bjh_settings_for_result(r))),
+            (tr("校正方法"), lambda r, f: str(self._bjh_settings_for_result(r)["correction"])),
+            (tr("两端开口孔比例"), lambda r, f: self._bjh_settings_for_result(r)["open_pore_fraction"]),
+            (tr("导数平滑"), lambda r, f: yes(self._bjh_settings_for_result(r)["smooth_derivative"])),
+            (tr("孔容选区"), lambda r, f: lo_hi(self.bjh_pore_volume_range)),
         ])
-        dh_params = params("DH 参数", [
-            ("分支", lambda r, f: branches(self._dh_settings_for_result(r))),
-            ("厚度方程", lambda r, f: thickness(self._dh_settings_for_result(r))),
-            ("导数平滑", lambda r, f: yes(self._dh_settings_for_result(r)["smooth_derivative"])),
-            ("孔容选区", lambda r, f: lo_hi(self.dh_pore_volume_range)),
+        dh_params = params(tr("DH 参数"), [
+            (tr("分支"), lambda r, f: branches(self._dh_settings_for_result(r))),
+            (tr("厚度方程"), lambda r, f: thickness(self._dh_settings_for_result(r))),
+            (tr("导数平滑"), lambda r, f: yes(self._dh_settings_for_result(r)["smooth_derivative"])),
+            (tr("孔容选区"), lambda r, f: lo_hi(self.dh_pore_volume_range)),
         ])
-        hk_params = params("HK 参数", [
-            ("孔几何", lambda r, f: hk_geometry.get(str(self._hk_settings_for_result(r)["geometry"]), str(self._hk_settings_for_result(r)["geometry"]))),
-            ("吸附剂", lambda r, f: str(self._hk_settings_for_result(r)["adsorbent_key"])),
-            ("吸附质", lambda r, f: str(self._hk_settings_for_result(r)["adsorptive_key"])),
-            ("相互作用参数 (erg·cm4)", lambda r, f: f"{float(self._hk_settings_for_result(r)['interaction_parameter']):.3e}"),
-            ("Cheng-Yang 校正", lambda r, f: yes(self._hk_settings_for_result(r)["cheng_yang_correction"])),
-            ("孔容选区", lambda r, f: lo_hi(self.hk_pore_volume_range)),
+        hk_params = params(tr("HK 参数"), [
+            (tr("孔几何"), lambda r, f: hk_geometry.get(str(self._hk_settings_for_result(r)["geometry"]), str(self._hk_settings_for_result(r)["geometry"]))),
+            (tr("吸附剂"), lambda r, f: str(self._hk_settings_for_result(r)["adsorbent_key"])),
+            (tr("吸附质"), lambda r, f: str(self._hk_settings_for_result(r)["adsorptive_key"])),
+            (tr("相互作用参数 (erg·cm4)"), lambda r, f: f"{float(self._hk_settings_for_result(r)['interaction_parameter']):.3e}"),
+            (tr("Cheng-Yang 校正"), lambda r, f: yes(self._hk_settings_for_result(r)["cheng_yang_correction"])),
+            (tr("孔容选区"), lambda r, f: lo_hi(self.hk_pore_volume_range)),
         ])
-        dft_params = params("DFT 参数", [
-            ("模型", lambda r, f: dft_model_label(str(self._dft_settings_for_result(r)["model"]))),
-            ("孔几何", lambda r, f: dft_geometry.get(str(self._dft_settings_for_result(r)["geometry"]), str(self._dft_settings_for_result(r)["geometry"]))),
-            ("正则化", lambda r, f: "{}{}".format(_fmt(self._dft_settings_for_result(r)["regularization"], 4),
-                                                   "（自动）" if self._dft_settings_for_result(r).get("automatic_regularization") else "")),
-            ("孔容选区", lambda r, f: lo_hi(self.dft_pore_volume_range)),
+        dft_params = params(tr("DFT 参数"), [
+            (tr("模型"), lambda r, f: dft_model_label(str(self._dft_settings_for_result(r)["model"]))),
+            (tr("孔几何"), lambda r, f: dft_geometry.get(str(self._dft_settings_for_result(r)["geometry"]), str(self._dft_settings_for_result(r)["geometry"]))),
+            (tr("正则化"), lambda r, f: "{}{}".format(_fmt(self._dft_settings_for_result(r)["regularization"], 4),
+                                                   tr("（自动）") if self._dft_settings_for_result(r).get("automatic_regularization") else "")),
+            (tr("孔容选区"), lambda r, f: lo_hi(self.dft_pore_volume_range)),
         ])
 
         figures = [
-            Figure("吸附-脱附等温线", "相对压力 P/P0", "吸附量 (cm3/g STP)", iso_series(), params=iso_params),
-            Figure("BET 图", "相对压力 P/P0", "1/[V(P0/P−1)]", linear_series(0, "relative_pressure", "bet_y"), params=bet_params),
-            Figure("Langmuir 图", "相对压力 P/P0", "Langmuir 变换", linear_series(3, "relative_pressure", "langmuir_y"),
+            Figure(tr("吸附-脱附等温线"), tr("相对压力 P/P0"), tr("吸附量 (cm3/g STP)"), iso_series(), params=iso_params),
+            Figure(tr("BET 图"), tr("相对压力 P/P0"), "1/[V(P0/P−1)]", linear_series(0, "relative_pressure", "bet_y"), params=bet_params),
+            Figure(tr("Langmuir 图"), tr("相对压力 P/P0"), tr("Langmuir 变换"), linear_series(3, "relative_pressure", "langmuir_y"),
                    params=langmuir_params),
-            Figure("t-Plot", "膜厚 t (nm)", "吸附量", linear_series(4, "thickness_nm", "t_plot_y_value"), params=t_plot_params),
-            Figure("BJH 孔径分布", "孔径 D (nm)", "dV/dlogD (cm3/g)", pore_series("BJH", "pore_diameter_nm"), log_x=True,
-                   note="实线：吸附支；虚线：脱附支", params=bjh_params),
-            Figure("DH 孔径分布", "孔径 D (nm)", "dV/dlogD (cm3/g)", pore_series("DH", "pore_diameter_nm"), log_x=True,
-                   note="实线：吸附支；虚线：脱附支", params=dh_params),
-            Figure("HK 孔径分布", "孔宽 W (nm)", "dV/dlogW (cm3/g)", pore_series("HK", "pore_width_nm"), log_x=True,
+            Figure("t-Plot", tr("膜厚 t (nm)"), tr("吸附量"), linear_series(4, "thickness_nm", "t_plot_y_value"), params=t_plot_params),
+            Figure(tr("BJH 孔径分布"), tr("孔径 D (nm)"), "dV/dlogD (cm3/g)", pore_series("BJH", "pore_diameter_nm"), log_x=True,
+                   note=tr("实线：吸附支；虚线：脱附支"), params=bjh_params),
+            Figure(tr("DH 孔径分布"), tr("孔径 D (nm)"), "dV/dlogD (cm3/g)", pore_series("DH", "pore_diameter_nm"), log_x=True,
+                   note=tr("实线：吸附支；虚线：脱附支"), params=dh_params),
+            Figure(tr("HK 孔径分布"), tr("孔宽 W (nm)"), "dV/dlogW (cm3/g)", pore_series("HK", "pore_width_nm"), log_x=True,
                    params=hk_params),
-            Figure("DFT 孔径分布", "孔宽 W (nm)", "dV/dlogW (cm3/g)", pore_series("DFT", "pore_width_nm", ("孔径分布",)), log_x=True,
+            Figure(tr("DFT 孔径分布"), tr("孔宽 W (nm)"), "dV/dlogW (cm3/g)", pore_series("DFT", "pore_width_nm", (tr("孔径分布"),)), log_x=True,
                    params=dft_params),
         ]
         return Report(
-            "BET 分析报告", report_subtitle(len(selected), __version__),
-            [Table("样品信息", info_keys, info_columns),
-             Table("结果参数", result_keys, result_columns,
-                   note="与软件界面当前设置一致（含手动选区与各方法参数）。"),
-             Table("选区孔容量", pore_keys, [(name, column) for name, column in zip(names, pore_columns)],
-                   note="各方法按各自绿色选区计算；BJH/DH 吸附、脱附均开启时取吸附支。")],
+            tr("BET 分析报告"), report_subtitle(len(selected), __version__),
+            [Table(tr("样品信息"), info_keys, info_columns),
+             Table(tr("结果参数"), result_keys, result_columns,
+                   note=tr("与软件界面当前设置一致（含手动选区与各方法参数）。")),
+             Table(tr("选区孔容量"), pore_keys, [(name, column) for name, column in zip(names, pore_columns)],
+                   note=tr("各方法按各自绿色选区计算；BJH/DH 吸附、脱附均开启时取吸附支。"))],
             figures,
-            footnote=("数据来源与验证状态：" + "；".join(notices)) if notices else "",
+            footnote=(tr("数据来源与验证状态：") + tr("；").join(notices)) if notices else "",
         )
 
     def _pore_distribution_exports(self, result) -> list[dict[str, object]]:
@@ -10134,9 +10184,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 sections.append({"method": method, "branch": "", "settings": "", "rows": [],
                                  "error": f"{type(exc).__name__}: {exc}"})
                 continue
-            text = (f"厚度方程={settings['thickness_method']}; 平滑={'是' if settings['smooth_derivative'] else '否'}"
-                    + (f"; 校正={settings['correction']}; 开孔比例={settings['open_pore_fraction']}" if method == "BJH" else ""))
-            for phase, label in (("adsorption", "吸附支"), ("desorption", "脱附支")):
+            text = (tr('厚度方程={0}; 平滑={1}', settings['thickness_method'], tr('是') if settings['smooth_derivative'] else tr('否'))
+                    + (tr('; 校正={0}; 开孔比例={1}', settings['correction'], settings['open_pore_fraction']) if method == "BJH" else ""))
+            for phase, label in (("adsorption", tr("吸附支")), ("desorption", tr("脱附支"))):
                 if not settings[f"show_{phase}"]:
                     continue
                 kwargs = dict(phase=phase, thickness_method=str(settings["thickness_method"]),
@@ -10149,9 +10199,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         try:
             hk = self._hk_settings_for_result(result)
-            hk_text = (f"几何={hk['geometry']}; 吸附剂={hk['adsorbent_key']}; 吸附质={hk['adsorptive_key']}; "
-                       f"Cheng-Yang校正={'是' if hk['cheng_yang_correction'] else '否'}; 平滑={'是' if hk['smooth_derivative'] else '否'}")
-            add("HK", "吸附支", hk_text, lambda: prepare_hk_distribution_rows(
+            hk_text = (tr('几何={0}; 吸附剂={1}; 吸附质={2}; Cheng-Yang校正={3}; 平滑={4}', hk['geometry'], hk['adsorbent_key'], hk['adsorptive_key'], tr('是') if hk['cheng_yang_correction'] else tr('否'), tr('是') if hk['smooth_derivative'] else tr('否')))
+            add("HK", tr("吸附支"), hk_text, lambda: prepare_hk_distribution_rows(
                 self._cached_hk_distribution_rows(
                     result, geometry=str(hk["geometry"]), adsorbent_key=str(hk["adsorbent_key"]),
                     adsorptive_key=str(hk["adsorptive_key"]), adsorbent_properties=dict(hk["adsorbent_properties"]),
@@ -10161,12 +10210,12 @@ class MainWindow(QtWidgets.QMainWindow):
                     cheng_yang_correction=bool(hk["cheng_yang_correction"]), smooth=False),
                 pressure_range=self._hk_pressure_range(), smooth=bool(hk["smooth_derivative"])))
         except Exception as exc:
-            sections.append({"method": "HK", "branch": "吸附支", "settings": "", "rows": [],
+            sections.append({"method": "HK", "branch": tr("吸附支"), "settings": "", "rows": [],
                              "error": f"{type(exc).__name__}: {exc}"})
 
         try:
             dft = self._dft_settings_for_result(result)
-            dft_text = f"模型={dft['model']}; 几何={dft['geometry']}; 正则化={dft['regularization']}"
+            dft_text = tr('模型={0}; 几何={1}; 正则化={2}', dft['model'], dft['geometry'], dft['regularization'])
             distribution = {}
 
             def dft_result():
@@ -10175,10 +10224,10 @@ class MainWindow(QtWidgets.QMainWindow):
                         result, analysis_type=str(dft["analysis_type"]), geometry=str(dft["geometry"]),
                         model=str(dft["model"]), regularization=float(dft["regularization"]))
                 return distribution["value"]
-            add("DFT", "孔径分布", dft_text, lambda: getattr(dft_result(), "rows", []))
-            add("DFT", "拟合等温线", dft_text, lambda: getattr(dft_result(), "fit_rows", []))
+            add("DFT", tr("孔径分布"), dft_text, lambda: getattr(dft_result(), "rows", []))
+            add("DFT", tr("拟合等温线"), dft_text, lambda: getattr(dft_result(), "fit_rows", []))
         except Exception as exc:
-            sections.append({"method": "DFT", "branch": "孔径分布", "settings": "", "rows": [],
+            sections.append({"method": "DFT", "branch": tr("孔径分布"), "settings": "", "rows": [],
                              "error": f"{type(exc).__name__}: {exc}"})
         return sections
 
@@ -10369,10 +10418,10 @@ class MainWindow(QtWidgets.QMainWindow):
         for row, (name, value) in enumerate(rows):
             self._set_table_item(table, row, 0, name)
             self._set_table_item(table, row, 1, value)
-            table.item(row, 1).setToolTip(value + ("\n双击复制完整文件路径" if name == "文件路径" else ""))
+            table.item(row, 1).setToolTip(value + (tr("\n双击复制完整文件路径") if name == tr("文件路径") else ""))
         table._content_rows = list(rows)
         if table is self.metrics_table:
-            timestamp = dict(rows).get("测试时间") or "2000-01-01 00:00:00"
+            timestamp = dict(rows).get(tr("测试时间")) or "2000-01-01 00:00:00"
             if timestamp == "—":
                 timestamp = "2000-01-01 00:00:00"
             table._column_width_references = {1: timestamp}
@@ -10451,22 +10500,22 @@ def active_metric_rows(
         t_plot = analyses["t-Plot"]
 
     rows = [
-        ("文件名", _display_file_name(result)),
-        ("样品名称", result.sample_name),
-        ("测试时间", result.test_started_time),
-        ("测试结束时间", result.test_completed_time),
-        ("测试耗时", result.test_duration_time),
-        ("样品保存时间", result.sample_saved_time),
-        ("设备厂家", _instrument_manufacturer(result)),
-        ("设备型号", _instrument_model(result)),
-        ("当前选区", _pressure_range_text(pressure_range)),
+        (tr("文件名"), _display_file_name(result)),
+        (tr("样品名称"), result.sample_name),
+        (tr("测试时间"), result.test_started_time),
+        (tr("测试结束时间"), result.test_completed_time),
+        (tr("测试耗时"), result.test_duration_time),
+        (tr("样品保存时间"), result.sample_saved_time),
+        (tr("设备厂家"), _instrument_manufacturer(result)),
+        (tr("设备型号"), _instrument_model(result)),
+        (tr("当前选区"), _pressure_range_text(pressure_range)),
     ]
     if bet_fit_range is not None:
-        rows.append(("BET 拟合区间", _pressure_range_text(bet_fit_range)))
+        rows.append((tr("BET 拟合区间"), _pressure_range_text(bet_fit_range)))
     if langmuir_fit_range is not None:
-        rows.append(("Langmuir 拟合区间", _pressure_range_text(langmuir_fit_range)))
+        rows.append((tr("Langmuir 拟合区间"), _pressure_range_text(langmuir_fit_range)))
     if t_plot_fit_range is not None:
-        rows.append(("t-Plot 厚度区间", _thickness_range_text(t_plot_fit_range)))
+        rows.append((tr("t-Plot 厚度区间"), _thickness_range_text(t_plot_fit_range)))
     t_plot_regression = _t_plot_mmol_regression(t_plot)
     bet_correlation = _correlation_from_r_squared(bet.r_squared)
     t_plot_correlation = _correlation_from_r_squared(t_plot.r_squared)
@@ -10492,64 +10541,65 @@ def active_metric_rows(
             source_max = int(single_point.rows[0].get("source_point_max", 0.0))
             interpolation_points = str(source_min) if source_min == source_max else f"{source_min}-{source_max}"
         single_point_rows = [
-            ("JWGB 单点 BET 压力", _fmt(single_point.pressure_min, 6)),
-            ("JWGB 单点 BET 比表面积", f"{_fmt(single_point.surface_area_m2_g)} m2/g"),
-            ("JWGB 单点 BET 名义来源点", str(source_point or "")),
-            ("JWGB 单点 BET 插值点", interpolation_points),
+            (tr("JWGB 单点 BET 压力"), _fmt(single_point.pressure_min, 6)),
+            (tr("JWGB 单点 BET 比表面积"), f"{_fmt(single_point.surface_area_m2_g)} m2/g"),
+            (tr("JWGB 单点 BET 名义来源点"), str(source_point or "")),
+            (tr("JWGB 单点 BET 插值点"), interpolation_points),
         ]
     rows += [
-        ("样品质量", f"{_fmt(result.sample.sample_mass_g)} g"),
-        ("吸附质", _adsorptive_label(result)),
-        ("数据点数", str(result.point_count)),
-        ("多点 BET 状态", status_text(bet.status)),
-        ("多点 BET 比表面积", _value_pm_text(bet.surface_area_m2_g, bet.surface_area_standard_error, "m2/g")),
-        ("多点 BET 斜率", _value_pm_text(bet.slope, bet.slope_standard_error, "g/cm3 STP")),
-        ("多点 BET Y 截距", _value_pm_text(bet.intercept, bet.intercept_standard_error, "g/cm3 STP")),
-        ("多点 BET 单层容量", f"{_fmt(bet.monolayer_capacity_cm3_g_stp)} cm3/g STP"),
-        ("多点 BET C 常数", _fmt(bet.c_constant)),
-        ("多点 BET 相关系数", _fmt(bet_correlation, 7)),
-        ("多点 BET R2", _fmt(bet.r_squared, 6)),
+        (tr("样品质量"), f"{_fmt(result.sample.sample_mass_g)} g"),
+        (tr("吸附质"), _adsorptive_label(result)),
+        (tr("数据点数"), str(result.point_count)),
+        (tr("多点 BET 状态"), status_text(bet.status)),
+        (tr("多点 BET 比表面积"), _value_pm_text(bet.surface_area_m2_g, bet.surface_area_standard_error, "m2/g")),
+        (tr("多点 BET 斜率"), _value_pm_text(bet.slope, bet.slope_standard_error, "g/cm3 STP")),
+        (tr("多点 BET Y 截距"), _value_pm_text(bet.intercept, bet.intercept_standard_error, "g/cm3 STP")),
+        (tr("多点 BET 单层容量"), f"{_fmt(bet.monolayer_capacity_cm3_g_stp)} cm3/g STP"),
+        (tr("多点 BET C 常数"), _fmt(bet.c_constant)),
+        (tr("多点 BET 相关系数"), _fmt(bet_correlation, 7)),
+        (tr("多点 BET R2"), _fmt(bet.r_squared, 6)),
         *single_point_rows,
-        ("Langmuir 状态", status_text(langmuir.status)),
-        ("Langmuir 比表面积", f"{_fmt(langmuir.surface_area_m2_g)} m2/g"),
-        ("Langmuir 单层容量", f"{_fmt(langmuir.monolayer_capacity_cm3_g_stp)} cm3/g STP"),
+        (tr("Langmuir 状态"), status_text(langmuir.status)),
+        (tr("Langmuir 比表面积"), f"{_fmt(langmuir.surface_area_m2_g)} m2/g"),
+        (tr("Langmuir 单层容量"), f"{_fmt(langmuir.monolayer_capacity_cm3_g_stp)} cm3/g STP"),
         ("Langmuir R2", _fmt(langmuir.r_squared, 6)),
-        ("t-Plot 状态", status_text(t_plot.status)),
-        ("t-Plot 微孔体积", f"{_fmt(t_plot.micropore_volume_cm3_g)} cm3/g"),
-        ("t-Plot 微孔面积", f"{_fmt(micropore_area)} m2/g"),
-        ("t-Plot 外比表面积", f"{_fmt(t_plot.external_surface_area_m2_g)} m2/g"),
-        ("t-Plot 斜率", _value_pm_text(t_plot_regression["slope"], t_plot_regression["slope_se"], "mmol/g/nm")),
-        ("t-Plot Y 截距", _value_pm_text(t_plot_regression["intercept"], t_plot_regression["intercept_se"], "mmol/g")),
-        ("t-Plot 相关系数", _fmt(t_plot_correlation, 6)),
+        (tr("t-Plot 状态"), status_text(t_plot.status)),
+        (tr("t-Plot 微孔体积"), f"{_fmt(t_plot.micropore_volume_cm3_g)} cm3/g"),
+        (tr("t-Plot 微孔面积"), f"{_fmt(micropore_area)} m2/g"),
+        (tr("t-Plot 外比表面积"), f"{_fmt(t_plot.external_surface_area_m2_g)} m2/g"),
+        (tr("t-Plot 斜率"), _value_pm_text(t_plot_regression["slope"], t_plot_regression["slope_se"], "mmol/g/nm")),
+        (tr("t-Plot Y 截距"), _value_pm_text(t_plot_regression["intercept"], t_plot_regression["intercept_se"], "mmol/g")),
+        (tr("t-Plot 相关系数"), _fmt(t_plot_correlation, 6)),
         ("t-Plot R2", _fmt(t_plot.r_squared, 6)),
-        ("t-Plot 比表面积修正因子", _fmt(t_plot_surface_area_correction, 3)),
-        ("t-Plot 密度转换因子", _fmt(density_conversion_factor(result), 9)),
-        (f"t-Plot 总表面积({_t_plot_surface_area_label(t_plot_surface_area_mode)})", f"{_fmt(t_plot_total_surface_area)} m2/g"),
-        ("t-Plot 厚度方程", _t_plot_thickness_label(t_plot_thickness_method)),
-        ("自由空间来源", result.free_space.vfree_factor_source),
+        (tr("t-Plot 比表面积修正因子"), _fmt(t_plot_surface_area_correction, 3)),
+        (tr("t-Plot 密度转换因子"), _fmt(density_conversion_factor(result), 9)),
+        (tr('t-Plot 总表面积({0})', _t_plot_surface_area_label(t_plot_surface_area_mode)), f"{_fmt(t_plot_total_surface_area)} m2/g"),
+        (tr("t-Plot 厚度方程"), _t_plot_thickness_label(t_plot_thickness_method)),
+        (tr("自由空间来源"), result.free_space.vfree_factor_source),
     ]
     if result.method_options.get('jwgb_reconstructed'):
-        rows.insert(0, ('数据来源与验证状态', result.method_options['import_notice']))
+        rows.insert(0, (tr('数据来源与验证状态'), result.method_options['import_notice']))
     return rows
 
 
 def summary_rows(result) -> list[tuple[str, str]]:
     """User-facing overview; method-specific calculations live in their tables."""
     rows = [
-        ("文件名", _display_file_name(result)),
-        ("设备厂家", _instrument_manufacturer(result)),
-        ("设备型号", _instrument_model(result)),
-        ("数据点数", str(result.point_count)),
+        (tr("文件名"), _display_file_name(result)),
+        (tr("设备厂家"), _instrument_manufacturer(result)),
+        (tr("设备型号"), _instrument_model(result)),
+        (tr("数据点数"), str(result.point_count)),
     ]
     aliases = {
-        "吸附质助记符": "吸附质简称", "吸附质属性": "吸附质名称",
-        "Stem volume": "样品管杆部体积", "Vbath": "浸液体积",
-        "Vfree factor": "自由空间校正体积", "实际温自由空间": "实测常温自由空间",
-        "Po 参考压力": "饱和参考压力P₀", "冷自由空间": "低温自由空间",
+        # condition_rows() labels are already in the interface language.
+        tr("吸附质助记符"): tr("吸附质简称"), tr("吸附质属性"): tr("吸附质名称"),
+        "Stem volume": tr("样品管杆部体积"), "Vbath": tr("浸液体积"),
+        "Vfree factor": tr("自由空间校正体积"), tr("实际温自由空间"): tr("实测常温自由空间"),
+        tr("Po 参考压力"): tr("饱和参考压力P₀"), tr("冷自由空间"): tr("低温自由空间"),
     }
     seen = {label for label, _value in rows}
     for label, value in condition_rows(result):
-        if label == "Psat 表行数":
+        if label == tr("Psat 表行数"):
             continue
         label = aliases.get(label, label)
         if label in seen:
@@ -10574,42 +10624,42 @@ def condition_rows(result) -> list[tuple[str, str]]:
     free = result.free_space
     props = result.adsorptive_properties
     rows = [
-        ("文件路径", result.header.file_path),
-        ("测试时间", result.test_started_time),
-        ("测试结束时间", result.test_completed_time),
-        ("测试耗时", result.test_duration_time),
-        ("文件创建时间", result.header.created_time),
-        ("文件修改时间", result.header.modified_time),
-        ("样品保存时间", result.sample_saved_time),
-        ("样品名称", result.sample_name),
-        ("操作员", sample.operator),
-        ("样品质量", _with_unit(sample.sample_mass_g, "g")),
-        ("样品密度", _with_unit(sample.sample_density_g_cm3, "g/cm3")),
-        ("吸附质助记符", run.adsorptive_short),
-        ("吸附质名称", run.adsorptive_name),
-        ("浴温", _with_unit(run.bath_temperature_K, "K")),
-        ("Po 参考压力", _with_unit(run.po_reference_mmHg, "mmHg")),
-        ("平衡间隔", _with_unit(run.equilibration_interval_s, "s")),
-        ("自由空间抽真空时间", _with_unit(run.free_space_equilibration_time_h, "h")),
-        ("输入常温自由空间", _with_unit(run.ambient_free_space_entered_cm3, "cm3")),
-        ("输入分析自由空间", _with_unit(run.analysis_free_space_entered_cm3, "cm3")),
-        ("实际温自由空间", _with_unit(free.warm_free_space_cm3, "cm3")),
-        ("冷自由空间", _with_unit(free.cold_free_space_cm3, "cm3")),
+        (tr("文件路径"), result.header.file_path),
+        (tr("测试时间"), result.test_started_time),
+        (tr("测试结束时间"), result.test_completed_time),
+        (tr("测试耗时"), result.test_duration_time),
+        (tr("文件创建时间"), result.header.created_time),
+        (tr("文件修改时间"), result.header.modified_time),
+        (tr("样品保存时间"), result.sample_saved_time),
+        (tr("样品名称"), result.sample_name),
+        (tr("操作员"), sample.operator),
+        (tr("样品质量"), _with_unit(sample.sample_mass_g, "g")),
+        (tr("样品密度"), _with_unit(sample.sample_density_g_cm3, "g/cm3")),
+        (tr("吸附质助记符"), run.adsorptive_short),
+        (tr("吸附质名称"), run.adsorptive_name),
+        (tr("浴温"), _with_unit(run.bath_temperature_K, "K")),
+        (tr("Po 参考压力"), _with_unit(run.po_reference_mmHg, "mmHg")),
+        (tr("平衡间隔"), _with_unit(run.equilibration_interval_s, "s")),
+        (tr("自由空间抽真空时间"), _with_unit(run.free_space_equilibration_time_h, "h")),
+        (tr("输入常温自由空间"), _with_unit(run.ambient_free_space_entered_cm3, "cm3")),
+        (tr("输入分析自由空间"), _with_unit(run.analysis_free_space_entered_cm3, "cm3")),
+        (tr("实际温自由空间"), _with_unit(free.warm_free_space_cm3, "cm3")),
+        (tr("冷自由空间"), _with_unit(free.cold_free_space_cm3, "cm3")),
         ("Stem volume", _with_unit(free.stem_volume_cm3, "cm3")),
         ("Vbath", _with_unit(free.vbath_cm3, "cm3")),
         ("Vfree factor", _with_unit(free.vfree_factor_cm3, "cm3")),
-        ("非理想因子", _fmt(free.nonideality_factor, 9)),
+        (tr("非理想因子"), _fmt(free.nonideality_factor, 9)),
     ]
     if result.method_options.get("tristar_plus_quantity_validation") == "empirical_reconstruction_summary_checked_on_reference_samples":
-        rows.append(("定量校验", "3.02 参考样本的 BET、t-Plot 已核对原厂摘要；完整点表及 BJH 仍待核对"))
+        rows.append((tr("定量校验"), tr("3.02 参考样本的 BET、t-Plot 已核对原厂摘要；完整点表及 BJH 仍待核对")))
     if props is not None:
         rows.extend(
             [
-                ("吸附质属性", props.adsorptive),
-                ("最大歧管压力", _with_unit(props.max_manifold_pressure_kPa, "kPa")),
-                ("分子截面积", _with_unit(props.molecular_cross_sectional_area_nm2, "nm2")),
-                ("密度转换因子", _fmt(props.density_conversion_factor, 9)),
-                ("Psat 表行数", str(len(props.psat_table))),
+                (tr("吸附质属性"), props.adsorptive),
+                (tr("最大歧管压力"), _with_unit(props.max_manifold_pressure_kPa, "kPa")),
+                (tr("分子截面积"), _with_unit(props.molecular_cross_sectional_area_nm2, "nm2")),
+                (tr("密度转换因子"), _fmt(props.density_conversion_factor, 9)),
+                (tr("Psat 表行数"), str(len(props.psat_table))),
             ]
         )
     return rows
@@ -10617,18 +10667,18 @@ def condition_rows(result) -> list[tuple[str, str]]:
 
 def status_text(status: str) -> str:
     return {
-        "not_available": "无可用结果",
-        "ok": "区间计算完成",
-        "warning_negative_c": "区间计算完成；BET C<=0，需核对报告选点",
-        "warning_reconstructed": "重建值，尚未与本文件原厂结果核验",
-        "warning_reconstructed_negative_c": "重建值未核验，且 BET C<=0",
-        "warning_reconstructed_monolayer_outside_range": "重建值，尚未与本文件原厂结果核验；单层容量超出选区，需核对重建和选点",
-        "nonpositive_reconstructed_uptake": "选区包含非正重建吸附量，无法拟合",
-        "native_auto_q_unsupported": "此 JWGBT 自动 Q 校准信息不足或不适用，无法计算 BET；请导入原厂导出的 Excel 或 RAW",
-        "native_uptake_unavailable": "此 JWGBT 尚未解析出吸附量，无法计算 BET；请导入原厂导出的 Excel 或 RAW",
-        "not_enough_points": "区间有效点不足",
-        "not_enough_valid_points": "区间有效数值不足",
-        "invalid_monolayer_capacity": "单层容量无效",
+        "not_available": tr("无可用结果"),
+        "ok": tr("区间计算完成"),
+        "warning_negative_c": tr("区间计算完成；BET C<=0，需核对报告选点"),
+        "warning_reconstructed": tr("重建值，尚未与本文件原厂结果核验"),
+        "warning_reconstructed_negative_c": tr("重建值未核验，且 BET C<=0"),
+        "warning_reconstructed_monolayer_outside_range": tr("重建值，尚未与本文件原厂结果核验；单层容量超出选区，需核对重建和选点"),
+        "nonpositive_reconstructed_uptake": tr("选区包含非正重建吸附量，无法拟合"),
+        "native_auto_q_unsupported": tr("此 JWGBT 自动 Q 校准信息不足或不适用，无法计算 BET；请导入原厂导出的 Excel 或 RAW"),
+        "native_uptake_unavailable": tr("此 JWGBT 尚未解析出吸附量，无法计算 BET；请导入原厂导出的 Excel 或 RAW"),
+        "not_enough_points": tr("区间有效点不足"),
+        "not_enough_valid_points": tr("区间有效数值不足"),
+        "invalid_monolayer_capacity": tr("单层容量无效"),
     }.get(status, status)
 
 
@@ -10642,10 +10692,10 @@ def single_point_target(result, default_pressure: float | None = DEFAULT_SINGLE_
         value = result.method_options.get(key)
         try:
             if value is not None and 0.0 < float(value) < 1.0:
-                return float(value), "文件设置"
+                return float(value), tr("文件设置")
         except (TypeError, ValueError):
             pass
-    return default_pressure, "软件设置"
+    return default_pressure, tr("软件设置")
 
 
 def _natural_sort_key(text: str) -> tuple:
@@ -10677,13 +10727,13 @@ def _adsorptive_label(result) -> str:
 
 def _pressure_range_text(pressure_range: tuple[float, float] | None) -> str:
     if pressure_range is None:
-        return "默认算法区间"
+        return tr("默认算法区间")
     return f"P/P0 {_fmt(pressure_range[0], 6)} - {_fmt(pressure_range[1], 6)}"
 
 
 def _thickness_range_text(thickness_range: tuple[float, float] | None) -> str:
     if thickness_range is None:
-        return "默认厚度区间"
+        return tr("默认厚度区间")
     return f"{_fmt(thickness_range[0], 6)} - {_fmt(thickness_range[1], 6)} nm"
 
 
@@ -10709,9 +10759,9 @@ def _t_plot_value_note(key: str, value, result) -> str | None:
     if not reports_signed_t_plot_results(result):
         return None
     if key == "micro_volume" and isinstance(value, (int, float)) and value < 0:
-        return NEGATIVE_MICROPORE_VOLUME_NOTE
+        return tr(NEGATIVE_MICROPORE_VOLUME_NOTE)
     if key == "micro_area" and value is None:
-        return MISSING_MICROPORE_AREA_NOTE
+        return tr(MISSING_MICROPORE_AREA_NOTE)
     return None
 
 
@@ -10727,7 +10777,7 @@ def _t_plot_surface_area_label(mode: str) -> str:
     if mode == "Langmuir":
         return "Langmuir"
     if mode == "Input":
-        return "输入"
+        return tr("输入")
     return "BET"
 
 
@@ -10791,7 +10841,7 @@ def export_results_xlsx(
     results,
     path: str | Path,
     *,
-    pore_volume_header: str = "选区孔容量(cm3/g)",
+    pore_volume_header: str | None = None,
     pore_volumes: list[float | None] | None = None,
     pore_distributions: list[list[dict[str, object]]] | None = None,
     single_point_pressure: float | None = DEFAULT_SINGLE_POINT_PRESSURE,
@@ -10801,32 +10851,32 @@ def export_results_xlsx(
 
     workbook = Workbook()
     summary_sheet = workbook.active
-    summary_sheet.title = "摘要"
+    summary_sheet.title = tr("摘要")
     _write_rows(
         summary_sheet,
         [
             [
-                "文件",
-                "样品",
-                "测试时间",
-                "测试结束时间",
-                "测试耗时",
-                "质量(g)",
-                "点数",
-                "多点BET状态",
-                "多点BET面积(m2/g)",
-                "多点BET Vm(cm3/g)",
-                "多点BET C",
-                "单点BET压力(P/P0)",
-                "单点BET面积(m2/g)",
-                "单点压力来源",
-                "Langmuir状态",
-                "Langmuir面积(m2/g)",
-                "t-Plot状态",
-                "t-Plot外比表面积(m2/g)",
-                "t-Plot微孔体积(cm3/g)",
-                pore_volume_header,
-                "数据来源与验证状态",
+                tr("文件"),
+                tr("样品"),
+                tr("测试时间"),
+                tr("测试结束时间"),
+                tr("测试耗时"),
+                tr("质量(g)"),
+                tr("点数"),
+                tr("多点BET状态"),
+                tr("多点BET面积(m2/g)"),
+                tr("多点BET Vm(cm3/g)"),
+                tr("多点BET C"),
+                tr("单点BET压力(P/P0)"),
+                tr("单点BET面积(m2/g)"),
+                tr("单点压力来源"),
+                tr("Langmuir状态"),
+                tr("Langmuir面积(m2/g)"),
+                tr("t-Plot状态"),
+                tr("t-Plot外比表面积(m2/g)"),
+                tr("t-Plot微孔体积(cm3/g)"),
+                pore_volume_header or tr("选区孔容量(cm3/g)"),
+                tr("数据来源与验证状态"),
             ]
         ],
         bold_first=True,
@@ -10865,22 +10915,22 @@ def export_results_xlsx(
             ]
         )
 
-    isotherm_sheet = workbook.create_sheet("实际等温线")
+    isotherm_sheet = workbook.create_sheet(tr("实际等温线"))
     isotherm_sheet.append(
         [
-            "文件",
-            "样品",
-            "点",
-            "阶段",
+            tr("文件"),
+            tr("样品"),
+            tr("点"),
+            tr("阶段"),
             "P/P0",
-            "压力(mmHg)",
-            "吸附量(cm3/g STP)",
-            "吸附量(mmol/g)",
+            tr("压力(mmHg)"),
+            tr("吸附量(cm3/g STP)"),
+            tr("吸附量(mmol/g)"),
             "Po(mmHg)",
             "Elapsed(s)",
             "Elapsed",
-            "JWGB点类型",
-            "数据来源与验证状态",
+            tr("JWGB点类型"),
+            tr("数据来源与验证状态"),
         ]
     )
     for result in results:
@@ -10894,7 +10944,7 @@ def export_results_xlsx(
                     result.file_name,
                     result.sample_name,
                     point.index,
-                    "吸附" if point.phase == "adsorption" else "脱附",
+                    tr("吸附") if point.phase == "adsorption" else tr("脱附"),
                     point.relative_pressure,
                     point.absolute_pressure_mmHg,
                     point.quantity_adsorbed_cm3_g_stp,
@@ -10907,8 +10957,8 @@ def export_results_xlsx(
                 ]
             )
 
-    target_sheet = workbook.create_sheet("目标压力表")
-    target_sheet.append(["文件", "样品", "行", "阶段", "起始P/P0", "终止P/P0", "步长P/P0", "偏移"])
+    target_sheet = workbook.create_sheet(tr("目标压力表"))
+    target_sheet.append([tr("文件"), tr("样品"), tr("行"), tr("阶段"), tr("起始P/P0"), tr("终止P/P0"), tr("步长P/P0"), tr("偏移")])
     for result in results:
         for item in result.target_pressure_table:
             target_sheet.append(
@@ -10916,7 +10966,7 @@ def export_results_xlsx(
                     result.file_name,
                     result.sample_name,
                     item.row,
-                    "吸附" if item.branch == "adsorption" else "脱附",
+                    tr("吸附") if item.branch == "adsorption" else tr("脱附"),
                     item.starting_pressure_p_po,
                     item.ending_pressure_p_po,
                     item.pressure_increment_p_po,
@@ -10926,11 +10976,11 @@ def export_results_xlsx(
 
     for name in ("BET", "Langmuir", "t-Plot"):
         sheet = workbook.create_sheet(name)
-        sheet.append(["文件", "样品", "字段", "值"])
+        sheet.append([tr("文件"), tr("样品"), tr("字段"), tr("值")])
         for result in results:
             fit = analysis_bundle(result)[name]
             if result.method_options.get('import_notice'):
-                sheet.append([result.file_name, result.sample_name, '数据来源与验证状态', result.method_options['import_notice']])
+                sheet.append([result.file_name, result.sample_name, tr('数据来源与验证状态'), result.method_options['import_notice']])
             for key, value in fit.__dict__.items():
                 if key == "rows":
                     continue
@@ -10938,14 +10988,14 @@ def export_results_xlsx(
             sheet.append([])
             if fit.rows:
                 headers = list(fit.rows[0].keys())
-                sheet.append(["文件", "样品", *headers])
+                sheet.append([tr("文件"), tr("样品"), *headers])
                 for row in fit.rows:
                     sheet.append([result.file_name, result.sample_name, *[row.get(header) for header in headers]])
 
     distribution_sheets = _write_pore_distribution_sheets(workbook, results, pore_distributions) if pore_distributions else []
 
-    conditions_sheet = workbook.create_sheet("样品条件")
-    conditions_sheet.append(["文件", "样品", "字段", "值"])
+    conditions_sheet = workbook.create_sheet(tr("样品条件"))
+    conditions_sheet.append([tr("文件"), tr("样品"), tr("字段"), tr("值")])
     for result in results:
         for name, value in condition_rows(result):
             conditions_sheet.append([result.file_name, result.sample_name, name, value])
@@ -11027,19 +11077,19 @@ def _write_pore_distribution_sheets(workbook, results, pore_distributions):
                     sheet = workbook.create_sheet(method)
                     sheets.append(sheet)
                 rows = [row for row in section.get("rows") or [] if isinstance(row, dict)]
-                keys = [(key, label) for key, label in _PORE_EXPORT_COLUMNS[method]
+                keys = [(key, tr(label)) for key, label in _PORE_EXPORT_COLUMNS[method]
                         if any(_finite_number(row.get(key)) for row in rows)]
                 width = max(len(keys), 2)
                 sheet.cell(1, column, f"{result.file_name} | {result.sample_name} | {section.get('branch', '')}")
                 note = section.get("error")
                 if note:
-                    note = f"计算失败：{note}"
+                    note = tr('计算失败：{0}', note)
                 elif not rows:
-                    note = "无可导出数据（数据点不足或该方法不适用）"
+                    note = tr("无可导出数据（数据点不足或该方法不适用）")
                 else:
                     note = str(section.get("settings") or "")
                     if result.method_options.get("import_notice"):
-                        note += f"; 数据来源：{result.method_options['import_notice']}"
+                        note += tr('; 数据来源：{0}', result.method_options['import_notice'])
                 sheet.cell(2, column, note)
                 for offset, (_key, label) in enumerate(keys):
                     sheet.cell(3, column + offset, label)
@@ -11096,6 +11146,7 @@ def math_isfinite(value: float) -> bool:
 def run(argv: list[str] | None = None) -> int:
     QtCore.QCoreApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps, True)
     app = QtWidgets.QApplication(argv or sys.argv)
+    i18n.set_language(QtCore.QSettings("UnifiedBET", "TriStarBetAppZh").value(LANGUAGE_SETTING_KEY, i18n.SOURCE_LANGUAGE))
     app.setApplicationName("UnifiedBET")
     app.setApplicationDisplayName("")
     app.setStyle("windowsvista")

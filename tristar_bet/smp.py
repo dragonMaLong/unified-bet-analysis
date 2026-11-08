@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tristar_bet.i18n import tr
+
 import csv
 import json
 import math
@@ -265,13 +267,20 @@ class TriStarSmpParser:
                 if isotherm and all(point.quantity_adsorbed_cm3_g_stp is not None for point in isotherm):
                     sample, free_space = frame_sample, frame_free_space
                     if row_frame_family == "ASAP 2020 Plus":
+                        # Some ASAP row-frame layouts put unrelated bytes at the
+                        # generic subset-302 bath-temperature offset. Do not
+                        # display those bytes as a temperature; None preserves
+                        # the existing BJH/HK fallback for these invalid values.
+                        bath = run_conditions.bath_temperature_K
+                        if bath is not None and not 50.0 < bath < 500.0:
+                            run_conditions = replace(run_conditions, bath_temperature_K=None)
                         isotherm, transpiration_note = self._apply_row_frame_transpiration(
                             isotherm, blocks, subsets, adsorptive_properties,
                         )
                 else:
                     isotherm = []
                     row_frame_failure = (
-                        "已识别数据点，但缺少可用的自由空间或样品质量，无法计算吸附量"
+                        tr("已识别数据点，但缺少可用的自由空间或样品质量，无法计算吸附量")
                         if self._scan_row_frames(blocks.get(303, b""), self._payload_size(subsets, 303))
                         else ""
                     )
@@ -410,11 +419,11 @@ class TriStarSmpParser:
             if free_space.vfree_factor_source == "asap_2425_free_space_mode_not_decoded":
                 # Points without quantities would load as an empty result.
                 isotherm = []
-                method_options["no_isotherm_reason"] = "该 ASAP 2425 文件的自由空间方式尚未解析，暂不计算吸附量"
+                method_options["no_isotherm_reason"] = tr("该 ASAP 2425 文件的自由空间方式尚未解析，暂不计算吸附量")
         if flex is not None:
             method_options.update(flex.get("options", {}))
             if not isotherm:
-                method_options["no_isotherm_reason"] = flex.get("reason", "3Flex 文件暂不能计算吸附量")
+                method_options["no_isotherm_reason"] = flex.get("reason") or tr("3Flex 文件暂不能计算吸附量")
         if gemini:
             method_options["instrument_manufacturer"] = "Micromeritics"
             method_options["instrument_model"] = "Gemini VII 2390"
@@ -446,7 +455,7 @@ class TriStarSmpParser:
                 if gemini_inputs["temperature"] is not None:
                     method_options["gemini_bath_temperature_K"] = gemini_inputs["temperature"]
             elif not isotherm:
-                method_options["no_isotherm_reason"] = "Gemini 文件的自由空间设置未能识别，暂不计算吸附量"
+                method_options["no_isotherm_reason"] = tr("Gemini 文件的自由空间设置未能识别，暂不计算吸附量")
         if legacy_v6_options:
             method_options.update(legacy_v6_options)
             # Point tag 103 marks the report's BET selection: on it the BET
@@ -1573,8 +1582,11 @@ class TriStarSmpParser:
     # Q_dosed (3 little-endian doubles) | u32 | padding. The same frames occur in
     # TriStar II Plus files, where the existing parser's offsets, pressures and
     # raw quantities match the frame values exactly (119 of 121 files).
-    _ROW_FRAME_PREFIX = re.compile(rb"\x05\x00\xe0\x00\x00\x00\x00\x00\x00\xf8\x7f\x04\x00")
-    _ROW_FRAME_STRIDE = 58
+    # ASAP 2020 Plus Version 2.00 rewrites a file it saves with tag 05 and 66-byte
+    # frames; the three doubles are unchanged (vendor example re-saved by 2.00:
+    # every P_abs, P/P0 and Q_dosed identical to the tag-04 original).
+    _ROW_FRAME_PREFIX = re.compile(rb"\x05\x00\xe0\x00\x00\x00\x00\x00\x00\xf8\x7f([\x04\x05])\x00")
+    _ROW_FRAME_STRIDES = {4: 58, 5: 66}
 
     def _row_frame_family(self, block: bytes) -> str:
         if len(block) <= 18 or block[18] != 13:
@@ -1590,8 +1602,10 @@ class TriStarSmpParser:
     def _scan_row_frames(self, block: bytes, payload_size: int) -> list[tuple[int, float, float, float]]:
         limit = min(len(block), payload_size + 18)
         frames: list[tuple[int, float, float, float]] = []
+        strides: dict[int, int] = {}
         for match in self._ROW_FRAME_PREFIX.finditer(block, 0, limit):
             rel = match.end()
+            strides[rel] = self._ROW_FRAME_STRIDES[block[match.start(1)]]
             if rel + 24 > limit:
                 break
             absolute, relative, quantity = struct.unpack_from("<ddd", block, rel)
@@ -1603,12 +1617,13 @@ class TriStarSmpParser:
             if not (0.5 < absolute / relative < 1200.0):
                 continue
             frames.append((rel, absolute, relative, quantity))
-        # Keep the longest run with the fixed stride; stray matches elsewhere
-        # in the block are not point rows.
+        # Keep the longest run with one tag and its fixed stride; stray matches
+        # elsewhere in the block are not point rows.
         best: list[tuple[int, float, float, float]] = []
         run: list[tuple[int, float, float, float]] = []
         for frame in frames:
-            if run and frame[0] - run[-1][0] != self._ROW_FRAME_STRIDE:
+            stride = strides[frame[0]]
+            if run and (strides[run[-1][0]] != stride or frame[0] - run[-1][0] != stride):
                 run = []
             run.append(frame)
             if len(run) > len(best):
@@ -2086,13 +2101,13 @@ class TriStarSmpParser:
         block = blocks.get(303, b"")
         frames = self._flex_frames(block)
         if not frames:
-            return {"reason": "3Flex 文件中未找到数据点"}
+            return {"reason": tr("3Flex 文件中未找到数据点")}
         tube = next((item.rel_offset for item in self._read_mic_strings(block) if item.text == "Sample Tube"), None)
         if tube is None or tube < 90 or tube + 197 > len(block):
-            return {"reason": "3Flex 文件中未找到自由空间记录"}
+            return {"reason": tr("3Flex 文件中未找到自由空间记录")}
         mode = block[tube + 196]
         if mode not in (0, 1, 4):
-            return {"reason": f"3Flex 文件的自由空间方式（{mode}）尚未解析，暂不计算吸附量"}
+            return {"reason": tr('3Flex 文件的自由空间方式（{0}）尚未解析，暂不计算吸附量', mode)}
         ambient = _read_double(block, tube - 57)
         if ambient is None or not 250.0 <= ambient <= 330.0:
             ambient = ASSUMED_AMBIENT_TEMPERATURE_K
@@ -2105,12 +2120,12 @@ class TriStarSmpParser:
             recorded = self._with_row_frame_sample_mass(sample, sample_block)
             mass, density = recorded.sample_mass_g, recorded.sample_density_g_cm3
         if mass is None or not 1e-6 < mass < 100.0:
-            return {"reason": "3Flex 文件中未找到样品质量"}
+            return {"reason": tr("3Flex 文件中未找到样品质量")}
         adsorptive = props.mnemonic if props else ""
         temperature, temperature_source = self._flex_analysis_temperature(
             blocks.get(302, b""), block, frames, tube, adsorptive)
         if temperature is None:
-            return {"reason": f"3Flex 文件的分析温度未能确定（{temperature_source}）"}
+            return {"reason": tr('3Flex 文件的分析温度未能确定（{0}）', temperature_source)}
         if mode == 4:
             # "Calculated" free space: the empty-tube cold / warm free space of
             # the tube definition (subset 1021, before the 8163.688 sentinel)
@@ -2122,16 +2137,16 @@ class TriStarSmpParser:
             empty_cold = _read_double(tube_block, len(tube_block) - 18) if len(tube_block) >= 18 else None
             if (empty_cold is None or empty_warm is None or not 0.0 < empty_warm < empty_cold < 300.0
                     or not density or not 0.0 < density < 30.0):
-                return {"reason": "3Flex 文件按计算自由空间测试，但缺少样品管体积或样品密度"}
+                return {"reason": tr("3Flex 文件按计算自由空间测试，但缺少样品管体积或样品密度")}
             volume = mass / density
             cold = empty_cold - volume * 273.15 / temperature
             warm = empty_warm - volume * 273.15 / ambient
         else:
             cold, warm = _read_double(block, tube - 24), _read_double(block, tube - 16)
         if cold is None or warm is None or not 0.0 < warm <= cold < 300.0:
-            return {"reason": "3Flex 文件的自由空间数值无效"}
+            return {"reason": tr("3Flex 文件的自由空间数值无效")}
         if real_gas_compressibility(adsorptive, 1.0, temperature) is None:
-            return {"reason": f"暂不支持 {adsorptive or '该吸附质'} 的真实气体状态方程，暂不计算吸附量"}
+            return {"reason": tr('暂不支持 {0} 的真实气体状态方程，暂不计算吸附量', adsorptive or tr('该吸附质'))}
         # Immersed (cold) part; near ambient the whole free space is at the
         # analysis temperature (n-butane / n-pentane examples).
         vbath = min((cold - warm) / (1.0 - temperature / ambient), cold) if temperature < ambient else cold
@@ -2146,7 +2161,7 @@ class TriStarSmpParser:
         if saturation is None:
             factor = props.density_conversion_factor if props and props.density_conversion_factor else None
             if factor is None or not 0.0 < factor < 0.05:
-                return {"reason": "3Flex 文件的吸附相修正系数无效"}
+                return {"reason": tr("3Flex 文件的吸附相修正系数无效")}
             k_source = "stored density conversion factor"
         elif saturation[0] > manifold_max and abs(mean_p0 - manifold_max) < 1e-6 * manifold_max:
             factor = 0.0
@@ -2164,11 +2179,11 @@ class TriStarSmpParser:
         for idx, ((rel, absolute, relative, dosed), phase) in enumerate(rows, start=1):
             z = real_gas_tabulated_compressibility(adsorptive, absolute, temperature)
             if z is None or not math.isfinite(z) or z <= 0.0:
-                return {"reason": f"3Flex 第 {idx} 个数据点的真实气体压缩因子无效，暂不计算吸附量"}
+                return {"reason": tr('3Flex 第 {0} 个数据点的真实气体压缩因子无效，暂不计算吸附量', idx)}
             x = absolute / 760.0
             denominator = 1.0 - x * k / z
             if not math.isfinite(denominator) or denominator <= 1e-12:
-                return {"reason": f"3Flex 第 {idx} 个数据点的吸附相自由空间修正无效，暂不计算吸附量"}
+                return {"reason": tr('3Flex 第 {0} 个数据点的吸附相自由空间修正无效，暂不计算吸附量', idx)}
             quantity = (dosed - x * (cold - vbath) - x * vbath / z) / denominator / mass
             points.append(IsothermPoint(
                 index=idx, phase=phase, record_rel_offset=rel, absolute_pressure_mmHg=absolute,
@@ -2488,20 +2503,20 @@ class TriStarSmpParser:
                 item.text for subset_id in (100, 302, 304) for item in self._read_mic_strings(blocks.get(subset_id, b"")) if item.text
             ).lower()
             for keys, label in (
-                (("mercury", "penetrometer", "autopore"), "压汞"),
-                (("chemisorption", "chemi", "tpr", "tpd", "pulse"), "化学吸附"),
-                (("pycnometer", "accupyc"), "真密度"),
-                (("breakthrough",), "穿透曲线"),
-                (("sedigraph", "particle"), "粒度"),
+                (("mercury", "penetrometer", "autopore"), tr("压汞")),
+                (("chemisorption", "chemi", "tpr", "tpd", "pulse"), tr("化学吸附")),
+                (("pycnometer", "accupyc"), tr("真密度")),
+                (("breakthrough",), tr("穿透曲线")),
+                (("sedigraph", "particle"), tr("粒度")),
             ):
                 if any(key in texts for key in keys):
-                    return f"该文件似乎是{label}数据，不含物理吸附等温线"
-            return "文件中没有物理吸附分析数据块（SUBSET303），可能不是物理吸附文件"
+                    return tr('该文件似乎是{0}数据，不含物理吸附等温线', label)
+            return tr("文件中没有物理吸附分析数据块（SUBSET303），可能不是物理吸附文件")
         record_version = blocks[303][18] if len(blocks[303]) > 18 else None
         if record_version is not None and record_version < 12:
-            return f"物理吸附数据块为旧版格式（记录版本 {record_version}），当前尚不支持"
+            return tr('物理吸附数据块为旧版格式（记录版本 {0}），当前尚不支持', record_version)
         if not self._parse_log_messages(blocks.get(705, b"")):
-            return "文件中没有分析记录，可能是尚未测试的样品/模板文件"
+            return tr("文件中没有分析记录，可能是尚未测试的样品/模板文件")
         return ""
 
     def _parse_3flex_manual_isotherm(

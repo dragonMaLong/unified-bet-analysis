@@ -18,6 +18,18 @@ INSTRUMENTS = {"tristar_ii_3020", "tristar_ii_plus", "asap_2460", "asap_2020_plu
                "asap_2010", "3flex", "micromeritics_other", "belsorp", "quantachrome", "jwgb", "bsd",
                "excel", "other"}
 MAX_SESSION_SECONDS = 30 * 86400
+# Applications sharing this server.  A batch without ``app_id`` comes from BET
+# (every BET client predates the field); MIP (mercury_smp) always sends it.
+APP_IDS = ("bet", "mercury_smp")
+APP_LABELS = {"bet": "BET", "mercury_smp": "MIP"}
+MIP_FEATURES = {"pore_distribution", "mayer_stowe", "pore_structure", "sample_info", "selected_pore_volume"}
+MIP_INSTRUMENTS = {"autopore_v", "autopore_iv", "autopore_other", "micromeritics_other", "other"}
+_RULES = {
+    "bet": {"extensions": EXTENSIONS, "parsers": PARSERS, "features": FEATURES,
+            "instruments": INSTRUMENTS, "export_formats": {"xlsx"}},
+    "mercury_smp": {"extensions": {"smp", "other"}, "parsers": {"micromeritics", "unknown"},
+                    "features": MIP_FEATURES, "instruments": MIP_INSTRUMENTS, "export_formats": {"xlsx", "pdf"}},
+}
 
 
 def _keys(value, expected, optional=()):
@@ -61,8 +73,9 @@ def _timestamp(value):
     return value
 
 
-def validate_event(event: dict) -> dict:
+def validate_event(event: dict, app_id: str = "bet") -> dict:
     """Return a fresh safe event, or reject the whole event without echoing values."""
+    rules = _RULES[_choice(app_id, set(APP_IDS))]
     _keys(event, ("event_id", "occurred_at", "name", "data"))
     _uuid(event["event_id"])
     _timestamp(event["occurred_at"])
@@ -91,20 +104,20 @@ def validate_event(event: dict) -> dict:
             _integer(data["active_s"], 0, data["duration_s"])
     elif name == "feature_view":
         _keys(data, ("feature", "surface"))
-        _choice(data["feature"], FEATURES)
+        _choice(data["feature"], rules["features"])
         _choice(data["surface"], {"plot", "results"})
     else:
         common = ("status", "duration_ms", "error_code")
         if name == "import_file":
             _keys(data, (*common, "extension", "parser"), ("instrument",))
-            _choice(data["extension"], EXTENSIONS)
-            _choice(data["parser"], PARSERS)
+            _choice(data["extension"], rules["extensions"])
+            _choice(data["parser"], rules["parsers"])
             if "instrument" in data:
-                _choice(data["instrument"], INSTRUMENTS)
+                _choice(data["instrument"], rules["instruments"])
             _choice(data["error_code"], {"none", "io_error", "parse_error", "no_points", "unexpected_error"})
         else:
             _keys(data, (*common, "format"))
-            _choice(data["format"], {"xlsx"})
+            _choice(data["format"], rules["export_formats"])
             _choice(data["error_code"], {"none", "write_error", "unexpected_error"})
         _choice(data["status"], {"success", "failure"})
         _integer(data["duration_ms"], 0, 86400000)
@@ -114,7 +127,8 @@ def validate_event(event: dict) -> dict:
 
 
 def validate_batch(batch: dict) -> dict:
-    _keys(batch, ("schema_version", "install_id", "session_id", "app_version", "events"))
+    _keys(batch, ("schema_version", "install_id", "session_id", "app_version", "events"), ("app_id",))
+    app_id = _choice(batch.get("app_id", "bet"), set(APP_IDS))
     if type(batch["schema_version"]) is not int or batch["schema_version"] != SCHEMA_VERSION:
         raise ValueError("Unsupported schema")
     _uuid(batch["install_id"])
@@ -125,7 +139,7 @@ def validate_batch(batch: dict) -> dict:
     events = batch["events"]
     if type(events) is not list or not 1 <= len(events) <= MAX_BATCH_EVENTS:
         raise ValueError("Invalid batch length")
-    safe_events = [validate_event(event) for event in events]
+    safe_events = [validate_event(event, app_id) for event in events]
     if len({event["event_id"] for event in safe_events}) != len(safe_events):
         raise ValueError("Duplicate event in batch")
     return {**batch, "events": safe_events}

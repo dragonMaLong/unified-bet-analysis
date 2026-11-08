@@ -10,6 +10,8 @@ uptake. Its thresholds are exploratory, not calibrated detection limits.
 """
 from __future__ import annotations
 
+from tristar_bet.i18n import tr
+
 import math
 
 import numpy as np
@@ -95,11 +97,7 @@ def diagnostic_notice(diagnostic):
     """Describe a flagged run for the import status row, else return ''."""
     if not diagnostic or not diagnostic["compatible_with_quadratic_balance"]:
         return ""
-    notice = ("累计气量可由压力二次模型拟合"
-              f"（拟合残差 {diagnostic['fit_rms_cm3_g']:.3f} cm³/g）；"
-              "吸附量与自由空间项可能混叠，不能据此判定没有吸附。")
+    notice = (tr('累计气量可由压力二次模型拟合（拟合残差 {0:.3f} cm³/g）；吸附量与自由空间项可能混叠，不能据此判定没有吸附。', diagnostic['fit_rms_cm3_g']))
     if diagnostic["apparent_q_differs_from_stored"]:
-        notice += (f"文件 Q={diagnostic['stored_q']:.6f}，拟合的表观系数为 "
-                   f"{diagnostic['apparent_q']:.6f}；该系数可能包含吸附贡献，"
-                   "不能据此替换文件 Q 或认定文件 Q 错误。")
+        notice += (tr('文件 Q={0:.6f}，拟合的表观系数为 {1:.6f}；该系数可能包含吸附贡献，不能据此替换文件 Q 或认定文件 Q 错误。', diagnostic['stored_q'], diagnostic['apparent_q']))
     return notice

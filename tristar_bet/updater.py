@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tristar_bet.i18n import tr
+
 import hashlib
 import os
 import re
@@ -23,7 +25,7 @@ class UpdateDownloadError(RuntimeError):
 def download_update(info: UpdateInfo, *, progress_callback: ProgressCallback | None = None) -> Path:
     url = (info.download_url or "").strip()
     if not url:
-        raise UpdateDownloadError("更新信息中没有可下载的安装包链接。")
+        raise UpdateDownloadError(tr("更新信息中没有可下载的安装包链接。"))
 
     download_dir = _download_dir()
     download_dir.mkdir(parents=True, exist_ok=True)
@@ -64,23 +66,23 @@ def download_update(info: UpdateInfo, *, progress_callback: ProgressCallback | N
                         progress_callback(downloaded, total)
     except urllib.error.HTTPError as exc:
         _remove_quietly(partial)
-        raise UpdateDownloadError(f"下载安装包失败：服务器返回 HTTP {exc.code}。") from exc
+        raise UpdateDownloadError(tr('下载安装包失败：服务器返回 HTTP {0}。', exc.code)) from exc
     except urllib.error.URLError as exc:
         _remove_quietly(partial)
         reason = getattr(exc, "reason", exc)
-        raise UpdateDownloadError(f"下载安装包失败：无法连接更新源：{reason}") from exc
+        raise UpdateDownloadError(tr('下载安装包失败：无法连接更新源：{0}', reason)) from exc
     except TimeoutError as exc:
         _remove_quietly(partial)
-        raise UpdateDownloadError("下载安装包失败：连接超时。") from exc
+        raise UpdateDownloadError(tr("下载安装包失败：连接超时。")) from exc
     except OSError as exc:
         _remove_quietly(partial)
-        raise UpdateDownloadError(f"下载安装包失败：{exc}") from exc
+        raise UpdateDownloadError(tr('下载安装包失败：{0}', exc)) from exc
 
     actual_sha256 = digest.hexdigest()
     if expected_sha256 and actual_sha256 != expected_sha256:
         _remove_quietly(partial)
         raise UpdateDownloadError(
-            "安装包校验失败：下载文件的 SHA256 与更新清单不一致。"
+            tr("安装包校验失败：下载文件的 SHA256 与更新清单不一致。")
         )
 
     if target.exists():
@@ -92,7 +94,7 @@ def download_update(info: UpdateInfo, *, progress_callback: ProgressCallback | N
 def launch_update_and_exit(downloaded_exe: Path) -> None:
     exe_path = Path(downloaded_exe).resolve()
     if not exe_path.exists():
-        raise UpdateDownloadError(f"找不到已下载的安装包：{exe_path}")
+        raise UpdateDownloadError(tr('找不到已下载的安装包：{0}', exe_path))
 
     if getattr(sys, "frozen", False):
         _launch_replacement_script(exe_path)
@@ -192,6 +194,8 @@ def _replacement_script_text(
     log_path: Path,
     current_pid: int,
 ) -> str:
+    # Translate only message data; never send executable PowerShell to a catalog.
+    # Single-quoted literals also keep quotes and $() in paths/messages inert.
     return f"""$ErrorActionPreference = 'Stop'
 $OldPath = {_ps_single_quoted(str(current_exe))}
 $NewPath = {_ps_single_quoted(str(downloaded_exe))}
@@ -200,6 +204,10 @@ $LogPath = {_ps_single_quoted(str(log_path))}
 $OldProcessId = {int(current_pid)}
 $TargetDir = Split-Path -Parent $OldPath
 $NewDir = Split-Path -Parent $NewPath
+$SuccessMessage = {_ps_single_quoted(tr("更新成功！立即重启软件"))}
+$UpdateTitle = {_ps_single_quoted(tr("软件更新"))}
+$FailureMessage = {_ps_single_quoted(tr("自动更新失败，请手动运行已下载的更新文件："))}
+$FailureTitle = {_ps_single_quoted(tr("软件更新失败"))}
 
 function Write-UpdateLog($Message) {{
     try {{
@@ -291,7 +299,7 @@ for ($i = 0; $i -lt 120; $i++) {{
         Try-UnblockFile $OldPath
         Write-UpdateLog "replacement succeeded"
         try {{
-            Show-UpdateMessage "更新成功！立即重启软件" "软件更新" "Information"
+            Show-UpdateMessage $SuccessMessage $UpdateTitle "Information"
             Write-UpdateLog "success restart message confirmed"
             Start-UpdatedExecutable $OldPath $TargetDir
             Write-UpdateLog "replacement launch started after confirmation"
@@ -316,7 +324,7 @@ for ($i = 0; $i -lt 120; $i++) {{
 Write-UpdateLog "replacement failed; asking user to run downloaded exe manually"
 Try-UnblockFile $NewPath
 try {{
-    Show-UpdateMessage "自动更新失败，请手动运行已下载的更新文件：`n$NewPath" "软件更新失败" "Warning"
+    Show-UpdateMessage ($FailureMessage + "`n" + $NewPath) $FailureTitle "Warning"
     Write-UpdateLog "fallback message shown"
     try {{
         Start-Process -FilePath explorer.exe -ArgumentList "/select,`"$NewPath`""

@@ -6,6 +6,8 @@ which the application already bundles.
 """
 from __future__ import annotations
 
+from tristar_bet.i18n import tr
+
 from dataclasses import dataclass, field
 from datetime import datetime
 import html
@@ -133,7 +135,7 @@ def _table_chunks(table: Table, padding: int = 8) -> list[str]:
     chunks = []
     for start in range(0, max(len(table.columns), 1), SAMPLES_PER_TABLE):
         chunk = table.columns[start:start + SAMPLES_PER_TABLE]
-        title = table.title if start == 0 else f"{table.title}（续）"
+        title = table.title if start == 0 else tr('{0}（续）', table.title)
         parts = [f"<h3>{html.escape(title)}</h3>"]
         if table.note and start == 0:
             parts.append(f"<p class='note'>{html.escape(table.note)}</p>")
@@ -143,7 +145,7 @@ def _table_chunks(table: Table, padding: int = 8) -> list[str]:
             cells = "".join(f"<td>{html.escape(str(values[index]) if index < len(values) else '')}</td>"
                             for _label, values in chunk)
             rows.append(f"<tr><td class='key'>{html.escape(row_label)}</td>{cells}</tr>")
-        parts.append(f"<table cellspacing='0' cellpadding='{padding}'><tr><th class='key'>项目</th>{head}</tr>{''.join(rows)}</table>")
+        parts.append(tr("<table cellspacing='0' cellpadding='{0}'><tr><th class='key'>项目</th>{1}</tr>{2}</table>", padding, head, ''.join(rows)))
         chunks.append("".join(parts))
     return chunks
 
@@ -297,7 +299,7 @@ def write_pdf(report: Report, path: str | Path) -> int:
 
 
 def report_subtitle(sample_count: int, version: str) -> str:
-    return f"生成时间：{datetime.now():%Y-%m-%d %H:%M}    样品数：{sample_count}    软件版本：{version}"
+    return tr('生成时间：{0:%Y-%m-%d %H:%M}    样品数：{1}    软件版本：{2}', datetime.now(), sample_count, version)
 
 
 def fit_line(slope, intercept, xs) -> tuple[list[float], list[float]]:

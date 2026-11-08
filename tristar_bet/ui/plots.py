@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tristar_bet.i18n import tr
+
 import math
 from pathlib import Path
 from typing import Callable
@@ -129,7 +131,7 @@ class _LegendToggleButton(QtWidgets.QToolButton):
         self.setAutoRaise(True)
         self.setFixedSize(24, 22)
         self.setCursor(QtCore.Qt.PointingHandCursor)
-        self.setToolTip("隐藏图例")
+        self.setToolTip(tr("隐藏图例"))
         self._press_global_pos: QtCore.QPoint | None = None
         self._press_button_pos: QtCore.QPoint | None = None
         self._dragging_button = False
@@ -488,7 +490,7 @@ def _apply_plot_legend_visibility(plot: pg.PlotWidget) -> None:
     if button is not None:
         button.blockSignals(True)
         button.setChecked(bool(visible))
-        button.setToolTip("隐藏图例" if visible else "显示图例")
+        button.setToolTip(tr("隐藏图例") if visible else tr("显示图例"))
         button.blockSignals(False)
         _position_legend_toggle_button(plot)
         button.update()
@@ -538,7 +540,7 @@ def bjh_display_axis_label(metrics) -> str:
     normalized = normalize_bjh_display_metrics(metrics)
     if len(normalized) == 1:
         return BJH_DISPLAY_METRIC_AXIS_LABELS.get(normalized[0], BJH_DISPLAY_METRIC_AXIS_LABELS[BJH_DIFFERENTIAL_LOG])
-    return "BJH 显示值（见图例单位）"
+    return tr("BJH 显示值（见图例单位）")
 
 
 def hk_display_metric_label(metric: str) -> str:
@@ -1452,9 +1454,9 @@ def plot_isotherm_multi(
     plot.clear()
     notice = (getattr(results[active_index], "method_options", {}).get("quantity_status") == "unavailable_native_pressure_only"
               if 0 <= active_index < len(results) else None)
-    plot.setTitle("吸附量尚未还原：请导入原厂 Excel / RAW" if notice else "吸附/脱附等温线")
-    plot.setLabel("left", "吸附量 (cm3/g STP)")
-    plot.setLabel("bottom", "相对压力 (P/P0)")
+    plot.setTitle(tr("吸附量尚未还原：请导入原厂 Excel / RAW") if notice else tr("吸附/脱附等温线"))
+    plot.setLabel("left", tr("吸附量 (cm3/g STP)"))
+    plot.setLabel("bottom", tr("相对压力 (P/P0)"))
     plot.setLogMode(x=bool(x_log), y=False)
     all_x = []
     all_y = []
@@ -1608,13 +1610,13 @@ def plot_bet(
     analysis = bet_analysis(result, data_min, data_max)
 
     plot.clear()
-    plot.setTitle("BET 拟合")
+    plot.setTitle(tr("BET 拟合"))
     plot.setLabel("left", "P/[V(P0-P)]")
-    plot.setLabel("bottom", "相对压力 (P/P0)")
+    plot.setLabel("bottom", tr("相对压力 (P/P0)"))
     plot.setLogMode(x=False, y=False)
 
     if not analysis.rows:
-        _plot_message(plot, f"BET {_range_text(analysis, '自动选点区间')} 内有效点不足")
+        _plot_message(plot, tr('BET {0} 内有效点不足', (_range_text(analysis, tr('自动选点区间')))))
         return np.array([])
 
     x = np.asarray([row["relative_pressure"] for row in analysis.rows], dtype=float)
@@ -1624,7 +1626,7 @@ def plot_bet(
         pen=None, symbol="o", symbolSize=ACTIVE_SYMBOL_SIZE,
         symbolPen=pg.mkPen("#2563eb", width=ACTIVE_SYMBOL_PEN_WIDTH),
         symbolBrush=pg.mkBrush("#2563eb"),
-        name="BET 点",
+        name=tr("BET 点"),
     )
     _fit_range(plot, x, y)
     return x
@@ -1646,9 +1648,9 @@ def plot_bet_multi(
 
     plot.clear()
     _clear_manual_legend_entries(plot)
-    plot.setTitle("BET 拟合")
+    plot.setTitle(tr("BET 拟合"))
     plot.setLabel("left", "P/[V(P0-P)]")
-    plot.setLabel("bottom", "相对压力 (P/P0)")
+    plot.setLabel("bottom", tr("相对压力 (P/P0)"))
     plot.setLogMode(x=False, y=False)
 
     x_by_index: dict[int, np.ndarray] = {}
@@ -1686,7 +1688,7 @@ def plot_bet_multi(
     if all_x:
         _fit_range(plot, all_x, all_y)
     else:
-        _plot_message(plot, f"BET 当前区间 {_plain_number(data_min)}-{_plain_number(data_max)} 内有效点不足")
+        _plot_message(plot, tr('BET 当前区间 {0}-{1} 内有效点不足', _plain_number(data_min), _plain_number(data_max)))
     return x_by_index
 
 
@@ -1780,7 +1782,7 @@ def replace_bet_fit_line(
     x_end = line_x_max if line_x_max is not None else fit_p_max
     line_x = np.linspace(x_start, x_end, 120)
     line_y = analysis.slope * line_x + analysis.intercept
-    item = plot.plot(line_x, line_y, pen=pg.mkPen(color, width=width), name=name)
+    item = plot.plot(line_x, line_y, pen=pg.mkPen(color, width=width), name=tr(name) if name else name)
     return item, analysis
 
 
@@ -1796,13 +1798,13 @@ def plot_langmuir_points(
     analysis = langmuir_analysis(result, data_min, data_max)
 
     plot.clear()
-    plot.setTitle("Langmuir 拟合")
+    plot.setTitle(tr("Langmuir 拟合"))
     plot.setLabel("left", "(P/P0) / V")
-    plot.setLabel("bottom", "相对压力 (P/P0)")
+    plot.setLabel("bottom", tr("相对压力 (P/P0)"))
     plot.setLogMode(x=False, y=False)
 
     if not analysis.rows:
-        _plot_message(plot, f"Langmuir {_range_text(analysis, '默认区间 0.05-0.30')} 内有效点不足")
+        _plot_message(plot, tr('Langmuir {0} 内有效点不足', (_range_text(analysis, tr('默认区间 0.05-0.30')))))
         return np.array([])
 
     x = np.asarray([row["relative_pressure"] for row in analysis.rows], dtype=float)
@@ -1812,7 +1814,7 @@ def plot_langmuir_points(
         pen=None, symbol="o", symbolSize=ACTIVE_SYMBOL_SIZE,
         symbolPen=pg.mkPen("#2563eb", width=ACTIVE_SYMBOL_PEN_WIDTH),
         symbolBrush=pg.mkBrush("#2563eb"),
-        name="Langmuir 点",
+        name=tr("Langmuir 点"),
     )
     _fit_range(plot, x, y)
     return x
@@ -1834,9 +1836,9 @@ def plot_langmuir_points_multi(
 
     plot.clear()
     _clear_manual_legend_entries(plot)
-    plot.setTitle("Langmuir 拟合")
+    plot.setTitle(tr("Langmuir 拟合"))
     plot.setLabel("left", "(P/P0) / V")
-    plot.setLabel("bottom", "相对压力 (P/P0)")
+    plot.setLabel("bottom", tr("相对压力 (P/P0)"))
     plot.setLogMode(x=False, y=False)
 
     x_by_index: dict[int, np.ndarray] = {}
@@ -1874,7 +1876,7 @@ def plot_langmuir_points_multi(
     if all_x:
         _fit_range(plot, all_x, all_y)
     else:
-        _plot_message(plot, f"Langmuir 当前区间 {_plain_number(data_min)}-{_plain_number(data_max)} 内有效点不足")
+        _plot_message(plot, tr('Langmuir 当前区间 {0}-{1} 内有效点不足', _plain_number(data_min), _plain_number(data_max)))
     return x_by_index
 
 
@@ -1909,7 +1911,7 @@ def replace_langmuir_fit_line(
     x_end = line_x_max if line_x_max is not None else fit_p_max
     line_x = np.linspace(x_start, x_end, 120)
     line_y = analysis.slope * line_x + analysis.intercept
-    item = plot.plot(line_x, line_y, pen=pg.mkPen(color, width=width), name=name)
+    item = plot.plot(line_x, line_y, pen=pg.mkPen(color, width=width), name=tr(name) if name else name)
     return item, analysis
 
 
@@ -1923,9 +1925,9 @@ def _t_plot_y_values(rows) -> np.ndarray:
 def _t_plot_y_axis_label(rows) -> str:
     units = {str(row.get("t_plot_y_unit", "cm3/g liquid")) for row in rows}
     if units == {"cm3/g STP"}:
-        return "吸附量 (cm3/g STP)"
+        return tr("吸附量 (cm3/g STP)")
     if units == {"cm3/g liquid"}:
-        return "液体体积 (cm3/g)"
+        return tr("液体体积 (cm3/g)")
     return "t-Plot Y"
 
 
@@ -1945,11 +1947,11 @@ def plot_t_plot_points(
     plot.clear()
     plot.setTitle("t-Plot")
     plot.setLabel("left", _t_plot_y_axis_label(analysis.rows))
-    plot.setLabel("bottom", "统计膜厚 t (nm)")
+    plot.setLabel("bottom", tr("统计膜厚 t (nm)"))
     plot.setLogMode(x=False, y=False)
 
     if not analysis.rows:
-        _plot_message(plot, f"t-Plot {_range_text(analysis, '默认区间 0.20-0.50')} 内有效点不足")
+        _plot_message(plot, tr('t-Plot {0} 内有效点不足', (_range_text(analysis, tr('默认区间 0.20-0.50')))))
         return np.array([])
 
     x = np.asarray([row["thickness_nm"] for row in analysis.rows], dtype=float)
@@ -1959,7 +1961,7 @@ def plot_t_plot_points(
         pen=None, symbol="o", symbolSize=ACTIVE_SYMBOL_SIZE,
         symbolPen=pg.mkPen("#2563eb", width=ACTIVE_SYMBOL_PEN_WIDTH),
         symbolBrush=pg.mkBrush("#2563eb"),
-        name="t-Plot 点",
+        name=tr("t-Plot 点"),
     )
     _fit_range(plot, x, y)
     return x
@@ -1985,7 +1987,7 @@ def plot_t_plot_points_multi(
     _clear_manual_legend_entries(plot)
     plot.setTitle("t-Plot")
     plot.setLabel("left", "t-Plot Y")
-    plot.setLabel("bottom", "统计膜厚 t (nm)")
+    plot.setLabel("bottom", tr("统计膜厚 t (nm)"))
     plot.setLogMode(x=False, y=False)
 
     x_by_index: dict[int, np.ndarray] = {}
@@ -2032,7 +2034,7 @@ def plot_t_plot_points_multi(
         plot.setLabel("left", _t_plot_y_axis_label(plotted_rows))
         _fit_range(plot, all_x, all_y)
     else:
-        _plot_message(plot, f"t-Plot 当前区间 {_plain_number(data_min)}-{_plain_number(data_max)} 内有效点不足")
+        _plot_message(plot, tr('t-Plot 当前区间 {0}-{1} 内有效点不足', _plain_number(data_min), _plain_number(data_max)))
     return x_by_index
 
 
@@ -2130,7 +2132,7 @@ def replace_t_plot_fit_line(
     x_end = line_x_max if line_x_max is not None else fit_t_max
     line_x = np.linspace(x_start, x_end, 120)
     line_y = analysis.slope * line_x + analysis.intercept
-    item = plot.plot(line_x, line_y, pen=pg.mkPen(color, width=width), name=name)
+    item = plot.plot(line_x, line_y, pen=pg.mkPen(color, width=width), name=tr(name) if name else name)
     return item, analysis
 
 
@@ -2141,12 +2143,12 @@ def plot_langmuir(plot: pg.PlotWidget, result, p_min: float | None = None, p_max
         else langmuir_analysis(result, p_min, p_max)
     )
     plot.clear()
-    plot.setTitle("Langmuir 拟合")
+    plot.setTitle(tr("Langmuir 拟合"))
     plot.setLabel("left", "(P/P0) / V")
-    plot.setLabel("bottom", "相对压力 (P/P0)")
+    plot.setLabel("bottom", tr("相对压力 (P/P0)"))
     plot.setLogMode(x=False, y=False)
     if not analysis.rows:
-        _plot_message(plot, f"Langmuir {_range_text(analysis, '默认区间 0.05-0.30')} 内有效点不足")
+        _plot_message(plot, tr('Langmuir {0} 内有效点不足', (_range_text(analysis, tr('默认区间 0.05-0.30')))))
         return
     x = np.asarray([row["relative_pressure"] for row in analysis.rows], dtype=float)
     y = np.asarray([row["langmuir_y"] for row in analysis.rows], dtype=float)
@@ -2158,7 +2160,7 @@ def plot_langmuir(plot: pg.PlotWidget, result, p_min: float | None = None, p_max
         symbolSize=ACTIVE_SYMBOL_SIZE,
         symbolPen=pg.mkPen("#2563eb", width=ACTIVE_SYMBOL_PEN_WIDTH),
         symbolBrush=pg.mkBrush("#2563eb"),
-        name="Langmuir 点",
+        name=tr("Langmuir 点"),
     )
     _plot_fit_line(plot, analysis, x, "#2563eb")
     _fit_range(plot, x, y)
@@ -2169,10 +2171,10 @@ def plot_t_plot(plot: pg.PlotWidget, result, p_min: float | None = None, p_max: 
     plot.clear()
     plot.setTitle("t-Plot")
     plot.setLabel("left", _t_plot_y_axis_label(analysis.rows))
-    plot.setLabel("bottom", "统计膜厚 t (nm)")
+    plot.setLabel("bottom", tr("统计膜厚 t (nm)"))
     plot.setLogMode(x=False, y=False)
     if not analysis.rows:
-        _plot_message(plot, f"t-Plot {_range_text(analysis, '默认区间 0.20-0.50')} 内有效点不足")
+        _plot_message(plot, tr('t-Plot {0} 内有效点不足', (_range_text(analysis, tr('默认区间 0.20-0.50')))))
         return
     x = np.asarray([row["thickness_nm"] for row in analysis.rows], dtype=float)
     y = _t_plot_y_values(analysis.rows)
@@ -2184,7 +2186,7 @@ def plot_t_plot(plot: pg.PlotWidget, result, p_min: float | None = None, p_max: 
         symbolSize=ACTIVE_SYMBOL_SIZE,
         symbolPen=pg.mkPen("#2563eb", width=ACTIVE_SYMBOL_PEN_WIDTH),
         symbolBrush=pg.mkBrush("#2563eb"),
-        name="t-Plot 点",
+        name=tr("t-Plot 点"),
     )
     _plot_fit_line(plot, analysis, x, "#2563eb")
     _fit_range(plot, x, y)
@@ -2212,16 +2214,16 @@ def plot_bjh_distribution_multi(
     metrics = normalize_bjh_display_metrics(display_metrics if display_metrics is not None else [differential_mode])
     plot.clear()
     _clear_manual_legend_entries(plot)
-    plot.setTitle("BJH 孔径分布")
+    plot.setTitle(tr("BJH 孔径分布"))
     plot.setLabel("left", bjh_display_axis_label(metrics))
-    plot.setLabel("bottom", "孔径 (nm)")
+    plot.setLabel("bottom", tr("孔径 (nm)"))
     plot.setLogMode(x=True, y=False)
     all_x = []
     all_y = []
     legend_entries = []
     rows_by_key: dict[tuple[int, str], list[dict[str, float]]] = {}
     if not bjh_settings_by_index and not show_adsorption and not show_desorption:
-        _plot_message(plot, "请选择 BJH 吸附或 BJH 脱附")
+        _plot_message(plot, tr("请选择 BJH 吸附或 BJH 脱附"))
         return rows_by_key
 
     for index in _analysis_draw_order(results, visible, active_index):
@@ -2326,7 +2328,7 @@ def plot_bjh_distribution_multi(
     if all_x:
         _fit_range(plot, all_x, all_y, x_log=True)
     else:
-        _plot_message(plot, "当前样品没有足够的 BJH 孔径分布点")
+        _plot_message(plot, tr("当前样品没有足够的 BJH 孔径分布点"))
     return rows_by_key
 
 
@@ -2349,16 +2351,16 @@ def plot_dh_distribution_multi(
     metrics = normalize_bjh_display_metrics(display_metrics)
     plot.clear()
     _clear_manual_legend_entries(plot)
-    plot.setTitle("Dollimore-Heal 孔径分布")
+    plot.setTitle(tr("Dollimore-Heal 孔径分布"))
     plot.setLabel("left", bjh_display_axis_label(metrics))
-    plot.setLabel("bottom", "孔径 (nm)")
+    plot.setLabel("bottom", tr("孔径 (nm)"))
     plot.setLogMode(x=True, y=False)
     all_x = []
     all_y = []
     legend_entries = []
     rows_by_key: dict[tuple[int, str], list[dict[str, float]]] = {}
     if not dh_settings_by_index and not show_adsorption and not show_desorption:
-        _plot_message(plot, "请选择 DH 吸附或 DH 脱附")
+        _plot_message(plot, tr("请选择 DH 吸附或 DH 脱附"))
         return rows_by_key
 
     for index in _analysis_draw_order(results, visible, active_index):
@@ -2457,7 +2459,7 @@ def plot_dh_distribution_multi(
     if all_x:
         _fit_range(plot, all_x, all_y, x_log=True)
     else:
-        _plot_message(plot, "当前样品没有足够的 DH 孔径分布点")
+        _plot_message(plot, tr("当前样品没有足够的 DH 孔径分布点"))
     return rows_by_key
 
 
@@ -2484,9 +2486,9 @@ def plot_hk_distribution_multi(
     metric = normalize_hk_display_metric(display_metric)
     plot.clear()
     _clear_manual_legend_entries(plot)
-    plot.setTitle("Horvath-Kawazoe 孔径分布")
+    plot.setTitle(tr("Horvath-Kawazoe 孔径分布"))
     plot.setLabel("left", hk_display_axis_label(metric))
-    plot.setLabel("bottom", "孔宽 W (nm)")
+    plot.setLabel("bottom", tr("孔宽 W (nm)"))
     plot.setLogMode(x=True, y=False)
     all_x = []
     all_y = []
@@ -2591,7 +2593,7 @@ def plot_hk_distribution_multi(
     if all_x:
         _fit_range(plot, all_x, all_y, x_log=True)
     else:
-        _plot_message(plot, "当前样品没有足够的 HK 孔径分布点")
+        _plot_message(plot, tr("当前样品没有足够的 HK 孔径分布点"))
     return rows_by_key
 
 
@@ -2766,11 +2768,11 @@ def plot_dft_diagnostics(
             except Exception:
                 pass
     plot_item = plot.getPlotItem()
-    plot.setTitle(f"拟合误差 / {penalty_label or '分布粗糙度'} vs. 正则化")
-    plot.setLabel("bottom", "正则化")
-    plot.setLabel("left", "RMS 拟合误差 (mmol/g)", color="#2563eb")
+    plot.setTitle(tr('拟合误差 / {0} vs. 正则化', penalty_label or tr('分布粗糙度')))
+    plot.setLabel("bottom", tr("正则化"))
+    plot.setLabel("left", tr("RMS 拟合误差 (mmol/g)"), color="#2563eb")
     plot_item.showAxis("right")
-    plot_item.getAxis("right").setLabel(penalty_label or "分布粗糙度", color="#f97316")
+    plot_item.getAxis("right").setLabel(penalty_label or tr("分布粗糙度"), color="#f97316")
     plot_item.getAxis("left").setTextPen(pg.mkPen("#2563eb"))
     plot_item.getAxis("right").setTextPen(pg.mkPen("#f97316"))
     plot.setLogMode(x=True, y=False)
@@ -2960,11 +2962,11 @@ def plot_pore_distribution_placeholder(
 ) -> None:
     metrics = normalize_bjh_display_metrics(display_metrics if display_metrics is not None else [differential_mode])
     plot.clear()
-    plot.setTitle("BJH 孔径分布")
+    plot.setTitle(tr("BJH 孔径分布"))
     plot.setLabel("left", bjh_display_axis_label(metrics))
-    plot.setLabel("bottom", "孔径 (nm)")
+    plot.setLabel("bottom", tr("孔径 (nm)"))
     plot.setLogMode(x=True, y=False)
-    _plot_message(plot, "当前没有可显示的 BJH 孔径分布")
+    _plot_message(plot, tr("当前没有可显示的 BJH 孔径分布"))
 
 
 def plot_dh_distribution_placeholder(
@@ -2973,11 +2975,11 @@ def plot_dh_distribution_placeholder(
 ) -> None:
     metrics = normalize_bjh_display_metrics(display_metrics)
     plot.clear()
-    plot.setTitle("Dollimore-Heal 孔径分布")
+    plot.setTitle(tr("Dollimore-Heal 孔径分布"))
     plot.setLabel("left", bjh_display_axis_label(metrics))
-    plot.setLabel("bottom", "孔径 (nm)")
+    plot.setLabel("bottom", tr("孔径 (nm)"))
     plot.setLogMode(x=True, y=False)
-    _plot_message(plot, "当前没有可显示的 DH 孔径分布")
+    _plot_message(plot, tr("当前没有可显示的 DH 孔径分布"))
 
 
 def plot_hk_distribution_placeholder(
@@ -2986,11 +2988,11 @@ def plot_hk_distribution_placeholder(
 ) -> None:
     metric = normalize_hk_display_metric(display_metric)
     plot.clear()
-    plot.setTitle("Horvath-Kawazoe 孔径分布")
+    plot.setTitle(tr("Horvath-Kawazoe 孔径分布"))
     plot.setLabel("left", hk_display_axis_label(metric))
-    plot.setLabel("bottom", "孔宽 W (nm)")
+    plot.setLabel("bottom", tr("孔宽 W (nm)"))
     plot.setLogMode(x=True, y=False)
-    _plot_message(plot, "当前没有可显示的 HK 孔径分布")
+    _plot_message(plot, tr("当前没有可显示的 HK 孔径分布"))
 
 
 def _bjh_rows_in_pressure_range(rows, pressure_range: tuple[float, float] | None):
@@ -3401,7 +3403,7 @@ def _plot_selected_xy(
 
 
 def _legend_name(result) -> str:
-    return Path(str(result.file_name or result.sample_name or "样品")).stem
+    return Path(str(result.file_name or result.sample_name or tr("样品"))).stem
 
 
 def _plot_fit_line(plot: pg.PlotWidget, analysis: FitResult, x_values: np.ndarray, color: str) -> None:
@@ -3411,7 +3413,7 @@ def _plot_fit_line(plot: pg.PlotWidget, analysis: FitResult, x_values: np.ndarra
     x_max = float(np.nanmax(x_values))
     line_x = np.linspace(x_min, x_max, 120)
     line_y = analysis.slope * line_x + analysis.intercept
-    plot.plot(line_x, line_y, pen=pg.mkPen(color, width=ACTIVE_LINE_WIDTH), name="线性拟合")
+    plot.plot(line_x, line_y, pen=pg.mkPen(color, width=ACTIVE_LINE_WIDTH), name=tr("线性拟合"))
 
 
 def _plot_message(plot: pg.PlotWidget, text: str) -> None:
@@ -3425,7 +3427,7 @@ def _plot_message(plot: pg.PlotWidget, text: str) -> None:
 def _range_text(analysis: FitResult, fallback: str) -> str:
     if analysis.pressure_min is None or analysis.pressure_max is None:
         return fallback
-    return f"当前区间 {_plain_number(analysis.pressure_min)}-{_plain_number(analysis.pressure_max)}"
+    return tr('当前区间 {0}-{1}', _plain_number(analysis.pressure_min), _plain_number(analysis.pressure_max))
 
 
 def _fit_range(plot: pg.PlotWidget, x_values, y_values, *, x_log: bool = False) -> None:

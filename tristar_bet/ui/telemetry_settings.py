@@ -1,6 +1,8 @@
 """User-facing consent and privacy controls for optional usage statistics."""
 from __future__ import annotations
 
+from tristar_bet.i18n import tr
+
 import platform
 import re
 import sys
@@ -11,13 +13,13 @@ from pyqtgraph.Qt import QtCore, QtWidgets
 class TelemetryDetailsDialog(QtWidgets.QDialog):
     def __init__(self, client, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("使用统计详情")
+        self.setWindowTitle(tr("使用统计详情"))
         self.setWindowFlag(QtCore.Qt.WindowContextHelpButtonHint, False)
         self.setMinimumWidth(480)
         layout = QtWidgets.QVBoxLayout(self)
         layout.setSpacing(14)
         description = QtWidgets.QLabel(
-            "DragonScience 使用这些统计判断版本覆盖、文件兼容性和界面使用情况。\n\n"
+            tr("DragonScience 使用这些统计判断版本覆盖、文件兼容性和界面使用情况。\n\n"
             "包含：软件版本、随机安装标识、操作系统、系统语言环境（如 zh_CN）、屏幕分辨率与缩放；"
             "导入文件的格式、软件识别出的仪器型号类别、成功或失败及耗时；分析页面访问、导出结果和标准错误码；"
             "每次使用的打开时长和活跃时长（窗口在前台且 2 分钟内有操作的累计时间，只记录秒数，"
@@ -26,34 +28,34 @@ class TelemetryDetailsDialog(QtWidgets.QDialog):
             "服务器会收到连接 IP。统计记录和 IP 目前长期保存，仅用于版本覆盖和兼容性统计。"
             "随机安装标识用于估算活跃安装量，不代表真实人数。\n\n"
             "你可随时在主窗口右下角的“隐私设置”关闭统计。关闭会清空本机待发记录和安装标识，"
-            "停止后续发送；已发出的请求无法撤回。是否启用都不影响分析功能。"
+            "停止后续发送；已发出的请求无法撤回。是否启用都不影响分析功能。")
         )
         description.setWordWrap(True)
         description.setTextFormat(QtCore.Qt.PlainText)
         layout.addWidget(description)
         if client.available:
-            service_text = "接收地址：" + client.endpoint
+            service_text = tr("接收地址：") + client.endpoint
         elif client.endpoint:
-            service_text = "当前无法使用本机统计设置存储，使用统计保持关闭。"
+            service_text = tr("当前无法使用本机统计设置存储，使用统计保持关闭。")
         else:
-            service_text = "统计服务尚未配置或地址无效，当前不会收集或发送使用统计。"
+            service_text = tr("统计服务尚未配置或地址无效，当前不会收集或发送使用统计。")
         service = QtWidgets.QLabel(service_text)
         service.setWordWrap(True)
         service.setTextFormat(QtCore.Qt.PlainText)
         service.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
         layout.addWidget(service)
         buttons = QtWidgets.QDialogButtonBox(self)
-        buttons.addButton("关闭", QtWidgets.QDialogButtonBox.RejectRole)
+        buttons.addButton(tr("关闭"), QtWidgets.QDialogButtonBox.RejectRole)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
 
 def _add_telemetry_summary(layout, client, parent):
     row = QtWidgets.QHBoxLayout()
-    description = QtWidgets.QLabel("帮助 DragonScience 改进兼容性和使用体验")
+    description = QtWidgets.QLabel(tr("帮助 DragonScience 改进兼容性和使用体验"))
     description.setWordWrap(True)
     row.addWidget(description, 1)
-    details = QtWidgets.QPushButton("详情", parent)
+    details = QtWidgets.QPushButton(tr("详情"), parent)
     details.setAutoDefault(False)
     details.clicked.connect(lambda: TelemetryDetailsDialog(client, parent).exec_())
     row.addWidget(details)
@@ -63,23 +65,23 @@ def _add_telemetry_summary(layout, client, parent):
 class TelemetrySettingsDialog(QtWidgets.QDialog):
     def __init__(self, client, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("隐私设置")
+        self.setWindowTitle(tr("隐私设置"))
         self.setWindowFlag(QtCore.Qt.WindowContextHelpButtonHint, False)
         self.setMinimumWidth(440)
         layout = QtWidgets.QVBoxLayout(self)
         layout.setSpacing(14)
         _add_telemetry_summary(layout, client, self)
-        self.enable_check = QtWidgets.QCheckBox("启用使用统计")
+        self.enable_check = QtWidgets.QCheckBox(tr("启用使用统计"))
         self.enable_check.setChecked(bool(client.enabled))
         self.enable_check.setEnabled(bool(client.available))
         layout.addWidget(self.enable_check)
         if not client.available:
-            status = QtWidgets.QLabel("当前统计服务不可用，使用统计保持关闭。")
+            status = QtWidgets.QLabel(tr("当前统计服务不可用，使用统计保持关闭。"))
             status.setWordWrap(True)
             layout.addWidget(status)
         buttons = QtWidgets.QDialogButtonBox(self)
-        buttons.addButton("保存", QtWidgets.QDialogButtonBox.AcceptRole)
-        buttons.addButton("取消", QtWidgets.QDialogButtonBox.RejectRole)
+        buttons.addButton(tr("保存"), QtWidgets.QDialogButtonBox.AcceptRole)
+        buttons.addButton(tr("取消"), QtWidgets.QDialogButtonBox.RejectRole)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)

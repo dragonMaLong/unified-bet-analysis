@@ -5,6 +5,8 @@ profiles remain pressure-only; raw records and provenance are always retained.
 """
 from __future__ import annotations
 
+from tristar_bet.i18n import tr
+
 import math
 import hashlib
 import re
@@ -29,9 +31,9 @@ def _number(value: str | None, field: str) -> float:
     try:
         number = float(value)
     except (TypeError, ValueError) as exc:
-        raise JwgbNativeParseError(f"JWGBT 字段 {field} 缺失或不是数字") from exc
+        raise JwgbNativeParseError(tr('JWGBT 字段 {0} 缺失或不是数字', field)) from exc
     if not math.isfinite(number):
-        raise JwgbNativeParseError(f"JWGBT 字段 {field} 不是有限数值")
+        raise JwgbNativeParseError(tr('JWGBT 字段 {0} 不是有限数值', field))
     return number
 
 
@@ -39,7 +41,7 @@ def _date(value: str | None, field: str) -> datetime:
     try:
         return datetime.strptime(value or "", "%Y-%m-%d %H:%M:%S")
     except ValueError as exc:
-        raise JwgbNativeParseError(f"JWGBT 字段 {field} 时间格式无效") from exc
+        raise JwgbNativeParseError(tr('JWGBT 字段 {0} 时间格式无效', field)) from exc
 
 
 def _reconstruct_bk200c(root, records, points, mass, point_sources):
@@ -55,42 +57,42 @@ def _reconstruct_bk200c(root, records, points, mass, point_sources):
     }
     for field, expected in required.items():
         if root.findtext(field) != expected:
-            raise ValueError(f'尚未覆盖的重建配置：{field}')
+            raise ValueError(tr('尚未覆盖的重建配置：{0}', field))
     if _number(root.findtext('General/GeneralConfig/AdsorbTemp'), 'AdsorbTemp') != 77.35:
-        raise ValueError('重建仅覆盖 N2/77.35 K')
+        raise ValueError(tr('重建仅覆盖 N2/77.35 K'))
     if _number(root.findtext('General/GeneralConfig/CrossSectionalArea'), 'CrossSectionalArea') != .162:
-        raise ValueError('重建仅覆盖氮气截面积 0.162 nm²')
+        raise ValueError(tr('重建仅覆盖氮气截面积 0.162 nm²'))
     vd = _number(root.findtext('Config/Vd'), 'Vd')
     q = _number(root.findtext('Config/QValue'), 'QValue')
     mode = root.findtext('Config/AutoTestQ')
     if mode not in ('0', '1'):
-        raise ValueError('未知的自动 Q 模式')
+        raise ValueError(tr('未知的自动 Q 模式'))
     q_records = [dict(row.attrib) for row in root.findall('Data/Q/Item')]
     calibration = {'jwgb_reconstruction_q_stored': q}
     if mode == '1':
         # These runs may measure helium either before or after adsorption.
         # Check association with the entire run, not just its adsorption start.
         if len(q_records) != 2:
-            raise ValueError('自动 Q 需要一条参考记录和一次完整氦气校准')
+            raise ValueError(tr('自动 Q 需要一条参考记录和一次完整氦气校准'))
         start = _date(root.findtext('Data/BaseInfo/StartTime'), 'StartTime')
         end = _date(root.findtext('Data/BaseInfo/EndTime'), 'EndTime')
         times = [_date(f"{r.get('Day', '')} {r.get('Time', '')}", 'Q/Time') for r in q_records]
         if not start <= times[0] < times[1] <= end:
-            raise ValueError('自动 Q 校准时间超出本次测试或顺序无效')
+            raise ValueError(tr('自动 Q 校准时间超出本次测试或顺序无效'))
         if any(_number(r.get('Pcd'), 'Q/Pcd') < 0 for r in q_records):
-            raise ValueError('自动 Q 校准压力无效')
+            raise ValueError(tr('自动 Q 校准压力无效'))
         computed_q = calibrated_q(q_records)
         if q <= 0 or abs(computed_q - q) > .0000005 + 1e-12:
-            raise ValueError('氦气校准复算 Q 与文件六位小数 Q 不一致')
+            raise ValueError(tr('氦气校准复算 Q 与文件六位小数 Q 不一致'))
         calibration.update(jwgb_reconstruction_q_calibrated=computed_q,
                            jwgb_reconstruction_q_record_times=[str(t) for t in times])
     factor = _number(root.findtext('General/GeneralConfig/NonIdealityFactor'), 'NonIdealityFactor')
     low = _number(root.findtext('Config/MultiBETReport/MinRange'), 'BET MinRange')
     high = _number(root.findtext('Config/MultiBETReport/MaxRange'), 'BET MaxRange')
     if not 0 < low < high < 1:
-        raise ValueError('文件内 BET 选区无效')
+        raise ValueError(tr('文件内 BET 选区无效'))
     if any(r.get('Balance') not in ('0', '1') or 'SubIndex' not in r for r in records):
-        raise ValueError('重建需要完整的平衡和补气标记')
+        raise ValueError(tr('重建需要完整的平衡和补气标记'))
     # BK200C 1(1).xlsx (same run as sample 1, IsRealGas=0): all 21 adsorption
     # points match only with the dose non-ideality term OFF (0/21 with it on).
     # The stored NonIdealityFactor is kept as provenance but not applied.
@@ -100,20 +102,20 @@ def _reconstruct_bk200c(root, records, points, mass, point_sources):
     closed_rows, closure = close_desorption(calculated['rows'])
     measured = [r for r in closed_rows if not r['is_reference']]
     if len(measured) != len(points):
-        raise ValueError('重建点数与压力点表不一致')
+        raise ValueError(tr('重建点数与压力点表不一致'))
     rebuilt = []
     for point, row, source in zip(points, measured, point_sources):
         if source != (row['phase'], row['record_id']):
-            raise ValueError('重建记录与压力点不对应')
+            raise ValueError(tr('重建记录与压力点不对应'))
         value = row['candidate_cm3_g']
         if not math.isfinite(value):
-            raise ValueError('重建气量溢出')
+            raise ValueError(tr('重建气量溢出'))
         rebuilt.append(replace(point, raw_internal_cm3_stp=value * mass,
                                quantity_adsorbed_cm3_g_stp=value,
                                quantity_adsorbed_mmol_g=value / 22.414))
     return rebuilt, {
         'quantity_status': 'reconstructed_unvalidated',
-        'jwgb_reconstructed': True, 'import_notice': RECONSTRUCTION_NOTE,
+        'jwgb_reconstructed': True, 'import_notice': tr(RECONSTRUCTION_NOTE),
         'jwgb_reconstruction_profile': f"BK200C-00.01.05.00-{'auto' if mode == '1' else 'manual'}-Q-N2-77.35K",
         'jwgb_reconstruction_q': calculated['q_used'], 'jwgb_reconstruction_vd_cm3': vd,
         'jwgb_reconstruction_nonideality': factor,
@@ -135,27 +137,27 @@ def load_jwgb_native(path: str | Path, *, reconstruct_uptake: bool = True) -> Tr
     with path.open("rb") as stream:
         data = stream.read(16 * 1024 * 1024 + 1)
     if len(data) > 16 * 1024 * 1024:
-        raise JwgbNativeParseError("JWGBT 文件超过 16 MiB")
+        raise JwgbNativeParseError(tr("JWGBT 文件超过 16 MiB"))
     try:
         text = data.decode("utf-8-sig")
         if "<!DOCTYPE" in text.upper() or "<!ENTITY" in text.upper():
-            raise JwgbNativeParseError("JWGBT 不支持 DTD 或实体声明")
+            raise JwgbNativeParseError(tr("JWGBT 不支持 DTD 或实体声明"))
         root = ET.fromstring(text)
     except (UnicodeError, ET.ParseError) as exc:
-        raise JwgbNativeParseError("JWGBT 不是完整的 UTF-8 XML 文件") from exc
+        raise JwgbNativeParseError(tr("JWGBT 不是完整的 UTF-8 XML 文件")) from exc
     if root.tag != "doc" or root.get("Ver") != "1":
-        raise JwgbNativeParseError("尚不支持此 JWGBT 文档版本")
+        raise JwgbNativeParseError(tr("尚不支持此 JWGBT 文档版本"))
     for section in ("General", "StationConfig", "Config", "Data"):
         element = root.find(section)
         if element is None or element.get("Ver") != "1":
-            raise JwgbNativeParseError(f"JWGBT 缺少或不支持 {section} 数据块")
+            raise JwgbNativeParseError(tr('JWGBT 缺少或不支持 {0} 数据块', section))
     if root.findtext("Config/Base/PressUnits") != "0":
-        raise JwgbNativeParseError("尚未验证此 JWGBT 压力单位，仅支持 PressUnits=0（kPa）")
+        raise JwgbNativeParseError(tr("尚未验证此 JWGBT 压力单位，仅支持 PressUnits=0（kPa）"))
     get = lambda key: (root.findtext(key) or "").strip()
     start = _date(get("Data/BaseInfo/StartTime"), "StartTime")
     end = _date(get("Data/BaseInfo/EndTime"), "EndTime")
     if end < start:
-        raise JwgbNativeParseError("JWGBT 结束时间早于开始时间")
+        raise JwgbNativeParseError(tr("JWGBT 结束时间早于开始时间"))
     mass = _number(get("Config/SampleInfo/SampleWeight"), "SampleWeight")
     # The public Sync440A sample uses a decimal comma for this field only.
     temperature_text = get("General/GeneralConfig/AdsorbTemp")
@@ -163,7 +165,7 @@ def load_jwgb_native(path: str | Path, *, reconstruct_uptake: bool = True) -> Tr
         temperature_text = temperature_text.replace(",", ".")
     temperature = _number(temperature_text, "AdsorbTemp")
     if mass <= 0 or temperature <= 0:
-        raise JwgbNativeParseError("JWGBT 样品质量及浴温必须大于零")
+        raise JwgbNativeParseError(tr("JWGBT 样品质量及浴温必须大于零"))
     points = []
     point_sources = []
     raw_records = []
@@ -178,7 +180,7 @@ def load_jwgb_native(path: str | Path, *, reconstruct_uptake: bool = True) -> Tr
             record_id = record.get("ID", "")
             match = re.fullmatch(r"(0|[1-9]\d*)(?:_([1-9]\d*))?", record_id)
             if not match:
-                raise JwgbNativeParseError("JWGBT 压力记录缺少有效 ID")
+                raise JwgbNativeParseError(tr("JWGBT 压力记录缺少有效 ID"))
             point_id = int(match[1])
             sub_index = match[2] or "0"
             # BK200C also writes successive balanced records such as 21_1,
@@ -190,35 +192,35 @@ def load_jwgb_native(path: str | Path, *, reconstruct_uptake: bool = True) -> Tr
                 and get('Config/Base/Version') == '00.01.05.00'
             )
             if record.get("SubIndex", "0") != sub_index and not suffixed_balanced_record:
-                raise JwgbNativeParseError("JWGBT ID 与 SubIndex 不一致")
+                raise JwgbNativeParseError(tr("JWGBT ID 与 SubIndex 不一致"))
             if record.get("Balance", "1") not in ("0", "1"):
-                raise JwgbNativeParseError("JWGBT Balance 标记无效")
+                raise JwgbNativeParseError(tr("JWGBT Balance 标记无效"))
             if record_id in ids:
-                raise JwgbNativeParseError(f"JWGBT {branch} 存在重复 ID {record_id}")
+                raise JwgbNativeParseError(tr('JWGBT {0} 存在重复 ID {1}', branch, record_id))
             ids.add(record_id)
             pd = _number(record.get("Pd"), "Pd")
             pressure = _number(record.get("Pcd"), "Pcd")
             p0 = _number(record.get("P0"), "P0")
             if p0 <= 0 or pressure < 0:
-                raise JwgbNativeParseError("JWGBT 平衡压力或饱和压力无效")
+                raise JwgbNativeParseError(tr("JWGBT 平衡压力或饱和压力无效"))
             when = _date(f"{record.get('Day', '')} {record.get('Time', '')}", "Item/Time")
             if not start <= when <= end:
-                raise JwgbNativeParseError("JWGBT 压力记录时间超出测试时间")
+                raise JwgbNativeParseError(tr("JWGBT 压力记录时间超出测试时间"))
             if previous_time is not None and when < previous_time:
-                raise JwgbNativeParseError("JWGBT 压力记录时间顺序无效")
+                raise JwgbNativeParseError(tr("JWGBT 压力记录时间顺序无效"))
             previous_time = when
             # Native branches start with a non-dose reference (Pd=-0.00001).
             # Preserve it in raw_records, not as an additional measured point.
             if pd == -0.00001:
                 continue
             if pd < 0:
-                raise JwgbNativeParseError("JWGBT 未知负充气压力记录")
+                raise JwgbNativeParseError(tr("JWGBT 未知负充气压力记录"))
             # Intermediate doses remain in raw_records for mass balance, but
             # only Balance=1 records are exported as equilibrium points.
             if record.get("Balance", "1") == "0":
                 continue
             if point_id in balanced_base_ids and not suffixed_balanced_record:
-                raise JwgbNativeParseError(f"JWGBT {branch} 存在重复平衡点 {point_id}")
+                raise JwgbNativeParseError(tr('JWGBT {0} 存在重复平衡点 {1}', branch, point_id))
             balanced_base_ids.add(point_id)
             # Preserve each balanced record, including oversaturation records.
             # Give the UI unique integer indices; retain exact native IDs below.
@@ -235,7 +237,7 @@ def load_jwgb_native(path: str | Path, *, reconstruct_uptake: bool = True) -> Tr
                 quantity_adsorbed_cm3_g_stp=None, quantity_adsorbed_mmol_g=None,
             ))
     if not points:
-        raise JwgbNativeParseError("JWGBT 中没有可读取的压力记录")
+        raise JwgbNativeParseError(tr("JWGBT 中没有可读取的压力记录"))
     saved = datetime.fromtimestamp(path.stat().st_mtime)
     duration = int((end - start).total_seconds())
     gas = get("General/GeneralConfig/AdsorbGas")
@@ -248,7 +250,7 @@ def load_jwgb_native(path: str | Path, *, reconstruct_uptake: bool = True) -> Tr
             for point, source in zip(points, point_sources)
         ],
         "jwgb_native_auto_q": get("Config/AutoTestQ") == "1",
-        "import_notice": IMPORT_NOTE, "jwgb_native_pressure_records": raw_records,
+        "import_notice": tr(IMPORT_NOTE), "jwgb_native_pressure_records": raw_records,
         "jwgb_native_config_xml": ET.tostring(root.find("Config"), encoding="unicode"),
         "jwgb_native_general_xml": ET.tostring(root.find("General"), encoding="unicode"),
         "jwgb_native_sha256": hashlib.sha256(data).hexdigest(),
@@ -281,7 +283,7 @@ def load_jwgb_native(path: str | Path, *, reconstruct_uptake: bool = True) -> Tr
         header=SmpHeader(str(path.resolve()), path.name, len(data), "JWGB_XML", "1", int(start.timestamp()), str(start), int(saved.timestamp()), str(saved.replace(microsecond=0)), 0, 0),
         subsets=[], sample=SampleInfo(get("Config/SampleInfo/SampleName") or get("Config/SampleInfo/SampleNum") or path.stem, get("Config/SampleInfo/Operator"), "", "", mass, None),
         run_conditions=RunConditions(None, None, None, None, None, None, None, None, None, points[-1].saturation_pressure_mmHg, temperature, gas, "Nitrogen" if gas == "N2" else gas),
-        target_pressure_table=[], free_space=FreeSpaceInfo(None, None, None, None, None, None, None, None, "未验证原厂自由空间换算"),
+        target_pressure_table=[], free_space=FreeSpaceInfo(None, None, None, None, None, None, None, None, tr("未验证原厂自由空间换算")),
         po_records=[], isotherm=points, adsorptive_properties=None,
         log_messages=[MicString(i, f"{row.get('Date', '')} {row.get('Log', '')}") for i, row in enumerate(root.findall("Log/Log/Item"))],
         sample_tube_strings=[], method_options=options, raw_strings={},

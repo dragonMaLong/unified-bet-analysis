@@ -1,4 +1,6 @@
 """Native-style headers for the two orientations of analysis result tables."""
+
+from tristar_bet.i18n import tr
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 from .detail_tables import RESULT_STATUS_ROLE, paint_status_badge
@@ -60,15 +62,15 @@ class AnalysisHeader(QtWidgets.QHeaderView):
         button.setIcon(transpose_icon())
         button.setIconSize(QtCore.QSize(18, 18))
         button.setCursor(QtCore.Qt.PointingHandCursor)
-        button.setAccessibleName("行列切换")
+        button.setAccessibleName(tr("行列切换"))
         button.clicked.connect(callback)
         self.transpose_button = button
         self.update_layout_state()
 
     def update_layout_state(self):
         if self.transpose_button is not None:
-            target = "行" if getattr(self.table, "_transposed", False) else "列"
-            self.transpose_button.setToolTip(f"切换为：样品作为{target}")
+            target = tr("行") if getattr(self.table, "_transposed", False) else tr("列")
+            self.transpose_button.setToolTip(tr('切换为：样品作为{0}', target))
             self.position_button()
         self.viewport().update()
 

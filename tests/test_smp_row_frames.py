@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 import struct
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from tristar_bet.models import AdsorptiveProperties, RunConditions, SampleInfo
@@ -23,13 +24,15 @@ def _mic_string(text: str) -> bytes:
     return b"\xe0\x01\x00" + struct.pack("<I", len(raw)) + raw
 
 
-def _block_303(software: str, points, version: int = 13, tube_values=None) -> bytes:
+def _block_303(software: str, points, version: int = 13, tube_values=None, tag: int = 4,
+               stride: int | None = None) -> bytes:
     block = bytearray(b"SUBSET303\x00" + b"\x00" * 8)
     block += bytes([version]) + b"\xe0\x02\x00\x00\x01\x00\x03\x00"
     block += _mic_string(software) + _mic_string(software) + b"\x00" * 60
+    stride = stride or {4: 58, 5: 66}[tag]
     for absolute, relative, dosed in points:
-        frame = FRAME_PREFIX + struct.pack("<ddd", absolute, relative, dosed) + struct.pack("<I", 100)
-        block += frame + b"\x00" * (58 - len(frame))
+        frame = FRAME_PREFIX[:-2] + bytes([tag, 0]) + struct.pack("<ddd", absolute, relative, dosed) + struct.pack("<I", 100)
+        block += frame + b"\x00" * (stride - len(frame))
     block += b"\x00" * 200
     if tube_values is not None:
         tube = len(block) + 300
@@ -74,6 +77,23 @@ class RowFrameUnitTests(unittest.TestCase):
         points = self.parser._parse_row_frame_isotherm(block, len(block) - 18, sample, _missing_free_space())
         self.assertEqual([p.phase for p in points].count("desorption"), 1)
         self.assertTrue(all(math.isclose(p.saturation_pressure_mmHg, 750.0) for p in points))
+
+    def test_asap_2020_plus_v200_66_byte_frames(self) -> None:
+        # Version 2.00 re-saves with tag 05 and 66-byte frames; the doubles are unchanged.
+        old = _block_303("ASAP 2020 Plus", POINTS)
+        new = _block_303("ASAP 2020 Plus", POINTS, tag=5)
+        old_rows = self.parser._scan_row_frames(old, len(old) - 18)
+        new_rows = self.parser._scan_row_frames(new, len(new) - 18)
+        self.assertEqual(len(new_rows), len(POINTS))
+        self.assertEqual([row[1:] for row in new_rows], [row[1:] for row in old_rows])
+        self.assertEqual({b[0] - a[0] for a, b in zip(new_rows, new_rows[1:])}, {66})
+        self.assertEqual(self.parser._row_frame_family(new), "ASAP 2020 Plus")
+
+    def test_tag_and_stride_must_agree(self) -> None:
+        for tag, stride in ((5, 58), (4, 66)):
+            with self.subTest(tag=tag, stride=stride):
+                block = _block_303("ASAP 2020 Plus", POINTS, tag=tag, stride=stride)
+                self.assertEqual(self.parser._scan_row_frames(block, len(block) - 18), [])
 
     def test_saturation_frame_is_dropped_after_branch_split(self) -> None:
         # MicroActive leaves out P/P0 > 1 (Titania 1.0008) but the branch still
@@ -299,6 +319,64 @@ class MicroActiveExampleFiles(unittest.TestCase):
         result = load_smp(EXAMPLES / "Autopore example data" / "CPG 1000 Port 1.SMP")
         self.assertEqual(result.point_count, 0)
         self.assertIn("SUBSET303", result.method_options["no_isotherm_reason"])
+
+
+ASAP_DATA = Path(r"C:\ASAP 2020 Plus\data")
+RESAVED = Path(__file__).resolve().parents[1] / "outputs" / "asap_v200_check"
+
+
+@unittest.skipUnless(ASAP_DATA.is_dir() and RESAVED.is_dir(), "ASAP 2020 Plus examples / re-saved copies not present")
+class AsapPlusVersion200Resaved(unittest.TestCase):
+    """Vendor examples re-saved by ASAP 2020 Plus Version 2.00 (66-byte frames) import as the originals."""
+
+    PAIRS = {"ac_v200.SMP": "Activated Carbon.SMP",
+             "sa_v200.SMP": "Silica Alumina Reference Material with Nitrogen.SMP",
+             "glass_v200.SMP": "Glass Reference Material.SMP"}
+
+    def test_resaved_files_match_originals(self) -> None:
+        from tristar_bet.analysis import bet_analysis
+
+        for resaved, original in self.PAIRS.items():
+            with self.subTest(resaved=resaved):
+                new, old = load_smp(RESAVED / resaved), load_smp(ASAP_DATA / original)
+                self.assertGreater(new.point_count, 5)
+                self.assertEqual(new.point_count, old.point_count)
+                self.assertEqual(new.method_options["format_family"], "ASAP 2020 Plus row-frame SMP")
+                self.assertEqual(new.free_space.vfree_factor_source, old.free_space.vfree_factor_source)
+                if resaved != "glass_v200.SMP":
+                    self.assertEqual(new.run_conditions.bath_temperature_K, 77.35)
+                    self.assertEqual(old.run_conditions.bath_temperature_K, 77.35)
+                for a, b in zip(new.isotherm, old.isotherm):
+                    self.assertEqual((a.absolute_pressure_mmHg, a.relative_pressure, a.quantity_adsorbed_cm3_g_stp),
+                                     (b.absolute_pressure_mmHg, b.relative_pressure, b.quantity_adsorbed_cm3_g_stp))
+                self.assertEqual(bet_analysis(new).surface_area_m2_g, bet_analysis(old).surface_area_m2_g)
+
+    def test_glass_invalid_generic_bath_is_hidden_without_changing_pore_calculations(self) -> None:
+        from tristar_bet.analysis import (
+            bjh_pore_distribution, dh_pore_distribution, horvath_kawazoe_pore_distribution,
+        )
+
+        for path in (ASAP_DATA / self.PAIRS["glass_v200.SMP"], RESAVED / "glass_v200.SMP"):
+            with self.subTest(path=path.name):
+                result = load_smp(path)
+                self.assertIsNone(result.run_conditions.bath_temperature_K)
+                # Recover the previous generic value directly from subset 302;
+                # this must not be confused with the independently decoded
+                # temperature used by ASAP's real-gas/transpiration correction.
+                data = path.read_bytes()
+                parser = TriStarSmpParser()
+                header = parser._parse_header(path, data)
+                entries = parser._parse_directory(data, header.directory_offset)
+                run_entry = next(entry for entry in entries if entry.subset_id == 302)
+                block = data[run_entry.offset:run_entry.offset + run_entry.total_size]
+                raw_run = parser._parse_run_conditions(block)
+                self.assertIsNotNone(raw_run.bath_temperature_K)
+                self.assertFalse(50.0 < raw_run.bath_temperature_K < 500.0)
+                legacy = replace(result, run_conditions=replace(
+                    result.run_conditions, bath_temperature_K=raw_run.bath_temperature_K,
+                ))
+                for calculate in (bjh_pore_distribution, dh_pore_distribution, horvath_kawazoe_pore_distribution):
+                    self.assertEqual(calculate(result), calculate(legacy))
 
 
 if __name__ == "__main__":

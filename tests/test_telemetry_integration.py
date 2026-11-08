@@ -71,7 +71,7 @@ class TelemetryIntegrationTests(unittest.TestCase):
                     self.assertEqual(selected["ip_pagination"]["total_groups"], 1)
                     page = admin.get("/admin", auth=("test-admin", "test-only-secret"))
                     self.assertEqual(page.status_code, 200)
-                    self.assertIn("BET 使用统计", page.get_data(as_text=True))
+                    self.assertIn("DragonScience 软件使用统计", page.get_data(as_text=True))
                     requests_before = len(sent)
                     self.assertTrue(client.set_enabled(False))
                     self.assertFalse(client.record("feature_view", feature="dft", surface="plot"))

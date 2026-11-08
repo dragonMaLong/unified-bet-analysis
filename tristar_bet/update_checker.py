@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tristar_bet.i18n import tr
+
 import json
 import re
 import urllib.error
@@ -78,7 +80,7 @@ def check_for_update(
         errors.append(f"GitHub Releases: {exc}")
         if candidates:
             return _newest_info(candidates)
-        raise UpdateCheckError("；".join(errors)) from exc
+        raise UpdateCheckError(tr("；").join(errors)) from exc
     candidates.append(release_info)
     return _newest_info(candidates)
 
@@ -108,7 +110,7 @@ def _info_from_manifest(payload: dict[str, Any], current_version: str, source_ur
         or ""
     ).strip()
     if not version:
-        raise UpdateCheckError("更新清单缺少 version 字段。")
+        raise UpdateCheckError(tr("更新清单缺少 version 字段。"))
 
     latest_version = _clean_version(version)
     detected_source = _source_name_from_url(source_url)
@@ -166,7 +168,7 @@ def _first_manifest_value(payload: dict[str, Any], keys: Iterable[str]) -> str:
 def _info_from_github_release(payload: dict[str, Any], current_version: str, repository: str) -> UpdateInfo:
     tag_name = str(payload.get("tag_name") or "").strip()
     if not tag_name:
-        raise UpdateCheckError("GitHub Release 没有版本标签。")
+        raise UpdateCheckError(tr("GitHub Release 没有版本标签。"))
 
     latest_version = _clean_version(tag_name)
     release_url = str(payload.get("html_url") or "").strip()
@@ -207,17 +209,17 @@ def _fetch_json(url: str, *, timeout: float, api: bool) -> dict[str, Any]:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
-            raise UpdateCheckError("没有找到更新信息。") from exc
-        raise UpdateCheckError(f"服务器返回 HTTP {exc.code}。") from exc
+            raise UpdateCheckError(tr("没有找到更新信息。")) from exc
+        raise UpdateCheckError(tr('服务器返回 HTTP {0}。', exc.code)) from exc
     except urllib.error.URLError as exc:
         reason = getattr(exc, "reason", exc)
-        raise UpdateCheckError(f"无法连接：{reason}") from exc
+        raise UpdateCheckError(tr('无法连接：{0}', reason)) from exc
     except TimeoutError as exc:
-        raise UpdateCheckError("连接超时。") from exc
+        raise UpdateCheckError(tr("连接超时。")) from exc
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise UpdateCheckError(f"无法读取更新信息：{exc}") from exc
+        raise UpdateCheckError(tr('无法读取更新信息：{0}', exc)) from exc
     if not isinstance(payload, dict):
-        raise UpdateCheckError("更新信息格式不是 JSON 对象。")
+        raise UpdateCheckError(tr("更新信息格式不是 JSON 对象。"))
     return payload
 
 
@@ -245,7 +247,7 @@ def _source_name_from_url(url: str) -> str:
         return "Gitee"
     if "github.com" in text or "githubusercontent.com" in text:
         return "GitHub"
-    return "更新源"
+    return tr("更新源")
 
 
 def _clean_version(version: str) -> str:

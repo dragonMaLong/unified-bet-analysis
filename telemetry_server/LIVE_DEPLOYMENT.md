@@ -49,6 +49,8 @@
 
 同日修正：上次部署的模板取自本地工作副本，其中“每日启动次数”位于“IP 统计”之下，与原线上页面不同（原线上为启动图在上）。已从 `usage-im2le57s` 备份逐行核对：`app.py`、`schema.py` 与原线上的差异仅为本次新增字段；模板除时长列外仅有这一处位置差异。已将启动图移回 IP 统计上方，并在服务器上核对暂存模板相对原线上版本只差时长相关四处修改，再以同一脚本部署（`PREFLIGHT_OK`、`REHEARSAL_OK`、`UPDATE_OK`），本次备份 `/opt/bet-telemetry/backups/usage-fnkdc_sn`。新增测试固定“启动图在 IP 统计之上”的顺序。以后部署前须先与线上文件比对，不能直接以本地工作副本为准。
 
+2026-11-05 已上线多软件统计：同一服务、数据库和页面同时统计 BET 与 MIP（压汞，`app_id=mercury_smp`）。页面标题改为“DragonScience 软件使用统计”，网址仍为 `/bet-stats/`，上报地址不变。每日启动图中 BET 为蓝线、MIP 为黄线；IP 统计在 IP 与版本之间新增“软件”列，筛选新增“软件”；版本选项带软件名（两款软件都有 1.1.2）；文件导入、运行环境表也有软件列。数据库 `events` 新增 `app` 列（默认 `bet`）及索引 `events_app_time`，由新代码启动时添加，原有 1683 条事件均为 BET，未删改。不带 `app_id` 的批次一律视为 BET，已发布的 BET 客户端无须更新；MIP 批次按压汞自己的字段白名单校验。只替换 `app.py`、`admin.html`、`bet_telemetry/schema.py` 三个文件（同时带上 11-04 之后本地的日期筛选小修正）。更新包 `tmp/telemetry-deploy/mip-update.zip`（SHA-256 `7a79ac8a…3c1f`），以 root 执行 `apply_update.py`：线上三文件与 11-04 版本逐字节核对，数据库在线快照，在快照副本上演练新旧代码统计结果一致（全部 123 次打开、616 次导入），`PREFLIGHT_OK`、`BACKUP_OK`、`REHEARSAL_OK`、`UPDATE_OK`。代码与完整数据库快照备份在 `/opt/bet-telemetry/backups/mip-glf7vy65`（0700，含 `restore-manifest.json` 和 `telemetry-before-mip.sqlite3`）。回退代码时必须同时删除 `events_app_time` 索引和 `app` 列（旧代码按 15 列插入），且仅在没有 MIP 记录时可这样回退。注意：宝塔终端默认可能不是 root，需先确认 `whoami`。
+
 ## 日常管理
 
 服务和维护定时器均已设置开机启动。现有 `purge` 命令及 unit 名称保留，但任务只维护 WAL 和轮换旧脱敏导出副本，不删除实时库的事件或 IP。当前旧版 systemd 每小时执行，启动后约 5 分钟也执行一次；不要照通用文档换成其他环境的 unit。

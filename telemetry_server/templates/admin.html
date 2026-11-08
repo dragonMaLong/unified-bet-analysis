@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>BET 使用统计</title>
+  <title>DragonScience 软件使用统计</title>
   <style>
     :root { color-scheme: light; font: 14px/1.6 "Microsoft YaHei", system-ui, sans-serif; color: #1f2d3d; background: #f2f4f7;
             --line: #e6eaf0; --muted: #6b7889; --accent: #2f7de1; --accent-soft: rgba(47,125,225,.16); --head: #f7f8fa; }
@@ -84,9 +84,12 @@
     .chart-card:has(#chart-today:checked) .chart.today, .chart-card:has(#chart-period:checked) .chart.period { display: block; }
     .chart svg { width: 100%; height: auto; display: block; }
     .chart .grid { stroke: #edf0f4; } .chart .axis-text { fill: #8a96a5; font-size: 11px; }
-    .chart .area { fill: var(--accent-soft); } .chart .line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; }
-    .chart .dot { fill: #fff; stroke: var(--accent); stroke-width: 1.5; }
-    .chart .hit { fill: transparent; } .chart .hit:hover + .dot, .chart .dot:hover { fill: var(--accent); }
+    .chart .area { fill-opacity: .12; stroke: none; } .chart .line { fill: none; stroke-width: 2; stroke-linejoin: round; }
+    .chart .dot { fill: #fff; stroke-width: 1.5; }
+    .chart .hit { fill: transparent; } .chart .hit:hover + .dot, .chart .dot:hover { fill: currentColor; }
+    .legend { display: inline-flex; gap: 14px; margin-left: auto; color: #4a5868; font-size: 13px; }
+    .legend span { display: inline-flex; align-items: center; gap: 6px; }
+    .legend i { display: inline-block; width: 18px; height: 3px; border-radius: 2px; }
     .chart-note { color: var(--muted); font-size: 13px; padding: 0 18px 12px; margin: 0; }
     .plain th, .plain td { padding: 9px 14px; }
     .storage { color: var(--muted); font-size: 12px; margin-top: 18px; } .warning { color: #9a4900; font-weight: 600; }
@@ -94,7 +97,7 @@
   </style>
 </head>
 <body>
-  <h1>BET 使用统计</h1>
+  <h1>DragonScience 软件使用统计</h1>
   <p class="updated">更新时间 {{ summary.generated_at_local }}（北京时间）</p>
   <nav class="periods" aria-label="统计时间范围">
     {% for period in summary.period_options %}<a href="{{ period.query }}"{% if period.days|string == summary.window_query %} aria-current="page"{% endif %}>{{ period.label }}</a>{% endfor %}
@@ -104,6 +107,7 @@
   <section class="chart-card" aria-labelledby="chart-title">
     <div class="section-head">
       <h2 id="chart-title">每日启动次数</h2>
+      <div class="legend" aria-label="图例">{% for item in summary.apps %}<span><i style="background: {{ item.color }}"></i>{{ item.label }}</span>{% endfor %}</div>
       <div class="chart-tabs" role="radiogroup" aria-label="图表范围">
         <input type="radio" name="chart" id="chart-today" checked><label for="chart-today">{{ summary.date_range.day_label }}</label>
         <input type="radio" name="chart" id="chart-period"><label for="chart-period">{{ summary.window_label }}</label>
@@ -113,17 +117,19 @@
     <div class="chart {{ key }}">
       <svg viewBox="0 0 {{ chart.width }} {{ chart.height }}" role="img" aria-label="{{ '当天每小时' if key == 'today' else summary.window_label + '每日' }}启动次数，共 {{ chart.total }} 次">
         {% for tick in chart.ticks %}<line class="grid" x1="{{ chart.left }}" x2="{{ chart.right }}" y1="{{ tick.y }}" y2="{{ tick.y }}"/><text class="axis-text" x="{{ chart.left - 8 }}" y="{{ tick.y + 4 }}" text-anchor="end">{{ tick.value }}</text>{% endfor %}
-        {% if chart.points %}
-        <polygon class="area" points="{{ chart.area }}"/>
-        <polyline class="line" points="{{ chart.line }}"/>
-        {% for point in chart.points %}
-          {% if point.tick %}<text class="axis-text" x="{{ point.x }}" y="{{ chart.base + 18 }}" text-anchor="middle">{{ point.label[5:] if key == 'period' else point.label }}</text>{% endif %}
-          <circle class="hit" cx="{{ point.x }}" cy="{{ point.y }}" r="9"><title>{{ point.label }}：{{ point.count }} 次</title></circle>
-          <circle class="dot" cx="{{ point.x }}" cy="{{ point.y }}" r="{{ 3 if chart.points|length <= 62 else 1.5 }}"><title>{{ point.label }}：{{ point.count }} 次</title></circle>
+        {% for label in chart.x_labels %}<text class="axis-text" x="{{ label.x }}" y="{{ chart.base + 18 }}" text-anchor="middle">{{ label.label[5:] if key == 'period' else label.label }}</text>{% endfor %}
+        {% for line in chart.series %}{% if line.points %}
+        <g class="series {{ line.app }}" style="color: {{ line.color }}">
+        <polygon class="area" fill="{{ line.color }}" points="{{ line.area }}"/>
+        <polyline class="line" stroke="{{ line.color }}" points="{{ line.line }}"/>
+        {% for point in line.points %}
+          <circle class="hit" cx="{{ point.x }}" cy="{{ point.y }}" r="9"><title>{{ point.label }} {{ line.app_label }}：{{ point.count }} 次</title></circle>
+          <circle class="dot" stroke="{{ line.color }}" cx="{{ point.x }}" cy="{{ point.y }}" r="{{ 1.5 if chart.dense else 3 }}"><title>{{ point.label }} {{ line.app_label }}：{{ point.count }} 次</title></circle>
         {% endfor %}
-        {% endif %}
+        </g>
+        {% endif %}{% endfor %}
       </svg>
-      <p class="chart-note">{% if key == 'today' %}{{ '今天 0 点至今' if summary.date_range.day_label == '当天' else summary.date_range.end + ' 全天' }}按小时统计，共 {{ chart.total }} 次{% else %}{{ summary.window_label }}按日统计，共 {{ chart.total }} 次，单日最多 {{ chart.peak }} 次{% endif %}。鼠标停在数据点上可看具体数值。</p>
+      <p class="chart-note">{% if key == 'today' %}{{ '今天 0 点至今' if summary.date_range.day_label == '当天' else summary.date_range.end + ' 全天' }}按小时统计，共 {{ chart.total }} 次{% else %}{{ summary.window_label }}按日统计，共 {{ chart.total }} 次，单日最多 {{ chart.peak }} 次{% endif %}（{% for line in chart.series %}{{ line.app_label }} {{ line.total }} 次{{ '，' if not loop.last }}{% endfor %}）。鼠标停在数据点上可看具体数值。</p>
     </div>
     {% endfor %}
   </section>
@@ -135,12 +141,23 @@
       <h2 id="ip-title">IP 统计</h2>
       <form class="filters" method="get" action="" aria-label="筛选">
         {% if not summary.date_range.custom %}<input type="hidden" name="days" value="{{ summary.window_query }}">{% endif %}
+        {% if f.app %}<input type="hidden" name="app" value="{{ f.app }}">{% endif %}
         {% if f.region %}<input type="hidden" name="region" value="{{ f.region }}">{% endif %}
         {% if f.version %}<input type="hidden" name="version" value="{{ f.version }}">{% endif %}
         <span class="field"><span class="field-label">时间</span>
           <input type="date" name="start" value="{{ summary.date_range.start }}" max="{{ summary.date_range.today }}" aria-label="开始日期">
           <span class="soft">至</span>
           <input type="date" name="end" value="{{ summary.date_range.end }}" max="{{ summary.date_range.today }}" aria-label="结束日期">
+        </span>
+        <span class="field"><span class="field-label">软件</span>
+          <details class="dd">
+            <summary>{{ f.app_label }}</summary>
+            <div class="menu" role="menu">
+              <a href="{{ f.clear.app }}"{% if not f.app %} class="current"{% endif %}>全部软件</a>
+              {% for option in f.app_options %}<a href="{{ option.query }}"{% if option.selected %} class="current"{% endif %}>{{ option.label }} <span class="soft">{{ option.count }}</span></a>{% endfor %}
+            </div>
+          </details>
+          {% if f.app %}<a class="clear" href="{{ f.clear.app }}" title="清除软件筛选" aria-label="清除软件筛选">×</a>{% endif %}
         </span>
         <span class="field"><span class="field-label">地域</span>
           <details class="dd">
@@ -165,10 +182,10 @@
         </span>
         <span class="field"><span class="field-label">版本</span>
           <details class="dd">
-            <summary>{{ f.version or '全部版本' }}</summary>
+            <summary>{{ f.version_label }}</summary>
             <div class="menu" role="menu">
               <a href="{{ f.clear.version }}"{% if not f.version %} class="current"{% endif %}>全部版本</a>
-              {% for option in f.version_options %}<a href="{{ option.query }}"{% if option.selected %} class="current"{% endif %}>{{ option.value }} <span class="soft">{{ option.count }}</span></a>{% endfor %}
+              {% for option in f.version_options %}<a href="{{ option.query }}"{% if option.selected %} class="current"{% endif %}>{{ option.label }} <span class="soft">{{ option.count }}</span></a>{% endfor %}
             </div>
           </details>
           {% if f.version %}<a class="clear" href="{{ f.clear.version }}" title="清除版本筛选" aria-label="清除版本筛选">×</a>{% endif %}
@@ -181,7 +198,7 @@
     {% if summary.sessions %}
     <div class="table-wrap">
     <table class="sessions">
-      <thead><tr><th class="toggle-col"></th><th class="num"></th><th>打开时间</th><th>地域</th><th>IP</th><th>版本</th><th class="duration" title="从打开软件到关闭窗口">打开时长</th><th class="duration" title="窗口在前台且 2 分钟内有键盘或鼠标操作的累计时间">活跃时长</th></tr></thead>
+      <thead><tr><th class="toggle-col"></th><th class="num"></th><th>打开时间</th><th>地域</th><th>IP</th><th>软件</th><th>版本</th><th class="duration" title="从打开软件到关闭窗口">打开时长</th><th class="duration" title="窗口在前台且 2 分钟内有键盘或鼠标操作的累计时间">活跃时长</th></tr></thead>
       {% for row in summary.sessions %}
       <tbody class="session">
         <tr class="summary-row">
@@ -190,11 +207,12 @@
           <td>{{ row.opened_at_local }}</td>
           <td>{{ row.city }}</td>
           <td>{% if row.ip %}<a class="ip-link" href="{{ row.ip_query }}" title="只看这个 IP">{{ row.ip }}</a>{% else %}未知{% endif %}{% if row.ip and row.ip_inferred %}<span class="inferred" title="早期记录未按每次打开保存 IP，按同一安装和版本推断">（推断）</span>{% endif %}</td>
+          <td>{{ row.app_label }}</td>
           <td>{{ row.version }}</td>
           <td class="duration">{{ row.duration_label }}</td>
           <td class="duration">{{ row.active_label }}</td>
         </tr>
-        <tr class="detail"><td colspan="8">
+        <tr class="detail"><td colspan="9">
           <div class="detail-box">
             <div>
               <h3>运行环境</h3>
@@ -243,15 +261,15 @@
 
   <section aria-labelledby="import-title">
     <div class="section-head"><h2 id="import-title">文件导入 · 按扩展名</h2></div>
-    {% if summary.imports.by_extension %}<div class="table-wrap"><table class="plain"><thead><tr><th>扩展名</th><th>导入次数</th><th>成功</th><th>失败</th><th>成功率</th><th>平均耗时（ms）</th></tr></thead><tbody>
-    {% for row in summary.imports.by_extension %}<tr><td>{{ row.extension }}</td><td>{{ row.total }}</td><td>{{ row.success }}</td><td>{{ row.failure }}</td><td>{{ '%.1f'|format(row.success_rate * 100) }}%</td><td>{{ row.average_duration_ms }}</td></tr>{% endfor %}
+    {% if summary.imports.by_extension %}<div class="table-wrap"><table class="plain"><thead><tr><th>软件</th><th>扩展名</th><th>导入次数</th><th>成功</th><th>失败</th><th>成功率</th><th>平均耗时（ms）</th></tr></thead><tbody>
+    {% for row in summary.imports.by_extension %}<tr><td>{{ row.app_label }}</td><td>{{ row.extension }}</td><td>{{ row.total }}</td><td>{{ row.success }}</td><td>{{ row.failure }}</td><td>{{ '%.1f'|format(row.success_rate * 100) }}%</td><td>{{ row.average_duration_ms }}</td></tr>{% endfor %}
     </tbody></table></div>{% else %}<p class="empty">暂无数据</p>{% endif %}
   </section>
 
   <section aria-labelledby="env-title">
     <div class="section-head"><h2 id="env-title">运行环境 · 前 20 组</h2></div>
-    {% if summary.environments %}<div class="table-wrap"><table class="plain"><thead><tr><th>系统</th><th>系统版本</th><th>架构</th><th>屏幕宽 × 高</th><th>缩放</th><th>安装数</th></tr></thead><tbody>
-    {% for row in summary.environments %}<tr><td>{{ row.os }}</td><td>{{ row.os_version }}</td><td>{{ row.architecture }}</td><td>{{ row.screen_width }} × {{ row.screen_height }}</td><td>{{ row.scale }}</td><td>{{ row.installs }}</td></tr>{% endfor %}
+    {% if summary.environments %}<div class="table-wrap"><table class="plain"><thead><tr><th>软件</th><th>系统</th><th>系统版本</th><th>架构</th><th>屏幕宽 × 高</th><th>缩放</th><th>安装数</th></tr></thead><tbody>
+    {% for row in summary.environments %}<tr><td>{{ row.app_label }}</td><td>{{ row.os }}</td><td>{{ row.os_version }}</td><td>{{ row.architecture }}</td><td>{{ row.screen_width }} × {{ row.screen_height }}</td><td>{{ row.scale }}</td><td>{{ row.installs }}</td></tr>{% endfor %}
     </tbody></table></div>{% else %}<p class="empty">暂无数据</p>{% endif %}
   </section>
 

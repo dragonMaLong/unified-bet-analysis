@@ -26,7 +26,7 @@
 | Micromeritics 3Flex 3500 | 3Flex 3500 原始 SMP（含 `Version 5.00`）、Flex `6.03` 官方报表、MicroActive 可打开的手动点表 SMP 已验证 | `SMP`、`XLS` | 支持 SMP 内部手动等温线点表，并按 Flex `6.03` 官方 XLS 反推路径做自由空间修正与 BJH adsorption/desorption 标准修正；支持正式 Flex XLS 报表，临时导出的 `Entered Data Table` 不作为正式兼容格式。 |
 | Micromeritics ASAP 2460 | ASAP 2460 | `SMP`、`XLS`、`XLSX`、`XLSM` | 支持 ASAP 等温线与官方 Excel 导出；BET 默认区间包含 ASAP 2460 特定修正。 |
 | Micromeritics ASAP 2020 | ASAP 2020 `V4.04` | `SMP` | 支持旧版 ASAP 2020 SMP 的等温线、样品信息和测量自由空间读取；BET 使用文件保存的报告区间并兼容旧版两点拟合。 |
-| Micromeritics ASAP 2020 Plus | ASAP 2020 Plus | `SMP`、`XLS`、`XLSX`、`XLSM` | 支持 ASAP 2020 Plus 原始/导出数据读取与统一分析。 |
+| Micromeritics ASAP 2020 Plus | ASAP 2020 Plus，含 `Version 2.00` 重新保存的 SMP | `SMP`、`XLS`、`XLSX`、`XLSM` | 支持原始/导出数据读取与统一分析；Entered / Measured 自由空间已验证，Calculated 暂不支持。 |
 | MicrotracBEL BELSORP（BELMaster） | BELMaster DAT / Excel 导出 | `DAT`、`XLS`、`XLSX`、`XLSM` | 支持 BELMaster 等温线导入，并进入统一 BET / Langmuir / t-Plot / BJH 分析流程。 |
 | Quantachrome Autosorb iQ | Autosorb iQ / QuadraSorb；QPS、NovaWin `version 11.02` 文本型 Excel 报告已验证 | `QPS`、`XLSX` | 支持 QPS 原始等温线导入；支持 NovaWin 文本型 Excel 报告读取等温线，并在 Broekhoff-De Boer 厚度 + 标准修正下直接采用官方 BJH adsorption/desorption 表。 |
 | 贝士德 BSD-660 | BSD-660MC，软件 `V.9.1.15.0 Date 26.04.28` 已验证 | `XLS`、`XLSX`、`XLSM` | 支持官方 Excel 导出；BET、Langmuir、t-Plot 已按 BSD 报表口径复现，BJH 默认读取官方逐点表，孔容递推仍在反推中。 |
@@ -37,6 +37,8 @@
 - 热流逸修正：Weber 公式，按原厂计算手册实现。
 - 由 P₀ 推算浴温。
 - 读取文件保存的 BET、Langmuir、t-Plot 区间和厚度模型。
+
+ASAP 2020 Plus `Version 2.00` 重新保存的 66 字节点表格式也可读取，保留原有 58 字节点表支持。三个厂商示例重新保存后，解析点数、逐点压力和吸附量、自由空间来源及 BET 与原文件一致。该验证覆盖 `Entered`、`Measured` 及实际气体修正；`Calculated` 自由空间模式尚未支持。
 
 原厂给出结果的项目，默认 BET、Langmuir、t-Plot 与原厂相差均在 0.1% 以内。压汞、化学吸附等非物理吸附 SMP 不会导入，并会提示原因。
 
@@ -67,6 +69,7 @@ Gemini VII 2390（V1.00）和 ASAP 2425（Version 1.00）的 SMP 也可读取，
 
 ## 当前功能
 
+- 设置中可即时切换简体中文 / English，默认中文，语言选择在下次启动时保留；界面和 Excel / PDF 导出随所选语言显示。导入时生成的说明文字保留导入时的语言，重新导入后更新。
 - 读取上表所列的 SMP / RAW / XLS(X/M) / DAT / QPS 文件。
 - 通过左右双栏导入窗口批量选择文件，顶部保留“选择文件夹”和“刷新”两个按钮。Windows 下使用系统原生文件浏览窗口，保留熟悉的地址栏、侧边栏和文件列表；详细信息视图在“名称”后显示“类型”，保留文件夹已有的 Mic Description、Mic States 等其他列及列宽。窗口提供“添加”“选择文件夹”“取消”：可用 Ctrl / Shift 多选文件并点击“添加”直接加入右栏，重复文件自动去重；也可只选择文件夹，返回后在左栏按文件名、格式、修改时间、大小排序并筛选，再挑选待导入文件。支持已导入文件回显、多选移动和待导入顺序调整，确认列表后点击“开始导入”。
 - 多样品导入、显示、隐藏、排序、删除和拖拽调整顺序。
