@@ -24,7 +24,7 @@
 | Micromeritics TriStar II 3020 | TriStar II 3020 原始数据 | `SMP` | 支持等温线、BET、Langmuir、t-Plot、BJH；保留 TriStar II 3020 的默认点数与常数差异。 |
 | Micromeritics MicroActive for TriStar II Plus | MicroActive for TriStar II Plus | `SMP`、`XLS`、`XLSX`、`XLSM` | 支持原始 SMP 与官方 Excel 导出；BET 读取官方选点区间，BJH 正在按 MicroActive 标准修正继续逼近。 |
 | Micromeritics 3Flex 3500 | 3Flex 3500 原始 SMP（含 `Version 5.00`）、Flex `6.03` 官方报表、MicroActive 可打开的手动点表 SMP 已验证 | `SMP`、`XLS` | 支持 SMP 内部手动等温线点表，并按 Flex `6.03` 官方 XLS 反推路径做自由空间修正与 BJH adsorption/desorption 标准修正；支持正式 Flex XLS 报表，临时导出的 `Entered Data Table` 不作为正式兼容格式。 |
-| Micromeritics ASAP 2460 | ASAP 2460 | `SMP`、`XLS`、`XLSX`、`XLSM` | 支持 ASAP 等温线与官方 Excel 导出；BET 默认区间包含 ASAP 2460 特定修正。 |
+| Micromeritics ASAP 2460 | ASAP 2460；`Version 3.01` 单工作表并排报表已验证 | `SMP`、`XLS`、`XLSX`、`XLSM` | 支持 ASAP 等温线与官方 Excel 导出，包括单工作表内并排的等温线、BET、t-Plot 和孔径报表区块。读取报告明确选点；无明确选点的原始 SMP 仍保留 ASAP 2460 区间规则。 |
 | Micromeritics ASAP 2020 | ASAP 2020 `V4.04` | `SMP` | 支持旧版 ASAP 2020 SMP 的等温线、样品信息和测量自由空间读取；BET 使用文件保存的报告区间并兼容旧版两点拟合。 |
 | Micromeritics ASAP 2020 Plus | ASAP 2020 Plus，含 `Version 2.00` 重新保存的 SMP | `SMP`、`XLS`、`XLSX`、`XLSM` | 支持原始/导出数据读取与统一分析；Entered / Measured 自由空间已验证，Calculated 暂不支持。 |
 | MicrotracBEL BELSORP（BELMaster） | BELMaster DAT / Excel 导出 | `DAT`、`XLS`、`XLSX`、`XLSM` | 支持 BELMaster 等温线导入，并进入统一 BET / Langmuir / t-Plot / BJH 分析流程。 |

@@ -13,6 +13,8 @@ def run_ui_smoke(report_path: Path) -> int:
     import os
     import tempfile
     import traceback
+    from unittest.mock import patch
+    from . import i18n
     from .version import __version__
 
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -28,9 +30,12 @@ def run_ui_smoke(report_path: Path) -> int:
         import bet_telemetry.schema
 
         with tempfile.TemporaryDirectory(prefix="bet-ui-smoke-") as directory:
-            QtCore.QSettings.setDefaultFormat(QtCore.QSettings.IniFormat)
-            QtCore.QSettings.setPath(QtCore.QSettings.IniFormat, QtCore.QSettings.UserScope, directory)
-            QtCore.QSettings.setPath(QtCore.QSettings.IniFormat, QtCore.QSettings.SystemScope, directory)
+            # The organization/application overload still uses NativeFormat on
+            # Windows even after setDefaultFormat(). Use an explicit private
+            # file so diagnostics cannot read or change the user's preferences.
+            settings_path = Path(directory) / "settings.ini"
+            settings = QtCore.QSettings(str(settings_path), QtCore.QSettings.IniFormat)
+            i18n.set_language(i18n.SOURCE_LANGUAGE)
             app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
             app.setStyle("windowsvista")
             app.setFont(QtGui.QFont("Microsoft YaHei UI", 9))
@@ -42,18 +47,23 @@ def run_ui_smoke(report_path: Path) -> int:
                 def _initialize_telemetry(self):
                     pass
 
-            window = SmokeWindow()
+            with patch("tristar_bet.ui.main_window.QtCore.QSettings", return_value=settings):
+                window = SmokeWindow()
             window.show()
 
             def inspect_and_close():
                 try:
                     if not window.isVisible() or not window.windowTitle():
                         raise RuntimeError("Main window did not become visible")
+                    if window.settings is not settings or i18n.current_language() != i18n.SOURCE_LANGUAGE:
+                        raise RuntimeError("UI diagnostic did not use isolated default-language settings")
                     snapshot = report_path.with_suffix(".png")
                     if not window.grab().save(str(snapshot)):
                         raise RuntimeError("Could not capture the main window")
                     report.update(ok=True, title=window.windowTitle(),
                                   screenshot=str(snapshot), telemetry_schema_imported=True,
+                                  language=i18n.current_language(),
+                                  settings_isolated=window.settings is settings,
                                   widget_count=len(window.findChildren(QtWidgets.QWidget)))
                 except Exception:
                     report["error"] = traceback.format_exc()

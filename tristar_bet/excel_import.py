@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import re
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Iterable
@@ -99,6 +99,8 @@ class OfficialExcelParser:
             table = self._parse_micromeritics_flex_report_isotherm(workbook, sample)
         if table is None:
             table = self._parse_micromeritics_isotherm(workbook, sample)
+        if table is None:
+            table = self._parse_micromeritics_report_block_isotherm(workbook, sample)
         if table is None or not table.points:
             raise ExcelParseError(f"No supported isotherm table found in {file_path}")
 
@@ -158,8 +160,7 @@ class OfficialExcelParser:
         self._add_micromeritics_flex_report_values(workbook, method_options)
         self._add_micromeritics_dh_report_values(workbook, method_options)
         self._add_bet_fit_range(workbook, method_options)
-
-        return TriStarResult(
+        result = TriStarResult(
             header=header,
             subsets=[],
             sample=sample,
@@ -174,6 +175,9 @@ class OfficialExcelParser:
             method_options=method_options,
             raw_strings={},
         )
+        if table.source.startswith("micromeritics_report_block:"):
+            self._add_micromeritics_report_block_values(workbook, result)
+        return result
 
     def _build_sample(
         self,
@@ -535,6 +539,32 @@ class OfficialExcelParser:
         sheet = next((item for item in workbook.sheets if item.name == "Isotherm Tabular Report"), None)
         if sheet is None:
             return None
+        return self._micromeritics_tabular_isotherm(sheet, sample, f"micromeritics_flex_report:{sheet.name}")
+
+    def _parse_micromeritics_report_block_isotherm(
+        self,
+        workbook: ExcelWorkbook,
+        sample: SampleInfo,
+    ) -> IsothermTable | None:
+        """MicroActive export with every report side by side on one sheet (ASAP 2460 3.01).
+
+        Each report is a block of columns whose title sits in one row and whose
+        right edge is a "|" column.  The "Isotherm Tabular Report" block has the
+        same Relative Pressure / Quantity Adsorbed / Saturation Pressure table as
+        the separate-sheet Flex report.
+        """
+        for sheet in workbook.sheets:
+            block = _report_block(sheet, "Isotherm Tabular Report")
+            if block is None:
+                continue
+            title_row, first_column, end_column = block
+            grid = SheetGrid(sheet.name, [list(row[first_column:end_column]) for row in sheet.values[title_row:]])
+            table = self._micromeritics_tabular_isotherm(grid, sample, f"micromeritics_report_block:{sheet.name}")
+            if table is not None:
+                return table
+        return None
+
+    def _micromeritics_tabular_isotherm(self, sheet: SheetGrid, sample: SampleInfo, source: str) -> IsothermTable | None:
         table_position = self._find_micromeritics_flex_isotherm_table(sheet)
         if table_position is None:
             return None
@@ -601,7 +631,7 @@ class OfficialExcelParser:
                     quantity_adsorbed_mmol_g=quantity / CM3_STP_PER_MMOL,
                 )
             )
-        return IsothermTable(points=points, source=f"micromeritics_flex_report:{sheet.name}")
+        return IsothermTable(points=points, source=source)
 
     @staticmethod
     def _find_micromeritics_flex_isotherm_table(sheet: SheetGrid) -> tuple[int, dict[str, int]] | None:
@@ -933,6 +963,53 @@ class OfficialExcelParser:
             method_options["official_fit_range_usage"] = "validation_only"
 
     @staticmethod
+    def _add_micromeritics_report_block_values(
+        workbook: ExcelWorkbook, result: TriStarResult
+    ) -> None:
+        """Use printed selections; infer missing settings only after this report verifies them."""
+        from .analysis import langmuir_analysis
+
+        method_options = result.method_options
+        method_options["micromeritics_report_block_excel_import"] = True
+        method_options["use_official_excel_fit_ranges"] = True
+        method_options["official_fit_range_usage"] = "vendor_report_selection"
+        micromeritics = method_options.get("instrument_manufacturer") == "Micromeritics"
+        if micromeritics:
+            # Same measured-point rule as the supported Micromeritics SMP families.
+            method_options["single_point_bet_method"] = "nearest_measured_point"
+            method_options["single_point_bet_method_source"] = "recognized Micromeritics instrument"
+
+        for method in ("bet", "t_plot", "langmuir"):
+            selection = _report_block_fit_selection(workbook, result.isotherm, method)
+            if selection is None:
+                continue
+            selected, source = selection
+            method_options[f"excel_report_{method}_point_indices"] = [point.index for point in selected]
+            bounds_points = selected or [point for point in result.isotherm if point.phase == "adsorption"]
+            if bounds_points:
+                # An explicit empty/unresolvable selection stays empty in analysis;
+                # the envelope only supplies a UI range, never replacement points.
+                pressures = [float(point.relative_pressure) for point in bounds_points]
+                method_options[f"stored_{method}_pressure_min"] = min(pressures)
+                method_options[f"stored_{method}_pressure_max"] = max(pressures)
+            method_options[f"excel_{method}_range_source"] = source
+
+        if micromeritics and "excel_report_langmuir_point_indices" not in method_options:
+            adsorption = [float(point.relative_pressure) for point in result.isotherm if point.phase == "adsorption"]
+            expected = method_options.get("excel_langmuir_surface_area_m2_g")
+            if len(adsorption) >= 3 and expected is not None:
+                fit = langmuir_analysis(result, min(adsorption), max(adsorption))
+                if _report_value_matches(fit.surface_area_m2_g, expected, absolute=5e-5):
+                    method_options["stored_langmuir_pressure_min"] = min(adsorption)
+                    method_options["stored_langmuir_pressure_max"] = max(adsorption)
+                    method_options["excel_langmuir_range_source"] = (
+                        "inferred all adsorption points; verified against this report's Langmuir summary"
+                    )
+
+        if micromeritics:
+            _add_report_block_pore_settings(workbook, result)
+
+    @staticmethod
     def _add_micromeritics_dh_report_values(workbook: ExcelWorkbook, method_options: dict[str, Any]) -> None:
         rows_by_phase: dict[str, list[dict[str, float]]] = {}
         for phase in ("adsorption", "desorption"):
@@ -1004,11 +1081,16 @@ def _read_xlsx(path: Path) -> ExcelWorkbook:
     except Exception as exc:
         raise ExcelParseError(f"Unsupported or corrupt .xlsx/.xlsm workbook: {path}") from exc
     sheets = []
-    for worksheet in book.worksheets:
-        rows = []
-        for row in worksheet.iter_rows(values_only=True):
-            rows.append(list(row))
-        sheets.append(SheetGrid(name=worksheet.title, values=rows))
+    try:
+        for worksheet in book.worksheets:
+            rows = []
+            for row in worksheet.iter_rows(values_only=True):
+                rows.append(list(row))
+            sheets.append(SheetGrid(name=worksheet.title, values=rows))
+    finally:
+        # A read-only workbook keeps the file open until closed (Windows then
+        # refuses to delete, rename or overwrite the imported file).
+        book.close()
     if not sheets:
         raise ExcelParseError(f"Workbook has no sheets: {path}")
     return ExcelWorkbook(sheets=sheets)
@@ -1259,6 +1341,287 @@ def _detect_instrument(workbook: ExcelWorkbook) -> dict[str, Any]:
         "instrument_model": "",
         "instrument_software": "",
     }
+
+
+def _report_grids(workbook: ExcelWorkbook, titles: Iterable[str]) -> Iterable[SheetGrid]:
+    for title in titles:
+        for sheet in workbook.sheets:
+            block = _report_block(sheet, title)
+            if block is not None:
+                row, first, end = block
+                yield SheetGrid(f"{title}:{sheet.name}", [list(values[first:end]) for values in sheet.values[row:]])
+
+
+def _report_block_fit_selection(
+    workbook: ExcelWorkbook, points: list[IsothermPoint], method: str
+) -> tuple[list[IsothermPoint], str] | None:
+    titles = {
+        "bet": ("BET Report", "BET Surface Area Report", "BET Surface Area Plot"),
+        "t_plot": ("t-Plot Report", "t-Plot Tabular Report"),
+        "langmuir": ("Langmuir Tabular Report", "Langmuir Report", "Langmuir Surface Area Plot"),
+    }[method]
+    for grid in _report_grids(workbook, titles):
+        for row_index in range(grid.nrows):
+            headers = [_normalize_header(grid.cell(row_index, c)) for c in range(grid.ncols)]
+            fitted = next((c for c, h in enumerate(headers) if h == "fitted"), None)
+            for column, header in enumerate(headers):
+                absolute = method == "langmuir" and "pressure" in header and (
+                    "kpa" in header or "mmhg" in header or "torr" in header
+                )
+                if not _is_relative_pressure_header(header) and not absolute:
+                    continue
+                if method == "bet" and not any(_is_bet_transform_header(h) for h in headers[column + 1:column + 3]):
+                    continue
+                if method == "t_plot" and fitted is None:
+                    continue
+                quantity_column = next(
+                    (c for c in range(column + 1, min(column + 3, len(headers))) if "quantity adsorbed" in headers[c]),
+                    None,
+                )
+                selected: list[IsothermPoint] = []
+                used: set[int] = set()
+                seen = False
+                blanks = 0
+                for data_row in range(row_index + 1, grid.nrows):
+                    pressure = _number(grid.cell(data_row, column))
+                    if pressure is None:
+                        if seen:
+                            blanks += 1
+                            if blanks >= 2:
+                                break
+                        continue
+                    seen = True
+                    blanks = 0
+                    if fitted is not None and _as_clean_string(grid.cell(data_row, fitted)) != "*":
+                        continue
+                    quantity = _number(grid.cell(data_row, quantity_column)) if quantity_column is not None else None
+                    matches = []
+                    for point in points:
+                        if point.phase != "adsorption" or point.index in used:
+                            continue
+                        value = point.absolute_pressure_mmHg if absolute else point.relative_pressure
+                        if value is None:
+                            continue
+                        if absolute and "kpa" in header:
+                            value *= MMHG_TO_KPA
+                        if not math.isclose(float(value), pressure, rel_tol=1e-7, abs_tol=1e-10):
+                            continue
+                        if quantity is not None and not math.isclose(
+                            float(point.quantity_adsorbed_cm3_g_stp or 0.0), quantity, rel_tol=1e-6, abs_tol=5e-5
+                        ):
+                            continue
+                        matches.append(point)
+                    # Ambiguous/unmatched rows cannot safely be turned into a fit range.
+                    if len(matches) != 1:
+                        return [], f"unresolved explicit selection in {grid.name}"
+                    selected.append(matches[0])
+                    used.add(matches[0].index)
+                if seen:
+                    return selected, f"explicit selected rows in {grid.name}"
+    return None
+
+
+_REPORT_NUMBER = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
+_REPORT_LENGTH_UNIT = r"(?:nm|å|angstroms?)"
+
+
+def _report_lengths_angstrom(text: str, count: int) -> list[float] | None:
+    number = rf"({_REPORT_NUMBER})"
+    expression = number if count == 1 else rf"{number}\s*(?:to|-)\s*{number}"
+    match = re.fullmatch(rf"\s*{expression}\s*({_REPORT_LENGTH_UNIT})\s*", text.lower())
+    if match is None:
+        return None
+    factor = 10.0 if match[count + 1] == "nm" else 1.0
+    values = [float(match[i]) * factor for i in range(1, count + 1)]
+    if not all(math.isfinite(v) and v > 0.0 for v in values):
+        return None
+    return values
+
+
+def _report_harkins_jura_params(equation: str) -> dict[str, float] | None:
+    number = rf"({_REPORT_NUMBER})"
+    match = re.fullmatch(
+        rf"\s*t\s*=\s*\[\s*{number}\s*/\s*\(\s*{number}\s*-\s*"
+        rf"log(?:10)?\s*\(\s*p\s*/\s*p(?:0|o|°|₀)\s*\)\s*\)\s*\]\s*\^\s*{number}\s*",
+        equation.lower().replace("−", "-"),
+    )
+    if match is None:
+        return None
+    numerator, offset, exponent = (float(v) for v in match.groups())
+    if not (1.0 < numerator < 100.0 and 0.0 < offset < 1.0 and 0.0 < exponent <= 1.0):
+        return None
+    return {"numerator": numerator, "offset": offset, "exponent": exponent}
+
+
+def _micromeritics_report_block_pore_settings(grid: SheetGrid) -> dict[str, Any] | None:
+    """Read only this method/branch's printed, supported options."""
+    texts = [[_as_clean_string(value) for value in row] for row in grid.values[1:30]]
+    flat = [text for row in texts for text in row if text]
+    correction = "faas" if any(text.lower() == "faas correction" for text in flat) else (
+        "standard" if any(text.lower() == "standard correction" for text in flat) else None
+    )
+    params = next((parsed for text in flat if (parsed := _report_harkins_jura_params(text)) is not None), None)
+    values = {row[0].rstrip(":").strip().lower(): row[1] for row in texts if len(row) >= 2 and row[0]}
+    width = _report_lengths_angstrom(values.get("width range", ""), 2)
+    factor = _report_lengths_angstrom(values.get("adsorbate property factor", ""), 1)
+    if (correction is None or params is None or not any(text.lower() == "harkins and jura" for text in flat)
+            or width is None or factor is None or not width[0] < width[1] <= 1e5 or not 1.0 < factor[0] < 50.0):
+        return None
+    open_fraction = _number(values.get("fraction of pores open at both ends", 0.0))
+    if open_fraction is None or open_fraction != 0.0:
+        return None  # the vendor implementation supports closed-end pores only
+    settings: dict[str, Any] = {
+        "thickness_method": "harkins_jura", "thickness_params": params,
+        "kelvin_factor_angstrom": factor[0],
+        "diameter_min_angstrom": width[0], "diameter_max_angstrom": width[1],
+        "correction": correction, "settings_source": f"printed options in {grid.name}",
+    }
+    for label in ("relative pressure range", "pressure range (p/p0)", "pressure range (p/p°)"):
+        if label not in values:
+            continue
+        match = re.fullmatch(rf"\s*({_REPORT_NUMBER})\s*(?:to|-)\s*({_REPORT_NUMBER})\s*", values[label])
+        if match is None or not 0.0 <= float(match[1]) < float(match[2]) <= 1.0:
+            return None
+        settings["pressure_range"] = [float(match[1]), float(match[2])]
+        settings["pressure_range_source"] = "printed report range"
+    return settings
+
+
+def _report_value_matches(actual: Any, expected: Any, *, absolute: float) -> bool:
+    return (isinstance(actual, (int, float)) and isinstance(expected, (int, float))
+            and math.isfinite(actual) and math.isfinite(expected) and expected > 0.0
+            and math.isclose(actual, expected, rel_tol=2e-5, abs_tol=absolute))
+
+
+def _report_pore_summary(workbook: ExcelWorkbook, method: str, phase: str) -> dict[str, Any]:
+    values: dict[str, Any] = {}
+    prefixes = ("bjh",) if method == "bjh" else ("d-h", "dh", "dollimore-heal")
+    for grid in _report_grids(workbook, ("Summary Report",)):
+        for row_index, row in enumerate(grid.values):
+            for column, value in enumerate(row):
+                label = _normalize_header(value)
+                if not any(label.startswith(f"{prefix} {phase} cumulative") for prefix in prefixes):
+                    continue
+                key = "area" if "surface area" in label else "volume" if "volume" in label else None
+                if key is None:
+                    continue
+                for next_row in range(row_index, min(row_index + 3, grid.nrows)):
+                    reported = _number(grid.cell(next_row, column + 1))
+                    if reported is not None:
+                        values[key] = reported
+                        width_text = _as_clean_string(grid.cell(next_row, column)).lower()
+                        width = re.fullmatch(
+                            rf"between\s+({_REPORT_NUMBER})\s*({_REPORT_LENGTH_UNIT})\s+and\s+"
+                            rf"({_REPORT_NUMBER})\s*({_REPORT_LENGTH_UNIT})\s+width:?", width_text,
+                        )
+                        if width:
+                            bounds = [float(width[1]) * (10 if width[2] == "nm" else 1),
+                                      float(width[3]) * (10 if width[4] == "nm" else 1)]
+                            values[f"{key}_width"] = bounds
+                        break
+    return values
+
+
+def _report_pore_table_totals(grid: SheetGrid) -> dict[str, Any]:
+    for row_index, row in enumerate(grid.values):
+        headers = [_normalize_header(v).replace(" ", "") for v in row]
+        volume = next((i for i, h in enumerate(headers) if "cumulativeporevolume" in h), None)
+        area = next((i for i, h in enumerate(headers) if "cumulativeporearea" in h), None)
+        if volume is None or area is None:
+            continue
+        totals = {}
+        for data_row in range(row_index + 1, grid.nrows):
+            v, a = _number(grid.cell(data_row, volume)), _number(grid.cell(data_row, area))
+            if v is None or a is None:
+                if totals:
+                    break
+                continue
+            totals = {"volume": v, "area": a}
+        return totals
+    return {}
+
+
+def _pore_candidate_matches(result: TriStarResult, method: str, phase: str, settings: dict[str, Any],
+                            expected: dict[str, Any]) -> bool:
+    from .analysis import micromeritics_vendor_pore_rows
+
+    if "volume" not in expected or "area" not in expected:
+        return False
+    bounds = [settings["diameter_min_angstrom"], settings["diameter_max_angstrom"]]
+    for key in ("volume_width", "area_width"):
+        if key in expected and any(not math.isclose(a, b, rel_tol=1e-6) for a, b in zip(expected[key], bounds)):
+            return False
+    candidate = replace(result, method_options={
+        **result.method_options, f"vendor_{method}_report_settings": {phase: settings},
+    })
+    rows = micromeritics_vendor_pore_rows(
+        candidate, phase, settings["thickness_method"], settings["thickness_params"],
+        settings["correction"], 0.0, dollimore_heal=method == "dh",
+    )
+    return bool(rows and _report_value_matches(rows[-1]["cumulative_pore_volume_cm3_g"], expected["volume"], absolute=5e-7)
+                and _report_value_matches(rows[-1]["cumulative_pore_area_m2_g"], expected["area"], absolute=5e-5))
+
+
+def _add_report_block_pore_settings(workbook: ExcelWorkbook, result: TriStarResult) -> None:
+    options = result.method_options
+    for method in ("bjh", "dh"):
+        by_phase = {}
+        for phase in ("adsorption", "desorption"):
+            prefixes = ("BJH",) if method == "bjh" else ("Dollimore-Heal", "D-H", "DH")
+            titles = tuple(f"{prefix} {phase.title()} Pore Distribution Report" for prefix in prefixes)
+            grid = next(_report_grids(workbook, titles), None)
+            expected = _report_pore_summary(workbook, method, phase)
+            if grid is not None:
+                settings = _micromeritics_report_block_pore_settings(grid)
+                if settings is None:
+                    continue  # never substitute another branch for unsupported explicit settings
+                if not {"volume", "area"}.issubset(expected):
+                    expected = _report_pore_table_totals(grid)
+                if "pressure_range" not in settings:
+                    # One candidate, never an optimization to reproduce the summary.
+                    settings["pressure_range"] = [0.1, 0.995]
+                    if not _pore_candidate_matches(result, method, phase, settings, expected):
+                        continue
+                    settings["pressure_range_source"] = "inferred 0.1-0.995; verified against this report's cumulative volume and area"
+            elif method == "dh":
+                # Some exports print DH totals without its options. A same-branch BJH
+                # candidate is accepted only when both independent DH totals verify it.
+                source = options.get("vendor_bjh_report_settings", {}).get(phase)
+                if source is None:
+                    continue
+                settings = {**source, "thickness_params": dict(source["thickness_params"])}
+                if "area_width" in expected and expected.get("volume_width") == expected["area_width"]:
+                    settings["diameter_min_angstrom"], settings["diameter_max_angstrom"] = expected["area_width"]
+                if not _pore_candidate_matches(result, method, phase, settings, expected):
+                    continue
+                settings["settings_source"] = "inferred from same-phase BJH; verified against this report's DH cumulative volume and area"
+            else:
+                continue
+            if result.run_conditions.adsorptive_short:
+                settings["kelvin_adsorptive"] = result.run_conditions.adsorptive_short
+            by_phase[phase] = settings
+        if by_phase:
+            options[f"vendor_{method}_report_settings"] = by_phase
+            first = next(iter(by_phase.values()))
+            options[f"vendor_{method}_thickness_method"] = first["thickness_method"]
+            options[f"official_{method}_table_usage"] = "validation_only"
+            if method == "bjh":
+                options["vendor_bjh_correction"] = first["correction"]
+                options["vendor_bjh_smooth_derivative"] = first["correction"] == "standard"
+
+
+def _report_block(sheet: SheetGrid, title: str) -> tuple[int, int, int] | None:
+    """(title row, first column, end column) of a report block titled ``title`` on a combined sheet."""
+    wanted = _normalize_header(title)
+    for row_index in range(sheet.nrows):
+        for column_index in range(sheet.ncols):
+            if _normalize_header(sheet.cell(row_index, column_index)) != wanted:
+                continue
+            end = column_index + 1
+            while end < sheet.ncols and not _as_clean_string(sheet.cell(row_index, end)):
+                end += 1
+            return row_index, column_index, end
+    return None
 
 
 def _first_label(labels: dict[str, Any], *keys: str) -> Any:

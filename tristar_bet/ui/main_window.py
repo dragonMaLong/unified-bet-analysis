@@ -9567,20 +9567,22 @@ class MainWindow(QtWidgets.QMainWindow):
             self._fit_analysis_cache.pop(next(iter(self._fit_analysis_cache)))
 
     def _cached_bet_analysis(self, result, p_min: float, p_max: float):
-        cache_key = self._fit_analysis_cache_key("bet", result, float(p_min), float(p_max))
+        use_report_points = not self._is_custom_bet_fit(result)
+        cache_key = self._fit_analysis_cache_key("bet", result, float(p_min), float(p_max), use_report_points)
         cached = self._fit_analysis_cache.get(cache_key)
         if cached is not None:
             return cached
-        analysis = bet_analysis(result, p_min, p_max)
+        analysis = bet_analysis(result, p_min, p_max, use_report_point_selection=use_report_points)
         self._store_fit_analysis_cache(cache_key, analysis)
         return analysis
 
     def _cached_langmuir_analysis(self, result, p_min: float, p_max: float):
-        cache_key = self._fit_analysis_cache_key("langmuir", result, float(p_min), float(p_max))
+        use_report_points = not self._is_custom_langmuir_fit(result)
+        cache_key = self._fit_analysis_cache_key("langmuir", result, float(p_min), float(p_max), use_report_points)
         cached = self._fit_analysis_cache.get(cache_key)
         if cached is not None:
             return cached
-        analysis = langmuir_analysis(result, p_min, p_max)
+        analysis = langmuir_analysis(result, p_min, p_max, use_report_point_selection=use_report_points)
         self._store_fit_analysis_cache(cache_key, analysis)
         return analysis
 
@@ -9592,6 +9594,7 @@ class MainWindow(QtWidgets.QMainWindow):
         thickness_params: dict[str, object] | None = None,
         thickness_method: str = DEFAULT_T_PLOT_THICKNESS_METHOD,
     ):
+        use_report_points = not self._is_custom_t_plot_fit(result)
         cache_key = self._fit_analysis_cache_key(
             "t_plot_pressure",
             result,
@@ -9599,11 +9602,13 @@ class MainWindow(QtWidgets.QMainWindow):
             float(p_max),
             str(thickness_method),
             thickness_params or {},
+            use_report_points,
         )
         cached = self._fit_analysis_cache.get(cache_key)
         if cached is not None:
             return cached
-        analysis = t_plot_analysis(result, p_min, p_max, thickness_params, thickness_method)
+        analysis = t_plot_analysis(result, p_min, p_max, thickness_params, thickness_method,
+                                   use_report_point_selection=use_report_points)
         self._store_fit_analysis_cache(cache_key, analysis)
         return analysis
 
@@ -9629,6 +9634,7 @@ class MainWindow(QtWidgets.QMainWindow):
         thickness_params: dict[str, object] | None = None,
         thickness_method: str = DEFAULT_T_PLOT_THICKNESS_METHOD,
     ):
+        use_report_points = not self._is_custom_t_plot_fit(result)
         window = self._t_plot_default_pressure_window(result)
         if window is not None:
             p_min = window[0] if p_min is None else max(float(p_min), window[0])
@@ -9646,6 +9652,7 @@ class MainWindow(QtWidgets.QMainWindow):
             None if p_max is None else float(p_max),
             str(thickness_method),
             thickness_params or {},
+            use_report_points,
         )
         cached = self._fit_analysis_cache.get(cache_key)
         if cached is not None:
@@ -9658,6 +9665,7 @@ class MainWindow(QtWidgets.QMainWindow):
             p_max,
             thickness_params,
             thickness_method,
+            use_report_point_selection=use_report_points,
         )
         self._store_fit_analysis_cache(cache_key, analysis)
         return analysis

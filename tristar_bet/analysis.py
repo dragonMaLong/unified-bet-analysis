@@ -337,6 +337,8 @@ def bet_analysis(
     result: TriStarResult,
     p_min: float | None = None,
     p_max: float | None = None,
+    *,
+    use_report_point_selection: bool = True,
 ) -> FitResult:
     if p_min is None or p_max is None:
         jwgb_points = _jwgb_raw_bet_points(result)
@@ -344,6 +346,10 @@ def bet_analysis(
             pressures = [float(point.relative_pressure) for point in jwgb_points]
             return _bet_analysis_for_points(result, jwgb_points, min(pressures), max(pressures))
         p_min, p_max = automatic_bet_range(result)
+    if use_report_point_selection:
+        selected = _excel_report_points_for_range(result, "bet", p_min, p_max)
+        if selected is not None:
+            return _bet_analysis_for_points(result, selected, p_min, p_max)
     return _bet_analysis_for_range(result, p_min, p_max)
 
 
@@ -502,6 +508,10 @@ def automatic_bet_range(result: TriStarResult) -> tuple[float, float]:
     if jwgb_points:
         pressures = [float(point.relative_pressure) for point in jwgb_points]
         return min(pressures), max(pressures)
+    if _excel_report_point_ids(result, "bet") is not None:
+        stored_range = _stored_bet_range(result)
+        if stored_range is not None:
+            return stored_range
     if len(points) < _minimum_bet_fit_points(result):
         return BET_AUTO_FALLBACK_RANGE
     if _uses_official_fit_ranges(result) and _uses_asap_defaults(result):
@@ -794,10 +804,14 @@ def langmuir_analysis(
     result: TriStarResult,
     p_min: float | None = None,
     p_max: float | None = None,
+    *,
+    use_report_point_selection: bool = True,
 ) -> FitResult:
     if p_min is None or p_max is None:
         p_min, p_max = automatic_langmuir_range(result)
-    selected = _points_in_range(adsorption_points(result), p_min, p_max)
+    selected = _excel_report_points_for_range(result, "langmuir", p_min, p_max) if use_report_point_selection else None
+    if selected is None:
+        selected = _points_in_range(adsorption_points(result), p_min, p_max)
     minimum_points = _minimum_fit_points(result)
     if len(selected) < minimum_points:
         return FitResult("Langmuir", "not_enough_points", len(selected), p_min, p_max)
@@ -882,6 +896,8 @@ def t_plot_analysis(
     p_max: float | None = None,
     thickness_params: dict[str, float] | None = None,
     thickness_method: str | None = None,
+    *,
+    use_report_point_selection: bool = True,
 ) -> FitResult:
     thickness_method = _t_plot_thickness_method(result, thickness_method)
     if p_min is None or p_max is None:
@@ -895,9 +911,12 @@ def t_plot_analysis(
                     p_max=window[1] if window else None,
                     thickness_params=thickness_params or vendor_t_plot_thickness_params(result),
                     thickness_method=thickness_method,
+                    use_report_point_selection=use_report_point_selection,
                 )
         p_min, p_max = automatic_t_plot_pressure_range(result)
-    selected = _points_in_range(adsorption_points(result), p_min, p_max)
+    selected = _excel_report_points_for_range(result, "t_plot", p_min, p_max) if use_report_point_selection else None
+    if selected is None:
+        selected = _points_in_range(adsorption_points(result), p_min, p_max)
     return _t_plot_fit_from_points(result, selected, p_min, p_max, thickness_params, thickness_method)
 
 
@@ -909,11 +928,22 @@ def t_plot_analysis_by_thickness(
     p_max: float | None = None,
     thickness_params: dict[str, float] | None = None,
     thickness_method: str | None = None,
+    *,
+    use_report_point_selection: bool = True,
 ) -> FitResult:
     thickness_method = _t_plot_thickness_method(result, thickness_method)
     pts = adsorption_points(result)
     if p_min is not None and p_max is not None:
         pts = _points_in_range(pts, p_min, p_max)
+    if use_report_point_selection:
+        report_ids = _excel_report_point_ids(result, "t_plot")
+        stored_range = _stored_t_plot_pressure_range(result)
+        if report_ids is not None and stored_range is not None:
+            default_thickness = [thickness_nm(p, thickness_method, thickness_params) for p in stored_range]
+            if (all(value is not None for value in default_thickness)
+                    and _same_fit_range((t_min, t_max), default_thickness)):
+                selected = [point for point in pts if point.index in report_ids]
+                return _t_plot_fit_from_points(result, selected, t_min, t_max, thickness_params, thickness_method)
     selected = []
     tolerance = 1e-12 if _uses_tristar_plus_v3_defaults(result) else 0.0
     for pt in pts:
@@ -1216,6 +1246,38 @@ def _jwgb_raw_bet_points(
         return []
     source = list(points) if points is not None else adsorption_points(result)
     return [point for point in source if int(point.index) in point_ids]
+
+
+def _excel_report_point_ids(result: TriStarResult, method: str) -> set[int] | None:
+    """Explicit report selections are separate from the interval displayed by the UI."""
+    if not result.method_options.get("micromeritics_report_block_excel_import") or not _uses_official_fit_ranges(result):
+        return None
+    values = result.method_options.get(f"excel_report_{method}_point_indices")
+    if not isinstance(values, (list, tuple)):
+        return None
+    return {int(value) for value in values if _valid_number(value) and float(value).is_integer() and value > 0}
+
+
+def _same_fit_range(requested: Sequence[float], stored: Sequence[float]) -> bool:
+    return all(math.isclose(a, b, rel_tol=0.0, abs_tol=1e-12)
+               for a, b in zip(sorted(requested), sorted(stored)))
+
+
+def _excel_report_points_for_range(
+    result: TriStarResult, method: str, p_min: float, p_max: float,
+) -> list[IsothermPoint] | None:
+    point_ids = _excel_report_point_ids(result, method)
+    if point_ids is None:
+        return None
+    stored = {
+        "bet": _stored_bet_range,
+        "langmuir": _stored_langmuir_range,
+        "t_plot": _stored_t_plot_pressure_range,
+    }[method](result)
+    if stored is None or not _same_fit_range((p_min, p_max), stored):
+        return None
+    # Do not widen a noncontiguous report selection to its pressure envelope.
+    return [point for point in adsorption_points(result) if point.index in point_ids]
 
 
 def _uses_bsd_t_plot_defaults(result: TriStarResult) -> bool:
