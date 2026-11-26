@@ -11,6 +11,7 @@ from .dft_models import (
     interpolate_dft_kernel,
     load_dft_model_kernel,
 )
+from . import quantachrome_native
 from .models import IsothermPoint, TriStarResult
 from .reference_thickness import default_reference_params, normalize_reference_points, reference_thickness_nm
 
@@ -237,6 +238,11 @@ class FitResult:
     external_surface_area_m2_g: float | None = None
     micropore_volume_cm3_g: float | None = None
     rows: list[dict[str, float]] = field(default_factory=list)
+    qps_external_area_capped: bool = False
+
+    @property
+    def summary_micropore_volume_cm3_g(self) -> float | None:
+        return None if self.qps_external_area_capped else self.micropore_volume_cm3_g
 
     @property
     def ok(self) -> bool:
@@ -347,7 +353,7 @@ def bet_analysis(
             return _bet_analysis_for_points(result, jwgb_points, min(pressures), max(pressures))
         p_min, p_max = automatic_bet_range(result)
     if use_report_point_selection:
-        selected = _excel_report_points_for_range(result, "bet", p_min, p_max)
+        selected = _report_fit_points_for_range(result, "bet", p_min, p_max)
         if selected is not None:
             return _bet_analysis_for_points(result, selected, p_min, p_max)
     return _bet_analysis_for_range(result, p_min, p_max)
@@ -457,6 +463,10 @@ def single_point_bet_analysis(
 
 
 def automatic_langmuir_range(result: TriStarResult) -> tuple[float, float]:
+    if result.method_options.get("quantachrome_qps_native") and _report_fit_point_ids(result, "langmuir") is not None:
+        stored_range = _report_fit_range(result, "langmuir")
+        if stored_range is not None:
+            return stored_range
     if _uses_official_fit_ranges(result):
         stored_range = _stored_langmuir_range(result)
         if stored_range is not None:
@@ -470,6 +480,10 @@ def automatic_langmuir_range(result: TriStarResult) -> tuple[float, float]:
 
 
 def automatic_t_plot_pressure_range(result: TriStarResult) -> tuple[float, float]:
+    if result.method_options.get("quantachrome_qps_native") and _report_fit_point_ids(result, "t_plot") is not None:
+        stored_range = _report_fit_range(result, "t_plot")
+        if stored_range is not None:
+            return stored_range
     if uses_vendor_t_plot_settings(result) and _uses_official_fit_ranges(result):
         stored_thickness = _stored_t_plot_thickness_range(result)
         if stored_thickness is not None:
@@ -508,8 +522,8 @@ def automatic_bet_range(result: TriStarResult) -> tuple[float, float]:
     if jwgb_points:
         pressures = [float(point.relative_pressure) for point in jwgb_points]
         return min(pressures), max(pressures)
-    if _excel_report_point_ids(result, "bet") is not None:
-        stored_range = _stored_bet_range(result)
+    if _report_fit_point_ids(result, "bet") is not None:
+        stored_range = _report_fit_range(result, "bet")
         if stored_range is not None:
             return stored_range
     if len(points) < _minimum_bet_fit_points(result):
@@ -527,6 +541,7 @@ def automatic_bet_range(result: TriStarResult) -> tuple[float, float]:
         or _uses_bsd_defaults(result)
         or _uses_micromeritics_flex_defaults(result)
         or _uses_jwgb_defaults(result)
+        or _uses_quantachrome_qps_tags(result)
         or result.method_options.get("format_family") == "legacy ASAP v6 SMP"
     ):
         stored_range = _stored_bet_range(result)
@@ -809,7 +824,7 @@ def langmuir_analysis(
 ) -> FitResult:
     if p_min is None or p_max is None:
         p_min, p_max = automatic_langmuir_range(result)
-    selected = _excel_report_points_for_range(result, "langmuir", p_min, p_max) if use_report_point_selection else None
+    selected = _report_fit_points_for_range(result, "langmuir", p_min, p_max) if use_report_point_selection else None
     if selected is None:
         selected = _points_in_range(adsorption_points(result), p_min, p_max)
     minimum_points = _minimum_fit_points(result)
@@ -900,6 +915,7 @@ def t_plot_analysis(
     use_report_point_selection: bool = True,
 ) -> FitResult:
     thickness_method = _t_plot_thickness_method(result, thickness_method)
+    thickness_params = _qps_effective_thickness_params(result, thickness_method, thickness_params)
     if p_min is None or p_max is None:
         if uses_vendor_t_plot_settings(result) and _uses_official_fit_ranges(result):
             stored_thickness = _stored_t_plot_thickness_range(result)
@@ -914,7 +930,7 @@ def t_plot_analysis(
                     use_report_point_selection=use_report_point_selection,
                 )
         p_min, p_max = automatic_t_plot_pressure_range(result)
-    selected = _excel_report_points_for_range(result, "t_plot", p_min, p_max) if use_report_point_selection else None
+    selected = _report_fit_points_for_range(result, "t_plot", p_min, p_max) if use_report_point_selection else None
     if selected is None:
         selected = _points_in_range(adsorption_points(result), p_min, p_max)
     return _t_plot_fit_from_points(result, selected, p_min, p_max, thickness_params, thickness_method)
@@ -932,12 +948,13 @@ def t_plot_analysis_by_thickness(
     use_report_point_selection: bool = True,
 ) -> FitResult:
     thickness_method = _t_plot_thickness_method(result, thickness_method)
+    thickness_params = _qps_effective_thickness_params(result, thickness_method, thickness_params)
     pts = adsorption_points(result)
     if p_min is not None and p_max is not None:
         pts = _points_in_range(pts, p_min, p_max)
     if use_report_point_selection:
-        report_ids = _excel_report_point_ids(result, "t_plot")
-        stored_range = _stored_t_plot_pressure_range(result)
+        report_ids = _report_fit_point_ids(result, "t_plot")
+        stored_range = _report_fit_range(result, "t_plot")
         if report_ids is not None and stored_range is not None:
             default_thickness = [thickness_nm(p, thickness_method, thickness_params) for p in stored_range]
             if (all(value is not None for value in default_thickness)
@@ -996,6 +1013,7 @@ def _t_plot_fit_from_points(
         return FitResult("t-Plot", "not_enough_valid_points", len(x_values), range_min, range_max, rows=rows)
 
     slope, intercept, r_squared = _linear_fit(x_values, y_values)
+    qps_external_area_capped = False
     if _uses_quantity_stp_t_plot_defaults(result):
         raw_external_surface_area = slope * density_factor * 1000.0 if slope > 0 else None
         total_surface_area = _t_plot_total_surface_area_for_result(result)
@@ -1004,6 +1022,16 @@ def _t_plot_fit_from_points(
         else:
             external_surface_area = raw_external_surface_area
         micropore_volume = max(0.0, intercept * density_factor) if _valid_number(intercept) else None
+    elif _uses_quantachrome_qps_tags(result):
+        external_surface_area = slope * 1000.0 if slope > 0.0 else None
+        micropore_volume = intercept if _valid_number(intercept) else None
+        bet_area = _t_plot_total_surface_area_for_result(result)
+        if external_surface_area is not None and bet_area is not None and external_surface_area > bet_area:
+            # At the BET cap ASiQwin's detailed table reports zero micropores.
+            # Its area-volume summary omits those entries and the regression stays signed.
+            external_surface_area = bet_area
+            micropore_volume = 0.0
+            qps_external_area_capped = True
     else:
         external_surface_area = slope * 1000.0 if slope > 0 or _uses_tristar_plus_v3_defaults(result) else None
         if _uses_micromeritics_flex_defaults(result) or reports_signed_t_plot_results(result):
@@ -1016,6 +1044,7 @@ def _t_plot_fit_from_points(
         external_surface_area_m2_g=external_surface_area,
         micropore_volume_cm3_g=micropore_volume,
         rows=rows,
+        qps_external_area_capped=qps_external_area_capped,
     )
 
 
@@ -1112,6 +1141,19 @@ def vendor_t_plot_thickness_params(result: TriStarResult) -> dict[str, object] |
     return dict(params) if isinstance(params, dict) else None
 
 
+def qps_halsey_params(result: TriStarResult, method: str) -> dict[str, float] | None:
+    if method == "halsey" and result.method_options.get("quantachrome_thickness_type") == 3:
+        return vendor_t_plot_thickness_params(result)
+    return None
+
+
+def _qps_effective_thickness_params(
+    result: TriStarResult, method: str, requested: dict[str, float] | None
+) -> dict[str, float] | None:
+    saved = qps_halsey_params(result, method)
+    return {**saved, **(requested or {})} if saved else requested
+
+
 def vendor_t_plot_pressure_window(result: TriStarResult) -> tuple[float, float] | None:
     """P/P0 window of the vendor t-Plot data table, when the file stores one."""
     lo = result.method_options.get("stored_t_plot_pressure_window_min")
@@ -1202,6 +1244,138 @@ def _uses_quantachrome_defaults(result: TriStarResult) -> bool:
     return "Quantachrome" in manufacturer or "Autosorb" in model or "QuadraSorb" in model
 
 
+def _uses_quantachrome_qps_tags(result: TriStarResult) -> bool:
+    """Native .qps file: the operator's tagged points and saved report settings are known."""
+    return bool(result.method_options.get("quantachrome_qps_native"))
+
+
+def _quantachrome_qps_pore_rows(
+    result: TriStarResult,
+    phase: str,
+    thickness_method: str,
+    thickness_params: dict[str, float] | None,
+    correction: str,
+    open_pore_fraction: float,
+    *,
+    dollimore_heal: bool,
+) -> list[dict[str, float]] | None:
+    """BJH/DH as ASiQwin computes it from the points tagged for pore-size analysis.
+
+    Used only while the thickness equation is the one saved in the file; any
+    other setting falls back to the general calculation of this module.
+    None permits that fallback; an empty list means the saved selection has
+    too few usable points and must not be widened to the whole isotherm.
+    """
+    options = result.method_options
+    if not _uses_quantachrome_qps_tags(result):
+        return None
+    if correction != "standard" or abs(float(open_pore_fraction)) > 1e-12:
+        return None
+    if thickness_method != str(options.get("quantachrome_bjh_thickness_method", "")):
+        return None
+    if thickness_params:
+        defaults = qps_halsey_params(result, thickness_method) or THICKNESS_METHOD_DEFAULT_PARAMS.get(thickness_method, {})
+        for key, value in thickness_params.items():
+            default = defaults.get(key)
+            if (
+                _valid_number(value)
+                and _valid_number(default)
+                and abs(float(value) - float(default)) > 1e-9 * max(1.0, abs(float(default)))
+            ):
+                return None
+    thickness_type = int(options.get("quantachrome_thickness_type", 0) or 0)
+    constants = [options.get(f"quantachrome_adsorbate_{key}") for key in ("SurfTen", "MolWt", "LiqDen", "AdsTemp")]
+    if not all(_valid_number(value) and float(value) > 0.0 for value in constants):
+        return None
+    tags = options.get("quantachrome_point_tags")
+    if not isinstance(tags, dict):
+        return None
+    if not any(
+        len(str(tag)) > quantachrome_native.TAG_PORE_SIZE
+        and str(tag)[quantachrome_native.TAG_PORE_SIZE] not in "_ "
+        for tag in tags.values()
+    ):
+        return None  # Older files without pore tags keep the general branch calculation.
+    ignore_below = bool(options.get("quantachrome_bjh_ignore_below_035"))
+
+    valid = [
+        point for point in result.isotherm
+        if _valid_number(point.relative_pressure) and _valid_number(point.quantity_adsorbed_cm3_g_stp)
+    ]
+    if not valid:
+        return []
+    top = max(range(len(valid)), key=lambda index: float(valid[index].relative_pressure))
+    ordered = valid[top::-1] if phase == "adsorption" else valid[top:]
+    selected: list[tuple[float, float]] = []
+    for point in ordered:
+        pressure = float(point.relative_pressure)
+        tag = str(tags.get(point.index, ""))
+        if not 0.0 < pressure < 1.0:
+            continue
+        if len(tag) <= quantachrome_native.TAG_PORE_SIZE or tag[quantachrome_native.TAG_PORE_SIZE] in "_ ":
+            continue
+        if ignore_below and not pressure > 0.35:
+            continue
+        selected.append((pressure, float(point.quantity_adsorbed_cm3_g_stp)))
+    if len(selected) < 2:
+        return []
+
+    intervals = quantachrome_native.pore_size_intervals(
+        selected,
+        dollimore_heal=dollimore_heal,
+        thickness_type=thickness_type,
+        thickness_pre_exponent=float(options.get("quantachrome_thickness_pre_exponent", 0.0) or 0.0),
+        thickness_exponent=float(options.get("quantachrome_thickness_exponent", 0.0) or 0.0),
+        surface_tension=float(constants[0]),
+        molecular_weight=float(constants[1]),
+        liquid_density=float(constants[2]),
+        temperature_k=float(constants[3]),
+    )
+    rows: list[dict[str, float]] = []
+    cumulative_volume = 0.0
+    cumulative_area = 0.0
+    # Smallest pores first, as the other Quantachrome tables in this module.
+    for index, interval in enumerate(reversed(intervals), start=1):
+        high = float(interval["pore_diameter_range_high_nm"])
+        low = float(interval["pore_diameter_range_low_nm"])
+        if not (high > 0.0 and low > 0.0):
+            continue
+        dlog = abs(math.log10(high) - math.log10(low))
+        width = abs(high - low)
+        volume = float(interval["incremental_pore_volume_cm3_g"])
+        area = float(interval["incremental_pore_area_m2_g"])
+        cumulative_volume += volume
+        cumulative_area += area
+        differential = volume / dlog if dlog > 1e-12 else 0.0
+        rows.append(
+            {
+                "phase": phase,
+                "interval_index": float(index),
+                "relative_pressure_high": float(interval["relative_pressure_high"]),
+                "relative_pressure_low": float(interval["relative_pressure_low"]),
+                "pore_diameter_nm": float(interval["pore_diameter_nm"]),
+                "cumulative_pore_diameter_nm": high,
+                "pore_diameter_range_high_nm": high,
+                "pore_diameter_range_low_nm": low,
+                "incremental_pore_volume_cm3_g": volume,
+                "cumulative_pore_volume_cm3_g": cumulative_volume,
+                "dlog_diameter": dlog,
+                "differential_pore_volume_cm3_g": differential,
+                "raw_differential_pore_volume_cm3_g": differential,
+                "film_thickness_nm": float(interval["film_thickness_nm"]),
+                "kelvin_radius_nm": float(interval["kelvin_radius_nm"]),
+                "bjh_correction": "quantachrome_qps_tagged_points",
+                "open_pore_fraction": 0.0,
+                "incremental_pore_area_m2_g": area,
+                "cumulative_pore_area_m2_g": cumulative_area,
+                "differential_pore_area_m2_g": area / dlog if dlog > 1e-12 else 0.0,
+                "differential_pore_volume_per_nm_cm3_g_nm": volume / width if width > 1e-12 else 0.0,
+                "differential_pore_area_per_nm_m2_g_nm": area / width if width > 1e-12 else 0.0,
+            }
+        )
+    return rows
+
+
 def _uses_bsd_defaults(result: TriStarResult) -> bool:
     manufacturer = str(result.method_options.get("instrument_manufacturer", ""))
     model = str(result.method_options.get("instrument_model", ""))
@@ -1248,14 +1422,37 @@ def _jwgb_raw_bet_points(
     return [point for point in source if int(point.index) in point_ids]
 
 
-def _excel_report_point_ids(result: TriStarResult, method: str) -> set[int] | None:
+def _report_fit_point_ids(result: TriStarResult, method: str) -> set[int] | None:
     """Explicit report selections are separate from the interval displayed by the UI."""
-    if not result.method_options.get("micromeritics_report_block_excel_import") or not _uses_official_fit_ranges(result):
+    if not _uses_official_fit_ranges(result):
         return None
-    values = result.method_options.get(f"excel_report_{method}_point_indices")
+    if result.method_options.get("quantachrome_qps_native"):
+        values = result.method_options.get(f"quantachrome_{method}_point_indices")
+    elif result.method_options.get("micromeritics_report_block_excel_import"):
+        values = result.method_options.get(f"excel_report_{method}_point_indices")
+    else:
+        return None
     if not isinstance(values, (list, tuple)):
         return None
     return {int(value) for value in values if _valid_number(value) and float(value).is_integer() and value > 0}
+
+
+def _report_fit_range(result: TriStarResult, method: str) -> tuple[float, float] | None:
+    if result.method_options.get("quantachrome_qps_native"):
+        point_ids = _report_fit_point_ids(result, method)
+        if point_ids is not None:
+            # Use the saved identities even when there is only one tagged point
+            # or its uptake is invalid; automatic fitting must not add other points.
+            pressures = [float(point.relative_pressure) for point in result.isotherm
+                         if point.phase == "adsorption" and point.index in point_ids
+                         and _valid_number(point.relative_pressure)]
+            if pressures:
+                return min(pressures), max(pressures)
+    return {
+        "bet": _stored_bet_range,
+        "langmuir": _stored_langmuir_range,
+        "t_plot": _stored_t_plot_pressure_range,
+    }[method](result)
 
 
 def _same_fit_range(requested: Sequence[float], stored: Sequence[float]) -> bool:
@@ -1263,20 +1460,17 @@ def _same_fit_range(requested: Sequence[float], stored: Sequence[float]) -> bool
                for a, b in zip(sorted(requested), sorted(stored)))
 
 
-def _excel_report_points_for_range(
+def _report_fit_points_for_range(
     result: TriStarResult, method: str, p_min: float, p_max: float,
 ) -> list[IsothermPoint] | None:
-    point_ids = _excel_report_point_ids(result, method)
+    point_ids = _report_fit_point_ids(result, method)
     if point_ids is None:
         return None
-    stored = {
-        "bet": _stored_bet_range,
-        "langmuir": _stored_langmuir_range,
-        "t_plot": _stored_t_plot_pressure_range,
-    }[method](result)
+    stored = _report_fit_range(result, method)
     if stored is None or not _same_fit_range((p_min, p_max), stored):
         return None
-    # Do not widen a noncontiguous report selection to its pressure envelope.
+    # A matching range is the displayed default envelope, not an instruction to
+    # fill its gaps. Manual selections opt out with use_report_point_selection=False.
     return [point for point in adsorption_points(result) if point.index in point_ids]
 
 
@@ -1707,11 +1901,11 @@ def _update_bjh_differential_area_from_volume(rows: list[dict[str, float]]) -> N
 def bjh_pore_distribution(
     result: TriStarResult,
     phase: str = "desorption",
-    thickness_method: str = DEFAULT_THICKNESS_METHOD,
+    thickness_method: str | None = None,
     thickness_params: dict[str, float] | None = None,
     correction: str = "standard",
     open_pore_fraction: float = 0.0,
-    smooth: bool = True,
+    smooth: bool | None = None,
     *,
     dollimore_heal: bool = False,
 ) -> PoreDistributionResult:
@@ -1723,6 +1917,12 @@ def bjh_pore_distribution(
     decoded.
     """
     phase = "adsorption" if phase == "adsorption" else "desorption"
+    qps = _uses_quantachrome_qps_tags(result)
+    if thickness_method is None:
+        thickness_method = result.method_options.get("vendor_bjh_thickness_method", DEFAULT_THICKNESS_METHOD) if qps else DEFAULT_THICKNESS_METHOD
+    thickness_params = _qps_effective_thickness_params(result, thickness_method, thickness_params)
+    if smooth is None:
+        smooth = bool(result.method_options.get("vendor_bjh_smooth_derivative", False)) if qps else True
     distribution_name = "Dollimore-Heal" if dollimore_heal else "BJH"
     vendor_rows = micromeritics_vendor_pore_rows(
         result, phase, thickness_method, thickness_params, correction, open_pore_fraction, dollimore_heal=dollimore_heal
@@ -1731,6 +1931,16 @@ def bjh_pore_distribution(
         if smooth:
             _smooth_micromeritics_vendor_rows(vendor_rows)
         return PoreDistributionResult(distribution_name, phase, "ok", len(vendor_rows), rows=vendor_rows)
+    qps_rows = _quantachrome_qps_pore_rows(
+        result, phase, thickness_method, thickness_params, correction, open_pore_fraction,
+        dollimore_heal=dollimore_heal,
+    )
+    if qps_rows is not None:
+        if not qps_rows:
+            return PoreDistributionResult(distribution_name, phase, "not_enough_points", 0)
+        if smooth:
+            _smooth_quantachrome_distribution_rows(qps_rows)
+        return PoreDistributionResult(distribution_name, phase, "ok", len(qps_rows), rows=qps_rows)
     if not dollimore_heal and _uses_official_bjh_table(result):
         flex_official_rows = _micromeritics_flex_official_bjh_rows(
             result,
@@ -3220,7 +3430,7 @@ def bjh_pore_volume_cm3_g(
     diameter_min_nm: float = 2.0,
     diameter_max_nm: float = 10.0,
     phase: str = "adsorption",
-    thickness_method: str = DEFAULT_THICKNESS_METHOD,
+    thickness_method: str | None = None,
     thickness_params: dict[str, float] | None = None,
     correction: str = "standard",
     open_pore_fraction: float = 0.0,
@@ -3718,8 +3928,11 @@ def _halsey_thickness_nm(relative_pressure: float, params: dict[str, float]) -> 
     base = numerator / denominator
     if base <= 0.0:
         return None
-    thickness_angstrom = prefactor * (base**exponent)
-    return scale * thickness_angstrom if thickness_angstrom > 0.0 else None
+    try:
+        thickness_angstrom = prefactor * (base**exponent)
+    except OverflowError:
+        return None
+    return scale * thickness_angstrom if math.isfinite(thickness_angstrom) and thickness_angstrom > 0.0 else None
 
 
 def _broekhoff_de_boer_thickness_nm(relative_pressure: float, params: dict[str, float]) -> float | None:

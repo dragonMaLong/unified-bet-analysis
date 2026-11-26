@@ -26,6 +26,7 @@ from .models import (
     TargetPressureRow,
     TriStarResult,
 )
+from . import quantachrome_native as native
 
 CM3_STP_PER_MMOL = 22.414
 EXCEL_EPOCH = datetime(1899, 12, 30)
@@ -38,8 +39,40 @@ class QuantachromeParseError(ValueError):
     """Raised when a file is not a supported Quantachrome ``.qps`` file."""
 
 
-def load_qps(path: str | Path) -> TriStarResult:
-    return QuantachromeQpsParser().parse(path)
+def load_qps(
+    path: str | Path,
+    *,
+    thermal_transpiration: bool | None = None,
+    temperature_compensation: bool | None = None,
+) -> TriStarResult:
+    """Load a ``.qps`` file.
+
+    The two switches default to the setting saved in the file, which is what
+    ASiQwin applies; pass ``True``/``False`` to override it.
+    """
+    return QuantachromeQpsParser().parse(
+        path,
+        thermal_transpiration=thermal_transpiration,
+        temperature_compensation=temperature_compensation,
+    )
+
+
+# Adsorbates ASiQwin resolves by name when the file does not carry its own
+# adsorbate block (material.AdsOverride = 0).  Values from the ASiQwin library.
+ADSORBATE_LIBRARY: dict[str, dict[str, float]] = {
+    "Krypton": {
+        "AdsTemp": 77.35, "MolWt": 83.8, "XArea": 20.5, "LiqDen": 2.413, "AvgDiam": 0.4, "Polariz": 1.0,
+        "MagSus": 1.0, "MolDen": 1.0, "SurfTen": 1.0, "NonIdeality": 3e-05,
+    },
+    "Krypton87": {
+        "AdsTemp": 87.3, "MolWt": 83.8, "XArea": 20.5, "LiqDen": 2.6, "AvgDiam": 0.4, "Polariz": 1.0,
+        "MagSus": 1.0, "MolDen": 1.0, "SurfTen": 22.172, "NonIdeality": 3e-05,
+    },
+    "Argon77": {
+        "AdsTemp": 77.35, "MolWt": 39.948, "XArea": 13.85, "LiqDen": 1.45, "AvgDiam": 0.336, "Polariz": 1.63,
+        "MagSus": 3.25, "MolDen": 8.52, "SurfTen": 15.03, "NonIdeality": 1.14e-04,
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -48,6 +81,7 @@ class _QbinItem:
     key_index: int
     value: Any
     value_offset: int
+    is_string: bool = False
 
 
 @dataclass(frozen=True)
@@ -61,28 +95,27 @@ class _QbinDocument:
     def group_items(self, name: str) -> list[_QbinItem]:
         return self.groups.get(name, [])
 
-    def string_after(self, item: _QbinItem) -> str:
-        index = item.key_index + 1
-        if index < 0 or index >= len(self.strings):
-            return ""
-        candidate = self.strings[index].strip()
-        known_keys = {entry.key for entries in self.groups.values() for entry in entries}
-        known_keys.update(self.groups)
-        return "" if candidate in known_keys else candidate
-
 
 class QuantachromeQpsParser:
-    def parse(self, path: str | Path) -> TriStarResult:
+    def parse(
+        self,
+        path: str | Path,
+        *,
+        thermal_transpiration: bool | None = None,
+        temperature_compensation: bool | None = None,
+    ) -> TriStarResult:
         file_path = Path(path)
         data = file_path.read_bytes()
         doc = self._parse_qbin(data, file_path)
         admin = doc.group("adminData")
         run_data = doc.group("runData")
-        adsorbate = doc.group("material.Adsorbate")
+        adsorbate = self._resolve_adsorbate(doc, admin, run_data)
 
         sample = self._build_sample(file_path, doc, admin)
         run_conditions = self._build_run_conditions(doc, admin, run_data, adsorbate)
-        isotherm = self._build_isotherm(doc, sample)
+        isotherm, tags, corrections = self._build_isotherm(
+            doc, sample, thermal_transpiration, temperature_compensation
+        )
         if not isotherm:
             raise QuantachromeParseError(f"No isotherm points found in {file_path}")
 
@@ -115,6 +148,8 @@ class QuantachromeQpsParser:
             saved_raw,
             saved_time,
         )
+        method_options.update(corrections)
+        method_options.update(self._reduction_options(doc, adsorbate, isotherm, tags))
 
         return TriStarResult(
             header=header,
@@ -168,8 +203,21 @@ class QuantachromeQpsParser:
                     raise QuantachromeParseError(f"Invalid Quantachrome QBIN item in {group_name}: {path}")
                 key_index = self._payload_int(records[pos][1])
                 key = self._string_at(strings, key_index)
-                value = self._decode_value(records[pos + 1][1])
-                items.append(_QbinItem(key=key, key_index=key_index, value=value, value_offset=records[pos + 1][2]))
+                payload = records[pos + 1][1]
+                value = self._decode_value(payload)
+                # Type 1 values are references into the string table.
+                is_string = len(payload) >= 9 and payload[0] == 1
+                if is_string:
+                    value = strings[value] if isinstance(value, int) and 0 <= value < len(strings) else ""
+                items.append(
+                    _QbinItem(
+                        key=key,
+                        key_index=key_index,
+                        value=value,
+                        value_offset=records[pos + 1][2],
+                        is_string=is_string,
+                    )
+                )
                 pos += 2
             groups[group_name] = items
 
@@ -238,7 +286,7 @@ class QuantachromeQpsParser:
         adsorbate: dict[str, Any],
     ) -> RunConditions:
         adsorptive_short = self._string_value(doc, "runData", "adsName") or "N2"
-        adsorptive_name = self._string_value(doc, "material.Adsorbate", "name") or adsorptive_short
+        adsorptive_name = str(adsorbate.get("name") or "").strip() or adsorptive_short
         return RunConditions(
             evacuation_rate_mmHg_s=None,
             unrestricted_evacuate_from_mmHg=None,
@@ -271,49 +319,202 @@ class QuantachromeQpsParser:
             vfree_factor_source="quantachrome_qps_direct_quantity",
         )
 
-    def _build_isotherm(self, doc: _QbinDocument, sample: SampleInfo) -> list[IsothermPoint]:
+    def _build_isotherm(
+        self,
+        doc: _QbinDocument,
+        sample: SampleInfo,
+        thermal_transpiration: bool | None,
+        temperature_compensation: bool | None,
+    ) -> tuple[list[IsothermPoint], dict[int, str], dict[str, Any]]:
+        """Isotherm as ASiQwin reports it, the tag string of each point, and the corrections used."""
         data = doc.group("Data")
+        admin = doc.group("adminData")
+        run_data = doc.group("runData")
+        reduction = doc.group("DRedParams")
+        temp_comp = doc.group("DRedParams.TempComp")
         n_points = self._int_value(data, "NPoints") or 0
-        if n_points <= 0:
-            return []
+        n_columns = self._int_value(data, "NColumns") or 0
         mass = sample.sample_mass_g if sample.sample_mass_g and sample.sample_mass_g > 0.0 else None
-        rows: list[tuple[int, float, float, float, int]] = []
+
+        rows: list[tuple[int, float, float, float, float | None, str]] = []
         for point_index in range(n_points):
             suffix = f"{point_index:03d}"
             relative_pressure = self._float_value(data, f"Pt#0#{suffix}")
             saturation_pressure = self._float_value(data, f"Pt#1#{suffix}")
             raw_volume = self._float_value(data, f"Pt#2#{suffix}")
-            flag = self._int_value(data, f"PtFlg{suffix}") or 0
+            minutes = self._float_value(data, f"Pt#5#{suffix}") if n_columns > 5 else None
+            tag = data.get(f"PtFlg{suffix}")
             if relative_pressure is None or raw_volume is None:
                 continue
             if not math.isfinite(relative_pressure) or not math.isfinite(raw_volume) or relative_pressure <= 0.0:
                 continue
             if saturation_pressure is None or not math.isfinite(saturation_pressure) or saturation_pressure <= 0.0:
                 saturation_pressure = 760.0
-            rows.append((point_index, relative_pressure, saturation_pressure, raw_volume, flag))
+            rows.append(
+                (point_index, relative_pressure, saturation_pressure, raw_volume, minutes, tag if isinstance(tag, str) else "")
+            )
 
+        has_time = any(row[4] is not None and row[4] > 0.0 for row in rows)
+        override_po = self._float_value(reduction, "PoOverride") if reduction.get("overridePo") else None
+        if override_po is not None and override_po <= 0.0:
+            override_po = None
+
+        thermal_available = native.thermal_transpiration_available(admin, reduction)
+        thermal_saved = bool(reduction.get("thermalOn"))
+        thermal_on = thermal_available and (thermal_saved if thermal_transpiration is None else bool(thermal_transpiration))
+
+        comp_kind = (
+            native.temperature_compensation_kind(str(doc.group("Header").get("hdrType") or ""), admin, run_data)
+            if has_time
+            else None
+        )
+        comp_saved = bool(temp_comp.get("enabled"))
+        comp_on = comp_kind is not None and (
+            comp_saved if temperature_compensation is None else bool(temperature_compensation)
+        )
+        cell_type = self._int_value(temp_comp, "cellType") or 0
+
+        corrections: dict[str, Any] = {
+            "quantachrome_thermal_transpiration_available": thermal_available,
+            "quantachrome_thermal_transpiration_saved": thermal_saved,
+            "quantachrome_thermal_transpiration_applied": thermal_on,
+            "quantachrome_temperature_compensation_available": comp_kind is not None,
+            "quantachrome_temperature_compensation_saved": comp_saved,
+            "quantachrome_temperature_compensation_applied": comp_on,
+        }
         if not rows:
-            return []
-        max_position = max(range(len(rows)), key=lambda idx: rows[idx][1])
+            return [], {}, corrections
+
+        reduced: list[tuple[float, float, float, float]] = []
+        for _point_index, relative_pressure, saturation_pressure, raw_volume, minutes, _tag in rows:
+            absolute_pressure = relative_pressure * saturation_pressure
+            reference_pressure = override_po or saturation_pressure
+            if thermal_on:
+                absolute_pressure *= native.thermal_transpiration_factor(
+                    absolute_pressure,
+                    float(admin["bathTemp"]),
+                    float(admin["ambientTemp"]),
+                    float(reduction["effMolDiameter"]),
+                    float(reduction["effCellStemDiameter"]),
+                )
+            pressure = absolute_pressure / reference_pressure
+            volume = raw_volume
+            if comp_on:
+                volume -= native.temperature_compensation_volume(
+                    comp_kind, cell_type, pressure, absolute_pressure, minutes or 0.0, run_data
+                )
+            reduced.append((absolute_pressure, pressure, reference_pressure, volume))
+
+        max_position = max(range(len(reduced)), key=lambda idx: reduced[idx][1])
         points: list[IsothermPoint] = []
-        for row_index, (point_index, relative_pressure, saturation_pressure, raw_volume, _flag) in enumerate(rows, start=1):
+        tags: dict[int, str] = {}
+        for row_index, (row, values) in enumerate(zip(rows, reduced), start=1):
+            point_index, _relative, _saturation, raw_volume, minutes, tag = row
+            absolute_pressure, pressure, reference_pressure, volume = values
             phase = "adsorption" if row_index - 1 <= max_position else "desorption"
-            quantity_cm3_g = raw_volume / mass if mass else raw_volume
+            quantity_cm3_g = volume / mass if mass else volume
+            tags[row_index] = tag
             points.append(
                 IsothermPoint(
                     index=row_index,
                     phase=phase,
                     record_rel_offset=point_index,
-                    absolute_pressure_mmHg=relative_pressure * saturation_pressure,
-                    relative_pressure=relative_pressure,
+                    absolute_pressure_mmHg=absolute_pressure,
+                    relative_pressure=pressure,
                     raw_internal_cm3_stp=raw_volume,
-                    saturation_pressure_mmHg=saturation_pressure,
-                    elapsed_seconds=None,
+                    saturation_pressure_mmHg=reference_pressure,
+                    elapsed_seconds=int(round(minutes * 60.0)) if has_time and minutes is not None else None,
                     quantity_adsorbed_cm3_g_stp=quantity_cm3_g,
                     quantity_adsorbed_mmol_g=quantity_cm3_g / CM3_STP_PER_MMOL,
                 )
             )
-        return points
+        return points, tags, corrections
+
+    def _resolve_adsorbate(self, doc: _QbinDocument, admin: dict[str, Any], run_data: dict[str, Any]) -> dict[str, Any]:
+        """Adsorbate properties ASiQwin uses for this file."""
+        block = dict(doc.group("material.Adsorbate"))
+        if doc.group("material").get("AdsOverride"):
+            return block
+        name = run_data.get("adsName")
+        name = name.strip() if isinstance(name, str) else ""
+        if not name or name == str(block.get("name") or "").strip():
+            return block
+        # The block still holds another gas; the run header names the gas used.
+        resolved = dict(block)
+        resolved["name"] = name
+        for key, source in (
+            ("AdsTemp", "bathTemp"),
+            ("MolWt", "adsMolecWeight"),
+            ("XArea", "adsCrossSectionArea"),
+            ("NonIdeality", "adsNonIdeality"),
+        ):
+            value = self._float_value(admin, source)
+            if value is not None and value > 0.0:
+                resolved[key] = value
+        resolved.update(ADSORBATE_LIBRARY.get(name, {}))
+        return resolved
+
+    def _reduction_options(
+        self,
+        doc: _QbinDocument,
+        adsorbate: dict[str, Any],
+        isotherm: list[IsothermPoint],
+        tags: dict[int, str],
+    ) -> dict[str, Any]:
+        """Report settings saved in the file: tagged points and calculation choices."""
+        reduction = doc.group("DRedParams")
+        thickness_type = self._int_value(reduction, "tMethodType") or 0
+        thickness_method = native.THICKNESS_METHOD_BY_TYPE.get(thickness_type, "harkins_jura")
+        pre_exponent = self._float_value(reduction, "tmethPreExp") or 0.0
+        exponent = self._float_value(reduction, "tmethExp") or 0.0
+        options: dict[str, Any] = {
+            "quantachrome_qps_native": True,
+            "quantachrome_point_tags": dict(tags),
+            "quantachrome_thickness_type": thickness_type,
+            "quantachrome_thickness_pre_exponent": pre_exponent,
+            "quantachrome_thickness_exponent": exponent,
+            "quantachrome_bjh_ignore_below_035": bool(reduction.get("bjhdhIgnoreBelow")),
+            "vendor_bjh_thickness_method": thickness_method,
+            "vendor_dh_thickness_method": thickness_method,
+            "quantachrome_bjh_thickness_method": thickness_method,
+            "use_vendor_t_plot_settings": True,
+            "vendor_t_plot_thickness_method": thickness_method,
+        }
+        if thickness_type == 3:
+            # ASiQwin saves A and n in t[Å] = A * (-ln(P/P0)) ** (-1/n).
+            # A zero prefactor leaves thickness undefined for incomplete files.
+            options["vendor_t_plot_thickness_params"] = {
+                "prefactor": pre_exponent if exponent > 0 else 0.0,
+                "numerator": -1.0,
+                "exponent": 1.0 / exponent if exponent > 0 else 0.0,
+                "scale": 0.1,
+            }
+        for key in ("SurfTen", "MolWt", "LiqDen", "AdsTemp"):
+            value = self._float_value(adsorbate, key)
+            if value is not None and value > 0.0:
+                options[f"quantachrome_adsorbate_{key}"] = value
+
+        adsorption = [point for point in isotherm if point.phase == "adsorption"]
+        for position, method in (
+            (native.TAG_MULTI_POINT_BET, "bet"),
+            (native.TAG_LANGMUIR, "langmuir"),
+            (native.TAG_THICKNESS, "t_plot"),
+        ):
+            selected = [point for point in adsorption if self._has_tag(tags.get(point.index, ""), position)]
+            if not selected:
+                continue
+            # The interval is only the displayed envelope. A fit must retain the
+            # operator's exact point IDs, including gaps and insufficient selections.
+            options[f"quantachrome_{method}_point_indices"] = [point.index for point in selected]
+            pressures = [float(point.relative_pressure) for point in selected]
+            options[f"stored_{method}_pressure_min"] = min(pressures)
+            options[f"stored_{method}_pressure_max"] = max(pressures)
+            options["use_stored_fit_ranges"] = True
+        return options
+
+    @staticmethod
+    def _has_tag(tag: str, position: int) -> bool:
+        return len(tag) > position and tag[position] not in "_ "
 
     @staticmethod
     def _build_target_pressure_table(isotherm: list[IsothermPoint]) -> list[TargetPressureRow]:
@@ -342,7 +543,7 @@ class QuantachromeQpsParser:
         admin: dict[str, Any],
         adsorbate: dict[str, Any],
     ) -> AdsorptiveProperties:
-        name = self._string_value(doc, "material.Adsorbate", "name") or self._string_value(doc, "runData", "adsName") or "N2"
+        name = str(adsorbate.get("name") or "").strip() or self._string_value(doc, "runData", "adsName") or "N2"
         mnemonic = self._string_value(doc, "runData", "adsName") or name
         molecular_weight = self._float_value(adsorbate, "MolWt") or self._float_value(admin, "adsMolecWeight")
         liquid_density = self._float_value(adsorbate, "LiqDen")
@@ -387,9 +588,8 @@ class QuantachromeQpsParser:
             "test_started_time": created_time,
             "test_started_raw": created_raw,
             "target_pressure_table_source": "measured_isotherm_pressure_sequence",
-            "vendor_bjh_thickness_method": "harkins_jura",
             "vendor_bjh_smooth_derivative": False,
-            "quantachrome_bjh_thickness_method": "harkins_jura",
+            "vendor_dh_smooth_derivative": False,
             "quantachrome_quantity_source": (
                 "qps_total_cm3_stp_normalized_by_sample_weight"
                 if sample.sample_mass_g
@@ -447,9 +647,10 @@ class QuantachromeQpsParser:
     def _string_value(self, doc: _QbinDocument, group_name: str, key: str) -> str:
         for item in doc.group_items(group_name):
             if item.key == key:
-                value = doc.string_after(item)
-                if value:
-                    return value
+                if item.is_string:
+                    return str(item.value).strip()
+                if key == "stationId" and isinstance(item.value, int):
+                    return str(item.value)
         return ""
 
     def _version_text(self, doc: _QbinDocument) -> str:

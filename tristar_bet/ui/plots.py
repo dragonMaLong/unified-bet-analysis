@@ -1187,11 +1187,8 @@ class SampleCurveInteractionController(QtCore.QObject):
         if isinstance(base_pen, QtGui.QPen):
             highlight_pen = QtGui.QPen(base_pen)
             highlight_pen.setWidthF(max(float(base_pen.widthF()) + 2.5, 5.0))
+            # Thicker line only; the other samples are dimmed by the caller.
             item.setPen(highlight_pen)
-            glow_pen = QtGui.QPen(base_pen)
-            glow_pen.setColor(QtGui.QColor("#fbbf24"))
-            glow_pen.setWidthF(max(float(base_pen.widthF()) + 8.0, 10.0))
-            item.setShadowPen(glow_pen)
         base_symbol_size = entry.get("base_symbol_size")
         if base_symbol_size is not None:
             try:

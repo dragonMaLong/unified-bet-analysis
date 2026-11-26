@@ -29,6 +29,7 @@ from tristar_bet.analysis import (
     vendor_t_plot_default_thickness_range,
     vendor_t_plot_pressure_window,
     vendor_t_plot_thickness_params,
+    qps_halsey_params,
     DFT_DEFAULT_ANALYSIS_TYPE,
     DFT_DEFAULT_GEOMETRY,
     DFT_DEFAULT_MODEL,
@@ -62,6 +63,7 @@ from tristar_bet.analysis import (
     thickness_nm,
 )
 from tristar_bet.dft_models import dft_model_options, dft_model_spec
+from tristar_bet.quantachrome import load_qps
 from tristar_bet.quantachrome_dft import VALIDATED_GAI_MODELS
 from tristar_bet.reference_thickness import (
     DEFAULT_REFERENCE_DIR,
@@ -1759,6 +1761,7 @@ class FileImportDialog(QtWidgets.QDialog):
         picker_layout.addWidget(available_box, 1)
         picker_layout.addLayout(move_layout)
         picker_layout.addWidget(selected_panel, 1)
+        self._picker_layout = picker_layout
 
         self.count_label = QtWidgets.QLabel("")
         self.import_button = QtWidgets.QPushButton(tr("开始导入"))
@@ -1809,7 +1812,9 @@ class FileImportDialog(QtWidgets.QDialog):
         table.verticalHeader().setVisible(False)
         table.verticalHeader().setDefaultSectionSize(26)
         table.horizontalHeader().setStretchLastSection(False)
-        table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
+        # Width is set by _fit_name_column: the longest name, or the free space if that is wider.
+        table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.Interactive)
+        table.setTextElideMode(QtCore.Qt.ElideMiddle)
         table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
         table.horizontalHeader().setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
         table.horizontalHeader().setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeToContents)
@@ -1900,6 +1905,8 @@ class FileImportDialog(QtWidgets.QDialog):
         available = [path for path in self._available_paths if query in path.name.lower()]
         self._fill_table(self.available_table, available)
         self._fill_table(self.selected_table, self._selected_paths)
+        if self.isVisible():
+            self._grow_for_file_names()
         self._update_buttons()
 
     def _fill_table(self, table: QtWidgets.QTableWidget, paths: list[Path]) -> None:
@@ -1918,6 +1925,79 @@ class FileImportDialog(QtWidgets.QDialog):
         table.setSortingEnabled(table is self.available_table)
         if table is self.available_table:
             table.sortItems(self._available_sort_column, self._available_sort_order)
+        self._fit_name_column(table)
+
+    def _name_column_content_width(self, table: QtWidgets.QTableWidget) -> int:
+        metrics = QtGui.QFontMetrics(table.font())
+        header = table.horizontalHeaderItem(0)
+        width = QtGui.QFontMetrics(table.horizontalHeader().font()).horizontalAdvance(header.text() if header else "") + 36
+        for row in range(table.rowCount()):
+            item = table.item(row, 0)
+            if item is not None:
+                width = max(width, metrics.horizontalAdvance(item.text()) + 24)
+        return width
+
+    def _other_columns_width(self, table: QtWidgets.QTableWidget) -> int:
+        header = table.horizontalHeader()
+        return sum(
+            max(table.sizeHintForColumn(column), header.sectionSizeHint(column))
+            for column in range(1, table.columnCount())
+        )
+
+    def _fit_name_column(self, table: QtWidgets.QTableWidget) -> None:
+        """Show whole file names; use the spare width when names are short."""
+        free = table.viewport().width() - self._other_columns_width(table)
+        table.setColumnWidth(0, max(self._name_column_content_width(table), free, 60))
+
+    def _file_table_needed_width(self, table: QtWidgets.QTableWidget) -> int:
+        needed = self._name_column_content_width(table) + self._other_columns_width(table)
+        scroll_bar = table.verticalScrollBar()
+        if scroll_bar.isVisible():
+            needed += scroll_bar.width()
+        return max(needed, 320)
+
+    def _grow_for_file_names(self) -> None:
+        """Share the width by what each list needs and widen the dialog (within the screen) if still short."""
+        needs = [self._file_table_needed_width(table) for table in (self.available_table, self.selected_table)]
+        # Index 0 and 2 of the row are the two lists; index 1 holds the arrow buttons.
+        self._picker_layout.setStretch(0, needs[0])
+        self._picker_layout.setStretch(2, needs[1])
+        # Column widths are refitted once the layout has given each list its new share.
+        QtCore.QTimer.singleShot(0, self._refit_name_columns)
+        current = self.available_table.viewport().width() + self.selected_table.viewport().width()
+        missing = sum(needs) - current
+        if missing <= 0:
+            return
+        screen = self.screen() or QtWidgets.QApplication.primaryScreen()
+        limit = int(screen.availableGeometry().width() * 0.95) if screen is not None else self.width() + missing
+        target = min(self.width() + missing, limit)
+        if target > self.width():
+            geometry = self.geometry()
+            shift = (target - geometry.width()) // 2
+            left = geometry.x() - shift
+            if screen is not None:
+                area = screen.availableGeometry()
+                left = max(area.left(), min(left, area.right() - target))
+            self.setGeometry(left, geometry.y(), target, geometry.height())
+
+    def _refit_name_columns(self) -> None:
+        for table in (self.available_table, self.selected_table):
+            self._fit_name_column(table)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        QtCore.QTimer.singleShot(0, self._fit_file_tables_after_show)
+
+    def _fit_file_tables_after_show(self) -> None:
+        self._grow_for_file_names()
+        self._picker_layout.activate()
+        for table in (self.available_table, self.selected_table):
+            self._fit_name_column(table)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        for table in (self.available_table, self.selected_table):
+            self._fit_name_column(table)
 
     def _on_available_sort_changed(self, column: int, order: QtCore.Qt.SortOrder) -> None:
         self._available_sort_column = int(column)
@@ -4120,17 +4200,17 @@ class MainWindow(QtWidgets.QMainWindow):
         spin = self._make_param_spin(params[param_key], minimum, maximum, decimals, width=width)
         if context == "bjh":
             spin.valueChanged.connect(
-                lambda _value, changed_method=method_key: self._on_bjh_thickness_param_changed(changed_method)
+                lambda value: self._on_bjh_thickness_param_changed(method_key, param_key, value)
             )
             self.bjh_param_spins.setdefault(method_key, {})[param_key] = spin
         elif context == "dh":
             spin.valueChanged.connect(
-                lambda _value, changed_method=method_key: self._on_dh_thickness_param_changed(changed_method)
+                lambda value: self._on_dh_thickness_param_changed(method_key, param_key, value)
             )
             self.dh_param_spins.setdefault(method_key, {})[param_key] = spin
         else:
             spin.valueChanged.connect(
-                lambda _value, changed_method=method_key: self._on_t_plot_thickness_param_changed(changed_method)
+                lambda value: self._on_t_plot_thickness_param_changed(method_key, param_key, value)
             )
             self.t_plot_param_spins.setdefault(method_key, {})[param_key] = spin
         return spin
@@ -4423,11 +4503,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._save_t_plot_settings_for_active()
         self._refresh_t_plot_for_option_change(refresh_table=True)
 
-    def _on_t_plot_thickness_param_changed(self, method_key: str | None = None) -> None:
+    def _on_t_plot_thickness_param_changed(self, method_key: str, param_key: str, value: float) -> None:
         if self._syncing_t_plot_controls:
             return
-        method_key = method_key or self.t_plot_thickness_method
-        params = self._read_t_plot_thickness_params(method_key)
+        params = {**self.t_plot_thickness_params_by_method[method_key], param_key: value}
         self.t_plot_thickness_params_by_method[method_key] = dict(params)
         if method_key == self.t_plot_thickness_method:
             self.t_plot_thickness_params = dict(params)
@@ -4436,14 +4515,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self._refresh_t_plot_for_option_change(refresh_table=True)
         else:
             self._refresh_sample_t_plot_cell(self.active_index)
-
-    def _read_t_plot_thickness_params(self, method_key: str) -> dict[str, object]:
-        if method_key == "reference":
-            return self._sync_reference_params_from_table("t_plot")
-        params = dict(T_PLOT_THICKNESS_PARAM_DEFAULTS.get(method_key, DEFAULT_T_PLOT_THICKNESS_PARAMS))
-        for param_key, spin in self.t_plot_param_spins.get(method_key, {}).items():
-            params[param_key] = float(spin.value())
-        return params
 
     def _set_t_plot_formula_spins_for_method(self, method_key: str, params: dict[str, float]) -> None:
         for param_key, spin in self.t_plot_param_spins.get(method_key, {}).items():
@@ -4473,11 +4544,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.refresh_bjh_plot()
         self._refresh_all_sample_bjh_pore_cells()
 
-    def _on_bjh_thickness_param_changed(self, method_key: str | None = None) -> None:
+    def _on_bjh_thickness_param_changed(self, method_key: str, param_key: str, value: float) -> None:
         if self._syncing_bjh_controls:
             return
-        method_key = method_key or self.bjh_thickness_method
-        params = self._read_bjh_thickness_params(method_key)
+        params = {**self.bjh_thickness_params_by_method[method_key], param_key: value}
         self.bjh_thickness_params_by_method[method_key] = dict(params)
         if method_key == self.bjh_thickness_method:
             self.bjh_thickness_params = dict(params)
@@ -4485,14 +4555,6 @@ class MainWindow(QtWidgets.QMainWindow):
         if method_key == self.bjh_thickness_method:
             self.refresh_bjh_plot()
             self._refresh_all_sample_bjh_pore_cells()
-
-    def _read_bjh_thickness_params(self, method_key: str) -> dict[str, object]:
-        if method_key == "reference":
-            return self._sync_reference_params_from_table("bjh")
-        params = dict(T_PLOT_THICKNESS_PARAM_DEFAULTS.get(method_key, DEFAULT_T_PLOT_THICKNESS_PARAMS))
-        for param_key, spin in self.bjh_param_spins.get(method_key, {}).items():
-            params[param_key] = float(spin.value())
-        return params
 
     def _set_bjh_formula_spins_for_method(self, method_key: str, params: dict[str, float]) -> None:
         for param_key, spin in self.bjh_param_spins.get(method_key, {}).items():
@@ -4524,11 +4586,10 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._active_pore_volume_method() == PORE_VOLUME_METHOD_DH:
             self._refresh_all_sample_bjh_pore_cells()
 
-    def _on_dh_thickness_param_changed(self, method_key: str | None = None) -> None:
+    def _on_dh_thickness_param_changed(self, method_key: str, param_key: str, value: float) -> None:
         if self._syncing_dh_controls:
             return
-        method_key = method_key or self.dh_thickness_method
-        params = self._read_dh_thickness_params(method_key)
+        params = {**self.dh_thickness_params_by_method[method_key], param_key: value}
         self.dh_thickness_params_by_method[method_key] = dict(params)
         if method_key == self.dh_thickness_method:
             self.dh_thickness_params = dict(params)
@@ -4537,14 +4598,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.refresh_dh_plot()
             if self._active_pore_volume_method() == PORE_VOLUME_METHOD_DH:
                 self._refresh_all_sample_bjh_pore_cells()
-
-    def _read_dh_thickness_params(self, method_key: str) -> dict[str, object]:
-        if method_key == "reference":
-            return self._sync_reference_params_from_table("dh")
-        params = dict(T_PLOT_THICKNESS_PARAM_DEFAULTS.get(method_key, DEFAULT_T_PLOT_THICKNESS_PARAMS))
-        for param_key, spin in self.dh_param_spins.get(method_key, {}).items():
-            params[param_key] = float(spin.value())
-        return params
 
     def _set_dh_formula_spins_for_method(self, method_key: str, params: dict[str, float]) -> None:
         for param_key, spin in self.dh_param_spins.get(method_key, {}).items():
@@ -5066,6 +5119,7 @@ class MainWindow(QtWidgets.QMainWindow):
             params_by_method = _default_bjh_thickness_params_by_method()
             method_key = str(vendor_method)
             if method_key in params_by_method:
+                params_by_method[method_key].update(qps_halsey_params(result, method_key) or {})
                 settings["thickness_method"] = method_key
                 settings["thickness_params_by_method"] = params_by_method
                 settings["thickness_params"] = dict(params_by_method[method_key])
@@ -5192,6 +5246,7 @@ class MainWindow(QtWidgets.QMainWindow):
         method = str(result.method_options.get("vendor_dh_thickness_method", settings["thickness_method"]))
         if method not in params_by_method:
             method = DEFAULT_DH_THICKNESS_METHOD
+        params_by_method[method].update(qps_halsey_params(result, method) or {})
         settings["thickness_method"] = method
         settings["thickness_params"] = dict(params_by_method[method])
         self._apply_vendor_pore_thickness_params(settings, result.method_options.get("vendor_dh_report_settings"))
@@ -8737,8 +8792,85 @@ class MainWindow(QtWidgets.QMainWindow):
         active = self.active_result()
         rows = [] if active is None else summary_rows(active)
         self._fill_two_column_table(self.metrics_table, rows)
+        self._install_qps_correction_switches(active, rows)
         self.refresh_analysis_result_tables()
         self.refresh_pore_volume_table()
+
+    def _install_qps_correction_switches(self, active, rows: list[tuple[str, str]]) -> None:
+        """On/off drop-downs for the corrections a .qps file lets ASiQwin apply."""
+        table = self.metrics_table
+        for row in getattr(table, "_qps_switch_rows", ()):
+            if row < table.rowCount():
+                table.removeCellWidget(row, 1)
+        table._qps_switch_rows = []
+        if active is None:
+            return
+        options = active.method_options
+        switches = {
+            tr("热流逸修正"): "thermal_transpiration",
+            tr("温度补偿"): "temperature_compensation",
+        }
+        if not options.get("quantachrome_qps_native"):
+            return
+        for row, (label, _value) in enumerate(rows):
+            key = switches.get(label)
+            if key is None:
+                continue
+            combo = QtWidgets.QComboBox(table)
+            if not options.get(f"quantachrome_{key}_available"):
+                combo.addItem(tr("不适用"))
+                combo.setEnabled(False)
+                combo.setToolTip(tr("此文件的仪器或测试条件不支持该修正，原厂软件也不会应用。"))
+                table.setCellWidget(row, 1, combo)
+                table._qps_switch_rows.append(row)
+                continue
+            combo.addItems([tr("开"), tr("关")])
+            combo.setCurrentIndex(0 if options.get(f"quantachrome_{key}_applied") else 1)
+            saved = tr("开") if options.get(f"quantachrome_{key}_saved") else tr("关")
+            combo.setToolTip(tr("文件中保存的设置：{0}。默认与原厂软件一致。", saved))
+            combo.activated.connect(
+                lambda index, sample=active, key=key: self._set_qps_correction(sample, key, index == 0)
+            )
+            table.setCellWidget(row, 1, combo)
+            table._qps_switch_rows.append(row)
+
+    def _set_qps_correction(self, old, key: str, enabled: bool) -> None:
+        """Re-read the QPS sample whose correction control was activated."""
+        index = next((i for i, result in enumerate(self.results) if result is old), None)
+        if index is None or not old.method_options.get(f"quantachrome_{key}_available"):
+            return
+        settings = {
+            name: bool(old.method_options.get(f"quantachrome_{name}_applied"))
+            for name in ("thermal_transpiration", "temperature_compensation")
+        }
+        if settings.get(key) == enabled:
+            return
+        settings[key] = enabled
+        try:
+            new = load_qps(old.header.file_path, **settings)
+        except (OSError, ValueError) as exc:
+            QtWidgets.QMessageBox.warning(self, tr("部分文件未加载"), str(exc))
+            self.refresh_metrics()
+            return
+        self.results[index] = new
+        settings_to_keep = [
+            self.custom_t_plot_settings, self.custom_bjh_settings, self.custom_dh_settings,
+            self.custom_hk_settings, self.custom_dft_settings,
+        ]
+        # Temperature compensation changes uptake only. Keep manual fits when
+        # the adsorption points still have the same pressure/thickness axis.
+        def adsorption_pressures(result):
+            return [(point.index, point.relative_pressure) for point in result.isotherm if point.phase == "adsorption"]
+
+        if adsorption_pressures(old) == adsorption_pressures(new):
+            settings_to_keep.extend((
+                self.custom_bet_fit_ranges, self.custom_langmuir_fit_ranges, self.custom_t_plot_fit_ranges,
+            ))
+        for store in settings_to_keep:
+            if id(old) in store:
+                store[id(new)] = store.pop(id(old))
+        self._discard_sample_settings(old)
+        self.refresh_all()
 
     def _copy_summary_path(self, item) -> None:
         if item.column() != 1:
@@ -10002,7 +10134,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 source if ok_single else status_text(single.status),
                 status_text(langmuir.status), val(langmuir.surface_area_m2_g), val(langmuir.monolayer_capacity_cm3_g_stp),
                 val(langmuir.r_squared), rng(langmuir),
-                status_text(t_plot.status), val(t_plot.external_surface_area_m2_g), val(t_plot.micropore_volume_cm3_g),
+                status_text(t_plot.status), val(t_plot.external_surface_area_m2_g), val(t_plot.summary_micropore_volume_cm3_g),
                 val(t_plot.r_squared), rng(t_plot),
             ]))
         notices = sorted({str(r.method_options.get("import_notice")) for r in selected if r.method_options.get("import_notice")})
@@ -10534,11 +10666,11 @@ def active_metric_rows(
         t_plot_input_surface_area,
     )
     micropore_area = _micropore_area_m2_g(
-        t_plot_total_surface_area,
-        t_plot.external_surface_area_m2_g,
-        t_plot_surface_area_correction,
+        t_plot_total_surface_area, t_plot.external_surface_area_m2_g, t_plot_surface_area_correction,
         negative_as_missing=reports_signed_t_plot_results(result),
     )
+    if t_plot.qps_external_area_capped and micropore_area == 0.0:
+        micropore_area = None
     single_point_rows: list[tuple[str, str]] = []
     if result.method_options.get("jwgb_single_point_bet_pressure") is not None:
         single_point = single_point_bet_analysis(result)
@@ -10572,8 +10704,8 @@ def active_metric_rows(
         (tr("Langmuir 单层容量"), f"{_fmt(langmuir.monolayer_capacity_cm3_g_stp)} cm3/g STP"),
         ("Langmuir R2", _fmt(langmuir.r_squared, 6)),
         (tr("t-Plot 状态"), status_text(t_plot.status)),
-        (tr("t-Plot 微孔体积"), f"{_fmt(t_plot.micropore_volume_cm3_g)} cm3/g"),
-        (tr("t-Plot 微孔面积"), f"{_fmt(micropore_area)} m2/g"),
+        (tr("t-Plot 微孔体积"), _with_unit(t_plot.summary_micropore_volume_cm3_g, "cm3/g")),
+        (tr("t-Plot 微孔面积"), _with_unit(micropore_area, "m2/g")),
         (tr("t-Plot 外比表面积"), f"{_fmt(t_plot.external_surface_area_m2_g)} m2/g"),
         (tr("t-Plot 斜率"), _value_pm_text(t_plot_regression["slope"], t_plot_regression["slope_se"], "mmol/g/nm")),
         (tr("t-Plot Y 截距"), _value_pm_text(t_plot_regression["intercept"], t_plot_regression["intercept_se"], "mmol/g")),
@@ -10658,6 +10790,13 @@ def condition_rows(result) -> list[tuple[str, str]]:
         ("Vfree factor", _with_unit(free.vfree_factor_cm3, "cm3")),
         (tr("非理想因子"), _fmt(free.nonideality_factor, 9)),
     ]
+    for key, label in (("thermal_transpiration", tr("热流逸修正")), ("temperature_compensation", tr("温度补偿"))):
+        if not result.method_options.get("quantachrome_qps_native"):
+            break
+        if not result.method_options.get(f"quantachrome_{key}_available"):
+            rows.append((label, tr("不适用")))
+        else:
+            rows.append((label, tr("开") if result.method_options.get(f"quantachrome_{key}_applied") else tr("关")))
     if result.method_options.get("tristar_plus_quantity_validation") == "empirical_reconstruction_summary_checked_on_reference_samples":
         rows.append((tr("定量校验"), tr("3.02 参考样本的 BET、t-Plot 已核对原厂摘要；完整点表及 BJH 仍待核对")))
     if props is not None:
@@ -10917,7 +11056,7 @@ def export_results_xlsx(
                 langmuir.surface_area_m2_g,
                 status_text(t_plot.status),
                 t_plot.external_surface_area_m2_g,
-                t_plot.micropore_volume_cm3_g,
+                t_plot.summary_micropore_volume_cm3_g,
                 pore_volume,
                 result.method_options.get('import_notice', ''),
             ]
